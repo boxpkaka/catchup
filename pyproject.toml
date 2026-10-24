@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catchup"
+version = "0.1.0"
+description = "Personal intelligence for fast-moving fields: watch sources, merge signals into events, surface what matters."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []  # 运行时只用标准库
+
+[project.scripts]
+catchup = "catchup.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["catchup*"]
+
+[tool.setuptools.package-data]
+"catchup.web" = ["static/*"]

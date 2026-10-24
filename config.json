@@ -1,0 +1,255 @@
+{
+  "storage": {
+    "path": "data/catchup.db"
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 2591
+  },
+  "ranking": {
+    "window_hours": 72,
+    "push_count": 5,
+    "half_life_hours": 36,
+    "tier_weights": {
+      "official": 2.0,
+      "primary": 1.0,
+      "signal": 0.0
+    }
+  },
+  "interests": [
+    {
+      "name": "AI 语音",
+      "weight": 3.0,
+      "keywords": [
+        "tts",
+        "asr",
+        "speech",
+        "voice",
+        "audio",
+        "whisper",
+        "diarization",
+        "speaker",
+        "spoken",
+        "vocoder",
+        "codec",
+        "prosody",
+        "语音",
+        "声音",
+        "音频",
+        "播客",
+        "elevenlabs",
+        "funasr",
+        "cosyvoice",
+        "sherpa",
+        "pipecat",
+        "livekit"
+      ]
+    },
+    {
+      "name": "大模型",
+      "weight": 1.0,
+      "keywords": [
+        "llm",
+        "gpt",
+        "claude",
+        "gemini",
+        "qwen",
+        "deepseek",
+        "llama",
+        "kimi",
+        "mistral",
+        "大模型",
+        "language model",
+        "reasoning",
+        "benchmark"
+      ]
+    },
+    {
+      "name": "Agent",
+      "weight": 1.0,
+      "keywords": [
+        "agent",
+        "mcp",
+        "tool use",
+        "codex",
+        "claude code",
+        "智能体"
+      ]
+    }
+  ],
+  "sources": {
+    "github_releases": {
+      "type": "github_releases",
+      "title": "GitHub Release",
+      "repos": [
+        "vllm-project/vllm",
+        "sgl-project/sglang",
+        "huggingface/transformers",
+        "ollama/ollama",
+        "anthropics/claude-code",
+        "openai/codex",
+        "k2-fsa/sherpa-onnx",
+        "modelscope/FunASR",
+        "fishaudio/fish-speech",
+        "SWivid/F5-TTS",
+        "ggml-org/whisper.cpp",
+        "livekit/agents",
+        "pipecat-ai/pipecat"
+      ]
+    },
+    "github_new": {
+      "type": "github_search",
+      "title": "GitHub 新仓库",
+      "queries": [
+        "llm",
+        "agent",
+        "tts",
+        "asr",
+        "speech",
+        "voice"
+      ],
+      "days": 7,
+      "min_stars": 50
+    },
+    "hf_models": {
+      "type": "hf_models",
+      "title": "HF 模型",
+      "pipeline_tags": [
+        "text-generation",
+        "any-to-any",
+        "audio-text-to-text",
+        "automatic-speech-recognition",
+        "text-to-speech",
+        "audio-to-audio"
+      ],
+      "limit": 20
+    },
+    "hf_papers": {
+      "type": "hf_papers",
+      "title": "HF Papers",
+      "limit": 50
+    },
+    "arxiv": {
+      "type": "arxiv",
+      "title": "arXiv",
+      "queries": [
+        "cat:cs.SD OR cat:eess.AS",
+        "cat:cs.CL"
+      ],
+      "max_results": 100
+    },
+    "hackernews": {
+      "type": "hackernews",
+      "title": "Hacker News",
+      "queries": [
+        "LLM",
+        "OpenAI",
+        "Anthropic",
+        "Claude",
+        "Gemini",
+        "DeepSeek",
+        "Qwen",
+        "TTS",
+        "speech",
+        "voice AI",
+        "Whisper"
+      ],
+      "min_points": 20,
+      "lookback_hours": 24
+    },
+    "official_blogs": {
+      "type": "feed",
+      "title": "官方博客",
+      "tier": "official",
+      "feeds": [
+        {
+          "name": "OpenAI",
+          "url": "https://openai.com/news/rss.xml"
+        },
+        {
+          "name": "Anthropic",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml"
+        },
+        {
+          "name": "Google DeepMind",
+          "url": "https://deepmind.google/blog/rss.xml"
+        },
+        {
+          "name": "Google AI",
+          "url": "https://blog.google/technology/ai/rss/"
+        },
+        {
+          "name": "Hugging Face",
+          "url": "https://huggingface.co/blog/feed.xml"
+        },
+        {
+          "name": "Qwen",
+          "url": "https://qwenlm.github.io/blog/index.xml"
+        }
+      ]
+    },
+    "cn_media": {
+      "type": "feed",
+      "title": "中文科技媒体",
+      "kind": "新闻",
+      "feeds": [
+        {
+          "name": "量子位",
+          "url": "https://www.qbitai.com/feed"
+        }
+      ]
+    },
+    "google_news": {
+      "type": "google_news",
+      "title": "Google News",
+      "queries": [
+        {
+          "name": "AI",
+          "q": "LLM OR \"AI model\"",
+          "lang": "en"
+        },
+        {
+          "name": "AI 语音",
+          "q": "TTS OR \"speech model\" OR \"voice AI\"",
+          "lang": "en"
+        },
+        {
+          "name": "中文大模型",
+          "q": "大模型 OR 语音大模型",
+          "lang": "zh"
+        }
+      ]
+    },
+    "youtube": {
+      "type": "youtube",
+      "title": "YouTube",
+      "channels": {
+        "Andrej Karpathy": "UCXUPKJO5MZQN11PqgIvyuvQ",
+        "Two Minute Papers": "UCbfYPyITQ-7l4upoX8nvctg",
+        "Yannic Kilcher": "UCZHmQk67mSJgfCCTn7xBfew",
+        "AI Explained": "UCNJ1Ymd5yFuUPtn21xtRbbw",
+        "Latent Space": "UCxBcwypKK-W3GHd_RZ9FZrQ",
+        "Dwarkesh Patel": "UCXl4i9dYBrFOabk0xGmbkRA",
+        "Google DeepMind": "UCP7jMXSY2xbc3KCAE0MHQ-A",
+        "OpenAI": "UCXZCJLdBC09xxGZ6gcdrc6A",
+        "Anthropic": "UCrDwWp7EBBv4NwvScIpBDOA",
+        "Hugging Face": "UCHlNU7kIZhRgSbhHvFoy72w",
+        "Sam Witteveen": "UC55ODQSvARtgSyc8ThfiepQ",
+        "李宏毅": "UC2ggjtuuWvxrHHHiaDH1dlQ",
+        "最佳拍档": "UCGWYKICLOE8Wxy7q3eYXmPA",
+        "ElevenLabs": "UC-ew9TfeD887qUSiWWAAj1w",
+        "Deepgram": "UCZD2IkWTzZvajgiy9CjNfxA"
+      }
+    },
+    "reddit": {
+      "type": "reddit",
+      "title": "Reddit",
+      "subreddits": [
+        "LocalLLaMA",
+        "MachineLearning",
+        "speechtech"
+      ],
+      "delay": 60
+    }
+  }
+}
