@@ -4,4 +4,5 @@ logs/
 __pycache__/
 *.pyc
 android/build/
+android/dist/
 android/release.keystore

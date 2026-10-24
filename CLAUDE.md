@@ -11,4 +11,4 @@
 - `.env` 含 `GITHUB_TOKEN`，不要读出内容或写进日志。
 - 推送服务仍在 `../infofeed`（`feed.py` / `hub.py`），本项目采集、预览，并维护安卓 App（`android/`，从 `../infofeed/android` 迁入）。
 - **App 签名**：`android/release.keystore` 和 `.env` 的 `APK_KEYSTORE_PASS` 不入库、不要读出。包名 `cloud.boxpkaka.infofeed` 和签名都不能改，否则已装的 App 无法覆盖升级。
-- **App 版本**：`versionCode` 按构建时间自动递增；应用内更新比较的是 `versionName` 与 Release tag（`v1.2.0`），发版用 `android/release.sh <版本号>`。
+- **App 版本**：`versionCode` 按构建时间自动递增；应用内更新比较的是 `versionName` 与服务器 `/app/version`（来自 `android/dist/version.json`）。App 不直连 GitHub（国内网络不稳定），GitHub Release 只做存档。发版用 `android/release.sh <版本号>`。

@@ -8,7 +8,6 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -19,10 +18,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
-/** 应用内更新：从 GitHub Release 检查最新版本，下载 APK 后交给系统 PackageInstaller 安装。 */
+/**
+ * 应用内更新：向自建服务器（与推送同一地址）查询最新版本，下载 APK 后交给系统 PackageInstaller 安装。
+ * 不直接访问 GitHub，手机在国内网络下连 GitHub 不稳定；服务器上的版本由 android/release.sh 发布。
+ */
 final class Updater {
     static final String ACTION_INSTALLED = "cloud.boxpkaka.infofeed.INSTALL_RESULT";
-    private static final String LATEST = "https://api.github.com/repos/boxpkaka/catchup/releases/latest";
     private static final long CHECK_INTERVAL_MS = 6 * 3600_000L;
 
     static final class Release {
@@ -52,22 +53,15 @@ final class Updater {
 
     /** 网络请求，需在后台线程调用。有更新返回 Release，没有返回 null。 */
     static Release check(Context c) throws Exception {
-        HttpURLConnection conn = open(LATEST);
-        conn.setRequestProperty("Accept", "application/vnd.github+json");
+        String server = Store.server(c);
+        HttpURLConnection conn = open(server + "/app/version");
         try {
             int code = conn.getResponseCode();
-            if (code == 404) return null; // 还没有发布过任何版本
+            if (code == 404) return null; // 服务器上还没有发布过版本
             if (code != 200) throw new IOException("HTTP " + code);
-            JSONObject r = new JSONObject(read(conn.getInputStream()));
+            String version = new JSONObject(read(conn.getInputStream())).getString("version");
             Store.prefs(c).edit().putLong("updateChecked", System.currentTimeMillis()).apply();
-            String version = r.getString("tag_name").replaceFirst("^v", "");
-            if (!newer(version, currentVersion(c))) return null;
-            JSONArray assets = r.optJSONArray("assets");
-            for (int i = 0; assets != null && i < assets.length(); i++) {
-                JSONObject a = assets.getJSONObject(i);
-                if (a.optString("name").endsWith(".apk")) return new Release(version, a.getString("browser_download_url"));
-            }
-            return null;
+            return newer(version, currentVersion(c)) ? new Release(version, server + "/app.apk") : null;
         } finally {
             conn.disconnect();
         }
@@ -94,7 +88,8 @@ final class Updater {
         params.setAppPackageName(a.getPackageName());
         int id = installer.createSession(params);
         try (PackageInstaller.Session session = installer.openSession(id)) {
-            HttpURLConnection conn = open(r.apkUrl); // GitHub 会 302 到 CDN，HttpURLConnection 自动跟随
+            HttpURLConnection conn = open(r.apkUrl);
+            if (conn.getResponseCode() != 200) throw new IOException("HTTP " + conn.getResponseCode());
             try (InputStream in = conn.getInputStream();
                  OutputStream out = session.openWrite("base.apk", 0, conn.getContentLengthLong())) {
                 byte[] buf = new byte[64 * 1024];

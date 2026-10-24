@@ -29,6 +29,10 @@ final class Store {
         return c.getSharedPreferences("feed", Context.MODE_PRIVATE);
     }
 
+    static String server(Context c) {
+        return prefs(c).getString("server", DEFAULT_SERVER).replaceAll("/+$", "");
+    }
+
     static long lastId(Context c) {
         return prefs(c).getLong("lastId", 0);
     }

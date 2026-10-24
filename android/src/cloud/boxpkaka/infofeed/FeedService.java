@@ -87,7 +87,7 @@ public class FeedService extends Service {
         long backoff = 2000;
         while (running) {
             SharedPreferences p = Store.prefs(this);
-            String server = p.getString("server", Store.DEFAULT_SERVER).replaceAll("/+$", "");
+            String server = Store.server(this);
             try {
                 setStatus("连接中…");
                 HttpURLConnection c = (HttpURLConnection) new URL(server + "/stream?since=" + Store.lastId(this)).openConnection();

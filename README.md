@@ -12,7 +12,7 @@
 | 事件合并（同一论文/仓库/模型 + 标题相似度） | ✅ 规则版 |
 | 相关性排序与“为什么推给你” | ✅ 规则版，兴趣画像手写在配置里 |
 | 预览页（今日推送 / 事件流 / 来源） | ✅ 只读 |
-| 安卓 App（`android/`，GitHub Release 分发 + 应用内更新） | ✅ 已迁入，推送仍走 `../infofeed` 的 hub |
+| 安卓 App（`android/`，自建服务器分发 + 应用内更新，GitHub Release 存档） | ✅ 已迁入，推送仍走 `../infofeed` 的 hub |
 | 推送到手机、持续追踪、反馈学习 | ⏳ 未开始 |
 
 ## 使用
@@ -43,10 +43,10 @@ python3 -m unittest                   # 测试
 
 ```bash
 ./android/build.sh                  # 本地调试包 → android/build/infofeed.apk（版本 0.0.0-dev）
-./android/release.sh 1.1.0          # 构建并发布 GitHub Release v1.1.0，附带 APK
+./android/release.sh 1.1.0          # 构建 v1.1.0：放到 android/dist/ 供自建服务器分发，并发布 GitHub Release 存档
 ```
 
-发布前要先提交并 `git push`，脚本会检查。App 打开时每 6 小时最多检查一次 `releases/latest`，tag 版本号比当前新就显示“发现新版本”，点击后下载并调起系统安装；设置里也可以手动“检查更新”。首次安装请从 [Releases](https://github.com/boxpkaka/catchup/releases) 下载 APK。
+发布前要先提交并 `git push`，脚本会检查。手机在国内网络下连 GitHub 不稳定，所以 App 只访问推送用的同一个服务器：`../infofeed/hub.py` 从 `android/dist/` 提供 `/app/version` 和 `/app.apk`（经 `https://boxpkaka.cloud/feed`）。App 打开时每 6 小时最多检查一次，版本号比当前新就显示“发现新版本”，点击后下载并调起系统安装；设置里也可以手动“检查更新”。首次安装从 `https://boxpkaka.cloud/feed/app.apk` 下载。
 
 ## 结构
 

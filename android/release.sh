@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# 本机构建签名 APK 并发布到 GitHub Release：./release.sh 1.1.0
-# 签名密钥只留在本机；App 内更新读取 releases/latest 的 tag 和 .apk 附件。
+# 本机构建签名 APK 并发布：./release.sh 1.1.0
+# 1. 放到 dist/，由 ../infofeed/hub.py 以 /app/version 和 /app.apk 提供给 App 内更新（手机不直连 GitHub）
+# 2. 上传到 GitHub Release 存档
+# 签名密钥只留在本机。
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION="${1:?用法：release.sh <版本号，如 1.1.0>}"
@@ -11,5 +13,8 @@ git fetch -q origin
 
 ./build.sh "$VERSION"
 cp build/infofeed.apk "build/infofeed-$VERSION.apk"
+mkdir -p dist
+cp build/infofeed.apk dist/infofeed.apk.tmp && mv dist/infofeed.apk.tmp dist/infofeed.apk
+printf '{"version": "%s"}\n' "$VERSION" > dist/version.json
 gh release create "v$VERSION" "build/infofeed-$VERSION.apk" \
   --target "$(git rev-parse HEAD)" --title "v$VERSION" --generate-notes
