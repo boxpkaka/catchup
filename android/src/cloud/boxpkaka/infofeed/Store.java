@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
 final class Store {
     static final String DEFAULT_SERVER = "https://boxpkaka.cloud/feed";
     private static final int KEEP = 200;
-    private static final Pattern LINK = Pattern.compile("\\[([^\\]]*)\\]\\((https?://[^)\\s]+)\\)");
+    private static final Pattern LINK = Pattern.compile("\\[((?:[^\\[\\]]|\\[[^\\]]*\\])*)\\]\\((https?://[^)\\s]+)\\)"); // 标题里允许一层方括号，如 [[开源] xx](url)
 
     private static JSONArray cache; // 服务和界面在同一进程，共用内存副本，避免每次刷新都读文件
 
@@ -29,8 +29,9 @@ final class Store {
         return c.getSharedPreferences("feed", Context.MODE_PRIVATE);
     }
 
+    /** 服务器地址固定，不再读旧版设置里保存的 server：旧值填错时用户已无处修改。 */
     static String server(Context c) {
-        return prefs(c).getString("server", DEFAULT_SERVER).replaceAll("/+$", "");
+        return DEFAULT_SERVER;
     }
 
     static long lastId(Context c) {

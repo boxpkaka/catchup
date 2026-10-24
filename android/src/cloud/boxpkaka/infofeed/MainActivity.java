@@ -188,9 +188,7 @@ public class MainActivity extends Activity {
         statusRow.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
         status = label("", 13, sub, false);
         status.setPadding(dp(6), 0, 0, 0);
-        status.setSingleLine();
-        status.setEllipsize(TextUtils.TruncateAt.END);
-        statusRow.addView(status);
+        statusRow.addView(status); // 不截断：断开时括号里的原因是排查问题的唯一线索
         statusRow.setOnClickListener(v -> {
             if (FeedService.status.startsWith("令牌错误")) editToken();
         });
@@ -310,9 +308,12 @@ public class MainActivity extends Activity {
         dot.setBackground(d);
         batteryBanner.setVisibility(getSystemService(PowerManager.class)
                 .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
-        messages = Store.load(this);
+        JSONArray latest = Store.load(this);
+        boolean grew = latest.length() > messages.length();
+        messages = latest;
         empty.setVisibility(messages.length() == 0 ? View.VISIBLE : View.GONE);
         adapter.notifyDataSetChanged();
+        if (grew && list.getFirstVisiblePosition() == 0) list.setSelection(0); // 新消息在顶部，停在最上面才看得到
     }
 
     private void startReceiving() {
