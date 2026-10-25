@@ -7,7 +7,6 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
@@ -36,7 +35,6 @@ public class FeedService extends Service {
     private NotificationManager nm;
 
     static void start(Context c) {
-        if (Store.prefs(c).getString("token", "").isEmpty()) return;
         c.startForegroundService(new Intent(c, FeedService.class));
     }
 
@@ -86,7 +84,6 @@ public class FeedService extends Service {
     private void loop() {
         long backoff = 2000;
         while (running) {
-            SharedPreferences p = Store.prefs(this);
             String server = Store.server(this);
             try {
                 setStatus("连接中…");
@@ -94,14 +91,8 @@ public class FeedService extends Service {
                 conn = c;
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(70000); // 服务端每 25 秒发一次心跳
-                c.setRequestProperty("Authorization", "Bearer " + p.getString("token", ""));
                 c.setRequestProperty("Accept", "text/event-stream");
                 int code = c.getResponseCode();
-                if (code == 401) {
-                    setStatus("令牌错误，请在设置里检查");
-                    pause(60000);
-                    continue;
-                }
                 if (code != 200) throw new IOException("HTTP " + code);
                 setStatus("已连接");
                 backoff = 2000;
@@ -120,7 +111,7 @@ public class FeedService extends Service {
             } catch (Exception e) {
                 if (!running) break;
                 if (Thread.interrupted()) continue;
-                setStatus("已断开，" + backoff / 1000 + " 秒后重连（" + e.getMessage() + "）");
+                setStatus("连接断开，" + backoff / 1000 + " 秒后重试（" + reason(e) + "）");
                 pause(backoff);
                 backoff = Math.min(backoff * 2, 60000);
             } finally {
@@ -128,6 +119,15 @@ public class FeedService extends Service {
                 if (c != null) c.disconnect();
             }
         }
+    }
+
+    /** 把常见网络异常翻译成用户能看懂的原因。 */
+    private static String reason(Exception e) {
+        if (e instanceof java.net.UnknownHostException) return "无法解析服务器地址，请检查网络或 App 联网权限";
+        if (e instanceof java.net.SocketTimeoutException) return "连接超时";
+        if (e instanceof java.net.ConnectException) return "无法访问服务器";
+        if (e instanceof javax.net.ssl.SSLException) return "安全连接失败";
+        return String.valueOf(e.getMessage());
     }
 
     private void pause(long ms) {
@@ -141,7 +141,8 @@ public class FeedService extends Service {
         Store.add(this, m);
         long when = (long) (m.optDouble("time", 0) * 1000);
         if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS) {
-            String body = Store.plain(m.optString("message"));
+            Store.Entry e = Store.entry(m);
+            String body = e.snippet.isEmpty() ? e.headline : e.headline + "\n" + e.snippet;
             String click = m.optString("click");
             Intent open = click.isEmpty() || "null".equals(click)
                     ? new Intent(this, MainActivity.class)
@@ -152,6 +153,7 @@ public class FeedService extends Service {
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
             nm.notify(id, new Notification.Builder(this, "messages")
                     .setSmallIcon(R.drawable.ic_notify)
+                    .setColor(0xFF1A1A1D)
                     .setContentTitle(m.optString("title"))
                     .setContentText(body)
                     .setStyle(new Notification.BigTextStyle().bigText(body))
@@ -175,7 +177,7 @@ public class FeedService extends Service {
                 PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, "status")
                 .setSmallIcon(R.drawable.ic_notify)
-                .setContentTitle("信息流")
+                .setContentTitle("Catchup")
                 .setContentText(text)
                 .setOngoing(true)
                 .setContentIntent(pi)

@@ -3,6 +3,7 @@ package cloud.boxpkaka.infofeed;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -11,7 +12,9 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -22,15 +25,16 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
+import android.text.style.ReplacementSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
-import android.view.inputmethod.EditorInfo;
+import android.view.WindowManager;
 import android.widget.BaseAdapter;
-import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -41,28 +45,37 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-/** 主界面：首次只需输入一次令牌；之后是消息卡片列表，设置收在右上角菜单里。 */
+/**
+ * 主界面：按天分组的消息时间索引。配色沿用图标：宣纸底、墨色文字、朱砂只用于未读点和连接异常。
+ * 不需要任何设置即可使用，菜单里只有检查更新和后台运行设置。
+ */
 public class MainActivity extends Activity {
-    private static final int ACCENT = 0xFF2563EB;
+    private static final int CINNABAR = 0xFFFF5A36;
+    private static final long DAY_MS = 86400_000L;
 
-    private final SimpleDateFormat dayFmt = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.CHINA);
-    private int bg, card, text, sub;
+    private final SimpleDateFormat dateFmt = new SimpleDateFormat("M月d日", Locale.CHINA);
+    private final SimpleDateFormat weekFmt = new SimpleDateFormat("EEEE", Locale.CHINA);
+    private int bg, fg, sub, raise;
     private boolean night;
 
     private TextView status;
-    private View dot;
-    private TextView updateBanner;
-    private LinearLayout batteryBanner;
+    private View statusDot;
+    private LinearLayout updateNotice;
+    private TextView updateText, updateAction;
+    private LinearLayout batteryNotice;
     private TextView empty;
     private ListView list;
-    private JSONArray messages = new JSONArray();
     private BaseAdapter adapter;
+    private final List<Object> rows = new ArrayList<>(); // String 是分组标题，JSONObject 是消息
+    private JSONArray messages = new JSONArray();
+    private long seenAtOpen; // 本次打开前已看过的最新 id，比它新的显示未读点
     private Updater.Release release;
     private boolean receiving;
 
@@ -79,10 +92,10 @@ public class MainActivity extends Activity {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
-        bg = night ? 0xFF0F1115 : 0xFFF4F5F7;
-        card = night ? 0xFF1B1E24 : 0xFFFFFFFF;
-        text = night ? 0xFFE8EAED : 0xFF16181D;
-        sub = night ? 0xFF9AA0A6 : 0xFF6B7280;
+        bg = night ? 0xFF161618 : 0xFFF3EEE4;
+        fg = night ? 0xFFEDE7DA : 0xFF1A1A1D;
+        sub = night ? 0xFF9B958A : 0xFF6E6A63;
+        raise = night ? 0xFF202023 : 0xFFFBF8F2;
         Window w = getWindow();
         w.setStatusBarColor(bg);
         w.setNavigationBarColor(bg);
@@ -90,9 +103,13 @@ public class MainActivity extends Activity {
             w.getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         }
+        setContentView(buildMain());
 
-        if (token().isEmpty()) showWelcome();
-        else showMain();
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+        FeedService.start(this);
         onInstallResult(getIntent());
     }
 
@@ -105,11 +122,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (list != null) onShown(); // 还在欢迎页时什么都不做
-    }
-
-    private void onShown() {
-        startReceiving();
+        seenAtOpen = Store.seenId(this);
+        if (seenAtOpen < 0) { // 第一次打开：已有的历史消息不算未读
+            seenAtOpen = Store.lastId(this);
+            Store.markSeen(this, seenAtOpen);
+        }
+        if (!receiving) {
+            IntentFilter f = new IntentFilter(FeedService.ACTION_UPDATE);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(updates, f, Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(updates, f);
+            receiving = true;
+        }
         refresh();
         if (Updater.due(this)) checkUpdate(false);
     }
@@ -121,246 +144,296 @@ public class MainActivity extends Activity {
             unregisterReceiver(updates);
             receiving = false;
         }
+        Store.markSeen(this, Store.lastId(this)); // 离开时视为已看过当前全部消息
     }
 
-    // ---------- 欢迎页：只输入一次令牌 ----------
+    // ---------- 界面 ----------
 
-    private void showWelcome() {
-        LinearLayout root = column();
-        root.setGravity(Gravity.CENTER_VERTICAL);
-        root.setPadding(dp(28), dp(24), dp(28), dp(24));
-        root.setBackgroundColor(bg);
-
-        View logo = new View(this);
-        logo.setBackground(getDrawable(R.drawable.ic_launcher));
-        root.addView(logo, new LinearLayout.LayoutParams(dp(64), dp(64)));
-
-        TextView title = label("信息流", 30, text, true);
-        title.setPadding(0, dp(20), 0, dp(8));
-        root.addView(title);
-        TextView intro = label("AI 领域真正重要的变化，第一时间推送到你的手机。", 16, sub, false);
-        intro.setLineSpacing(0, 1.3f);
-        root.addView(intro);
-
-        EditText token = input("输入访问令牌");
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        lp.topMargin = dp(36);
-        root.addView(token, lp);
-
-        TextView start = button("开始使用");
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        bp.topMargin = dp(14);
-        root.addView(start, bp);
-
-        Runnable submit = () -> {
-            String t = token.getText().toString().trim();
-            if (t.isEmpty()) {
-                token.setError("请输入令牌");
-                return;
-            }
-            saveToken(t);
-            showMain();
-            onShown();
-        };
-        start.setOnClickListener(v -> submit.run());
-        token.setOnEditorActionListener((v, id, e) -> {
-            submit.run();
-            return true;
-        });
-        setContentView(root);
-    }
-
-    // ---------- 主界面 ----------
-
-    private void showMain() {
+    private View buildMain() {
         LinearLayout root = column();
         root.setBackgroundColor(bg);
 
-        // 顶栏：标题 + 连接状态，右侧是菜单
-        FrameLayout header = new FrameLayout(this);
-        header.setPadding(dp(20), dp(18), dp(8), dp(10));
+        // 顶栏：字标 + 连接状态，右侧菜单
+        LinearLayout top = new LinearLayout(this);
+        top.setPadding(dp(20), dp(16), dp(10), dp(4));
         LinearLayout titles = column();
-        titles.addView(label("信息流", 26, text, true));
+        titles.addView(wordmark(30));
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusRow.setPadding(0, dp(4), 0, 0);
-        dot = new View(this);
-        statusRow.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
-        status = label("", 13, sub, false);
-        status.setPadding(dp(6), 0, 0, 0);
-        statusRow.addView(status); // 不截断：断开时括号里的原因是排查问题的唯一线索
-        statusRow.setOnClickListener(v -> {
-            if (FeedService.status.startsWith("令牌错误")) editToken();
-        });
+        statusRow.setPadding(0, dp(6), 0, 0);
+        statusDot = new View(this);
+        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(6), dp(6));
+        dotLp.rightMargin = dp(7);
+        statusRow.addView(statusDot, dotLp);
+        status = text("", 12, sub, false);
+        statusRow.addView(status);
         titles.addView(statusRow);
-        header.addView(titles, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView menu = label("⋮", 24, text, false);
+        top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView menu = text("⋯", 22, fg, true);
         menu.setGravity(Gravity.CENTER);
-        menu.setBackground(ripple(0, dp(24)));
+        menu.setContentDescription("菜单");
+        menu.setBackground(ripple(Color.TRANSPARENT, dp(22)));
         menu.setOnClickListener(v -> showMenu());
-        header.addView(menu, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.END | Gravity.CENTER_VERTICAL));
-        root.addView(header);
+        top.addView(menu, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        root.addView(top);
 
-        updateBanner = label("", 15, Color.WHITE, true);
-        updateBanner.setPadding(dp(16), dp(14), dp(16), dp(14));
-        updateBanner.setBackground(ripple(ACCENT, dp(14)));
-        updateBanner.setVisibility(View.GONE);
-        updateBanner.setOnClickListener(v -> installUpdate());
-        root.addView(updateBanner, banner());
+        // 新版本提示：反色横条
+        updateNotice = notice(fg);
+        updateText = text("", 13, bg, true);
+        updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        updateAction = text("更新", 12, fg, true);
+        updateAction.setPadding(dp(14), dp(6), dp(14), dp(6));
+        updateAction.setBackground(round(bg, dp(99)));
+        updateNotice.addView(updateAction);
+        updateNotice.setOnClickListener(v -> installUpdate());
+        updateNotice.setVisibility(View.GONE);
+        root.addView(updateNotice, noticeLp());
 
-        batteryBanner = column();
-        batteryBanner.setPadding(dp(16), dp(14), dp(16), dp(14));
-        batteryBanner.setBackground(ripple(card, dp(14)));
-        batteryBanner.addView(label("允许后台运行", 15, text, true));
-        TextView hint = label("关闭电池优化后才能及时收到推送，点此设置", 13, sub, false);
-        hint.setPadding(0, dp(2), 0, 0);
-        batteryBanner.addView(hint);
-        batteryBanner.setOnClickListener(v -> startActivity(new Intent(
+        // 电池优化提示
+        batteryNotice = notice(raise);
+        LinearLayout bt = column();
+        bt.addView(text("允许后台运行", 13, fg, true));
+        bt.addView(text("关闭电池优化后才能及时收到推送", 12, sub, false));
+        batteryNotice.addView(bt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        batteryNotice.addView(text("去设置", 13, fg, true));
+        batteryNotice.setOnClickListener(v -> startActivity(new Intent(
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))));
-        root.addView(batteryBanner, banner());
+        root.addView(batteryNotice, noticeLp());
 
         FrameLayout content = new FrameLayout(this);
         list = new ListView(this);
-        list.setDivider(new ColorDrawable(Color.TRANSPARENT));
-        list.setDividerHeight(dp(10));
+        list.setDivider(null);
         list.setSelector(new ColorDrawable(Color.TRANSPARENT));
         list.setClipToPadding(false);
-        list.setPadding(dp(14), dp(6), dp(14), dp(24));
+        list.setPadding(0, dp(6), 0, dp(28));
         list.setVerticalScrollBarEnabled(false);
-        adapter = new BaseAdapter() {
-            @Override
-            public int getCount() {
-                return messages.length();
-            }
-
-            @Override
-            public JSONObject getItem(int i) {
-                return messages.optJSONObject(messages.length() - 1 - i);
-            }
-
-            @Override
-            public long getItemId(int i) {
-                return getItem(i).optLong("id");
-            }
-
-            @Override
-            public View getView(int i, View convert, ViewGroup parent) {
-                if (convert == null) convert = newCard(); // 复用滚出屏幕的卡片，避免每次滚动都新建 View
-                TextView[] v = (TextView[]) convert.getTag();
-                JSONObject m = getItem(i);
-                v[0].setText(m.optString("title"));
-                v[1].setText(Store.plain(m.optString("message")).trim());
-                int n = Store.links(m).size();
-                v[2].setText(when((long) (m.optDouble("time") * 1000)) + (n > 1 ? " · " + n + " 个链接" : ""));
-                return convert;
-            }
-        };
+        adapter = new FeedAdapter();
         list.setAdapter(adapter);
-        list.setOnItemClickListener((p, v, i, id) -> openLinks((JSONObject) adapter.getItem(i)));
+        list.setOnItemClickListener((p, v, i, id) -> {
+            Object row = rows.get(i);
+            if (row instanceof JSONObject) openLinks((JSONObject) row);
+        });
         content.addView(list);
-        empty = label("还没有消息\n有新内容时会推送到这里", 15, sub, false);
+        empty = text("还没有消息\n有重要变化时会推送到这里", 14, sub, false);
         empty.setGravity(Gravity.CENTER);
-        empty.setLineSpacing(0, 1.4f);
+        empty.setLineSpacing(0, 1.5f);
         content.addView(empty, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        setContentView(root);
-
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
-        }
-        FeedService.start(this);
+        return root;
     }
 
-    private View newCard() {
-        LinearLayout c = column();
-        c.setPadding(dp(16), dp(14), dp(16), dp(14));
-        c.setBackground(ripple(card, dp(16)));
-        TextView title = label("", 16, text, true);
-        title.setLineSpacing(0, 1.15f);
-        TextView body = label("", 14, text, false);
-        body.setAlpha(0.8f);
-        body.setLineSpacing(0, 1.3f);
-        body.setMaxLines(6);
-        body.setEllipsize(TextUtils.TruncateAt.END);
-        body.setPadding(0, dp(6), 0, 0);
-        TextView meta = label("", 12, sub, false);
-        meta.setPadding(0, dp(10), 0, 0);
-        c.addView(title);
-        c.addView(body);
-        c.addView(meta);
-        c.setTag(new TextView[]{title, body, meta});
-        return c;
+    private final class FeedAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return rows.size();
+        }
+
+        @Override
+        public Object getItem(int i) {
+            return rows.get(i);
+        }
+
+        @Override
+        public long getItemId(int i) {
+            return i;
+        }
+
+        @Override
+        public int getViewTypeCount() {
+            return 2;
+        }
+
+        @Override
+        public int getItemViewType(int i) {
+            return rows.get(i) instanceof String ? 0 : 1;
+        }
+
+        @Override
+        public boolean areAllItemsEnabled() {
+            return false;
+        }
+
+        @Override
+        public boolean isEnabled(int i) {
+            return getItemViewType(i) == 1;
+        }
+
+        @Override
+        public View getView(int i, View convert, ViewGroup parent) {
+            Object row = rows.get(i);
+            if (row instanceof String) {
+                if (convert == null) convert = newDayRow();
+                TextView[] v = (TextView[]) convert.getTag();
+                String[] parts = ((String) row).split("\n", 2);
+                v[0].setText(parts[0]);
+                v[1].setText(parts[1]);
+                return convert;
+            }
+            if (convert == null) convert = newItemRow(); // 复用滚出屏幕的行
+            Object[] v = (Object[]) convert.getTag();
+            JSONObject m = (JSONObject) row;
+            Store.Entry e = Store.entry(m);
+            boolean unread = m.optLong("id") > seenAtOpen;
+            TextView when = (TextView) v[0];
+            when.setText(timeFmt.format(new Date(millis(m))));
+            when.setTextColor(unread ? fg : sub);
+            when.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            ((View) v[1]).setVisibility(unread ? View.VISIBLE : View.INVISIBLE);
+            show((TextView) v[2], e.topic);
+            ((TextView) v[3]).setText(e.headline);
+            show((TextView) v[4], e.snippet);
+            String meta = e.count > 1 ? (e.source.isEmpty() ? "" : e.source + "，") + "共 " + e.count + " 条" : e.source;
+            show((TextView) v[5], meta);
+            return convert;
+        }
+    }
+
+    private View newDayRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.BOTTOM);
+        row.setPadding(dp(20), dp(18), dp(20), dp(6));
+        TextView label = text("", 13, fg, true);
+        TextView date = text("", 12, sub, false);
+        date.setPadding(dp(8), 0, 0, 0);
+        row.addView(label);
+        row.addView(date);
+        row.setTag(new TextView[]{label, date});
+        return row;
+    }
+
+    private View newItemRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, dp(10), dp(20), dp(12));
+        row.setBackground(ripple(Color.TRANSPARENT, 0));
+
+        FrameLayout gutter = new FrameLayout(this);
+        TextView when = text("", 12, sub, false);
+        when.setGravity(Gravity.END);
+        when.setFontFeatureSettings("tnum");
+        when.setPadding(0, dp(1), dp(12), 0);
+        gutter.addView(when, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        View dot = new View(this);
+        dot.setBackground(round(CINNABAR, dp(4)));
+        FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(dp(7), dp(7));
+        dlp.leftMargin = dp(10);
+        dlp.topMargin = dp(7);
+        gutter.addView(dot, dlp);
+        row.addView(gutter, new LinearLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout col = column();
+        TextView topic = text("", 11, sub, false);
+        TextView headline = text("", 15, fg, true);
+        headline.setLineSpacing(0, 1.2f);
+        headline.setMaxLines(3);
+        headline.setEllipsize(TextUtils.TruncateAt.END);
+        TextView snippet = text("", 13, sub, false);
+        snippet.setLineSpacing(0, 1.3f);
+        snippet.setMaxLines(2);
+        snippet.setEllipsize(TextUtils.TruncateAt.END);
+        snippet.setPadding(0, dp(3), 0, 0);
+        TextView meta = text("", 12, fg, false);
+        meta.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        meta.setPadding(0, dp(5), 0, 0);
+        col.addView(topic);
+        col.addView(headline);
+        col.addView(snippet);
+        col.addView(meta);
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.setTag(new Object[]{when, dot, topic, headline, snippet, meta});
+        return row;
     }
 
     private void refresh() {
-        if (list == null) return;
         String s = FeedService.status;
-        status.setText(s.startsWith("令牌错误") ? "令牌错误，点此重新输入" : s);
-        int color = s.startsWith("已连接") ? 0xFF22C55E
-                : s.startsWith("连接中") ? 0xFFF59E0B
-                : s.startsWith("令牌错误") || s.startsWith("已断开") ? 0xFFEF4444 : sub;
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.OVAL);
-        d.setColor(color);
-        dot.setBackground(d);
-        batteryBanner.setVisibility(getSystemService(PowerManager.class)
-                .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
+        boolean ok = s.startsWith("已连接");
+        boolean bad = s.startsWith("连接断开");
         JSONArray latest = Store.load(this);
         boolean grew = latest.length() > messages.length();
         messages = latest;
-        empty.setVisibility(messages.length() == 0 ? View.VISIBLE : View.GONE);
-        adapter.notifyDataSetChanged();
-        if (grew && list.getFirstVisiblePosition() == 0) list.setSelection(0); // 新消息在顶部，停在最上面才看得到
-    }
 
-    private void startReceiving() {
-        if (receiving) return;
-        IntentFilter f = new IntentFilter(FeedService.ACTION_UPDATE);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(updates, f, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(updates, f);
+        long today = startOfToday();
+        int todayCount = 0;
+        rows.clear();
+        String lastDay = null;
+        for (int i = messages.length() - 1; i >= 0; i--) {
+            JSONObject m = messages.optJSONObject(i);
+            if (m == null) continue;
+            long t = millis(m);
+            if (t >= today) todayCount++;
+            String day = dayLabel(t, today);
+            if (!day.equals(lastDay)) {
+                rows.add(day);
+                lastDay = day;
+            }
+            rows.add(m);
         }
-        receiving = true;
+
+        status.setText(ok && todayCount > 0 ? "已连接，今天 " + todayCount + " 条" : s);
+        status.setTextColor(bad ? CINNABAR : sub);
+        statusDot.setBackground(round(bad ? CINNABAR : ok ? fg : sub, dp(3)));
+        statusDot.setAlpha(bad ? 1f : 0.55f);
+        batteryNotice.setVisibility(getSystemService(PowerManager.class)
+                .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
+        empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
+        adapter.notifyDataSetChanged();
+        if (grew && list.getFirstVisiblePosition() == 0) list.setSelection(0); // 新消息在顶部
     }
 
-    // ---------- 菜单与设置 ----------
+    /** 分组标题，"标签\n补充"：今天 10月24日 / 昨天 10月23日 / 10月21日 星期二 */
+    private String dayLabel(long t, long today) {
+        Date d = new Date(t);
+        if (t >= today) return "今天\n" + dateFmt.format(d);
+        if (t >= today - DAY_MS) return "昨天\n" + dateFmt.format(d);
+        return dateFmt.format(d) + "\n" + weekFmt.format(d);
+    }
+
+    // ---------- 菜单 ----------
 
     private void showMenu() {
-        String[] items = {"检查更新（当前 v" + Updater.currentVersion(this) + "）", "修改令牌", "后台运行设置"};
-        new AlertDialog.Builder(this).setItems(items, (d, which) -> {
-            if (which == 0) checkUpdate(true);
-            else if (which == 1) editToken();
-            else startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        }).show();
+        Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout sheet = column();
+        sheet.setPadding(0, dp(10), 0, dp(18));
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(bg);
+        float r = dp(24);
+        shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
+        sheet.setBackground(shape);
+        View grab = new View(this);
+        grab.setBackground(round(night ? 0xFF3A393E : 0xFFE2DCCF, dp(2)));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        glp.gravity = Gravity.CENTER_HORIZONTAL;
+        glp.bottomMargin = dp(8);
+        sheet.addView(grab, glp);
+        sheet.addView(menuRow("检查更新", "当前 " + Updater.currentVersion(this), () -> {
+            d.dismiss();
+            checkUpdate(true);
+        }));
+        sheet.addView(menuRow("后台运行设置", "", () -> {
+            d.dismiss();
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        }));
+        d.setContentView(sheet);
+        Window w = d.getWindow();
+        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        w.setGravity(Gravity.BOTTOM);
+        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        w.setDimAmount(0.35f);
+        d.show();
     }
 
-    private void editToken() {
-        EditText token = input("访问令牌");
-        FrameLayout box = new FrameLayout(this);
-        box.setPadding(dp(20), dp(12), dp(20), 0);
-        box.addView(token, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        new AlertDialog.Builder(this)
-                .setTitle("修改令牌")
-                .setView(box)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (d, w) -> {
-                    String t = token.getText().toString().trim();
-                    if (!t.isEmpty()) saveToken(t);
-                })
-                .show();
-    }
-
-    private String token() {
-        return Store.prefs(this).getString("token", "");
-    }
-
-    private void saveToken(String t) {
-        Store.prefs(this).edit().putString("token", t).apply();
-        FeedService.start(this); // 服务已在运行时会用新令牌立即重连
+    private View menuRow(String label, String detail, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(22), dp(15), dp(22), dp(15));
+        row.setBackground(ripple(Color.TRANSPARENT, 0));
+        row.addView(text(label, 15, fg, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (!detail.isEmpty()) row.addView(text(detail, 13, sub, false));
+        row.setOnClickListener(v -> action.run());
+        return row;
     }
 
     // ---------- 应用内更新 ----------
@@ -381,7 +454,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 if (found != null) {
                     release = found;
-                    showUpdate("发现新版本 v" + found.version + "，点击更新", true);
+                    showUpdate("新版本 " + found.version + " 已就绪", true);
                 } else if (manual) {
                     toast(toastText);
                 }
@@ -391,25 +464,25 @@ public class MainActivity extends Activity {
 
     private void installUpdate() {
         Updater.Release r = release;
-        if (r == null || !updateBanner.isEnabled()) return;
-        showUpdate("正在下载 v" + r.version + "…", false);
+        if (r == null || updateAction.getVisibility() != View.VISIBLE) return;
+        showUpdate("正在下载 " + r.version + "…", false);
         new Thread(() -> {
             try {
                 Updater.install(this, r);
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     toast("下载更新失败：" + e.getMessage());
-                    showUpdate("发现新版本 v" + r.version + "，点击重试", true);
+                    showUpdate("新版本 " + r.version + " 下载失败", true);
                 });
             }
         }, "update-install").start();
     }
 
-    private void showUpdate(String s, boolean enabled) {
-        if (updateBanner == null) return;
-        updateBanner.setText(s);
-        updateBanner.setEnabled(enabled);
-        updateBanner.setVisibility(View.VISIBLE);
+    private void showUpdate(String s, boolean actionable) {
+        updateText.setText(s);
+        updateAction.setText(actionable && s.contains("失败") ? "重试" : "更新");
+        updateAction.setVisibility(actionable ? View.VISIBLE : View.GONE);
+        updateNotice.setVisibility(View.VISIBLE);
     }
 
     /** PackageInstaller 的回调：需要用户确认时弹出系统安装界面，失败时提示原因。 */
@@ -421,14 +494,13 @@ public class MainActivity extends Activity {
             if (confirm != null) startActivity(confirm);
         } else if (code != PackageInstaller.STATUS_SUCCESS) {
             toast("安装失败：" + intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
-            if (release != null) showUpdate("发现新版本 v" + release.version + "，点击重试", true);
+            if (release != null) showUpdate("新版本 " + release.version + " 安装失败", true);
         }
     }
 
     // ---------- 打开链接 ----------
 
     private void openLinks(JSONObject m) {
-        if (m == null) return;
         List<String[]> links = Store.links(m);
         if (links.isEmpty()) return;
         if (links.size() == 1) {
@@ -449,21 +521,56 @@ public class MainActivity extends Activity {
 
     // ---------- 小工具 ----------
 
-    /** 刚刚 / N 分钟前 / 今天 14:20 / 昨天 09:10 / 10-23 18:00 */
-    private String when(long ms) {
-        long ago = System.currentTimeMillis() - ms;
-        if (ago < 60_000) return "刚刚";
-        if (ago < 3600_000) return ago / 60_000 + " 分钟前";
+    /** 字标：小写粗体 catchup，末尾一个落在基线上的朱砂圆点，与图标里被 C 接住的点呼应。 */
+    private TextView wordmark(int sp) {
+        TextView t = text("", sp, fg, false);
+        t.setTypeface(Typeface.create("sans-serif-black", Typeface.NORMAL));
+        t.setLetterSpacing(-0.035f);
+        t.setIncludeFontPadding(false);
+        SpannableString s = new SpannableString("catchup.");
+        s.setSpan(new DotSpan(CINNABAR), 7, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        t.setText(s);
+        return t;
+    }
+
+    private static final class DotSpan extends ReplacementSpan {
+        private final int color;
+
+        DotSpan(int color) {
+            this.color = color;
+        }
+
+        @Override
+        public int getSize(Paint p, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
+            return Math.round(p.getTextSize() * 0.26f);
+        }
+
+        @Override
+        public void draw(Canvas c, CharSequence text, int start, int end, float x, int top, int y, int bottom, Paint p) {
+            float r = p.getTextSize() * 0.095f;
+            int old = p.getColor();
+            p.setColor(color);
+            c.drawCircle(x + p.getTextSize() * 0.06f + r, y - r, r, p);
+            p.setColor(old);
+        }
+    }
+
+    private static long millis(JSONObject m) {
+        return (long) (m.optDouble("time") * 1000);
+    }
+
+    private static long startOfToday() {
         Calendar day = Calendar.getInstance();
         day.set(Calendar.HOUR_OF_DAY, 0);
         day.set(Calendar.MINUTE, 0);
         day.set(Calendar.SECOND, 0);
         day.set(Calendar.MILLISECOND, 0);
-        long today = day.getTimeInMillis();
-        Date d = new Date(ms);
-        if (ms >= today) return "今天 " + timeFmt.format(d);
-        if (ms >= today - 86400_000L) return "昨天 " + timeFmt.format(d);
-        return dayFmt.format(d);
+        return day.getTimeInMillis();
+    }
+
+    private static void show(TextView t, String s) {
+        t.setText(s);
+        t.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
     private LinearLayout column() {
@@ -472,7 +579,7 @@ public class MainActivity extends Activity {
         return l;
     }
 
-    private TextView label(String s, int sp, int color, boolean bold) {
+    private TextView text(String s, int sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
@@ -481,47 +588,32 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private TextView button(String s) {
-        TextView b = label(s, 16, Color.WHITE, true);
-        b.setGravity(Gravity.CENTER);
-        b.setBackground(ripple(ACCENT, dp(14)));
-        return b;
+    private LinearLayout notice(int color) {
+        LinearLayout n = new LinearLayout(this);
+        n.setGravity(Gravity.CENTER_VERTICAL);
+        n.setPadding(dp(14), dp(12), dp(14), dp(12));
+        n.setBackground(ripple(color, dp(14)));
+        return n;
     }
 
-    private EditText input(String hint) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setSingleLine();
-        e.setTextSize(16);
-        e.setTextColor(text);
-        e.setHintTextColor(sub);
-        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        e.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        e.setPadding(dp(16), 0, dp(16), 0);
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(card);
-        d.setCornerRadius(dp(14));
-        d.setStroke(dp(1), night ? 0xFF2C3038 : 0xFFE3E5E8);
-        e.setBackground(d);
-        return e;
-    }
-
-    /** 圆角背景 + 点按水波纹；color 为 0 时只有水波纹。 */
-    private Drawable ripple(int color, int radius) {
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(color == 0 ? Color.TRANSPARENT : color);
-        shape.setCornerRadius(radius);
-        GradientDrawable mask = new GradientDrawable();
-        mask.setColor(Color.WHITE);
-        mask.setCornerRadius(radius);
-        return new RippleDrawable(ColorStateList.valueOf(night ? 0x33FFFFFF : 0x1F000000), shape, mask);
-    }
-
-    private LinearLayout.LayoutParams banner() {
+    private LinearLayout.LayoutParams noticeLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(14), dp(4), dp(14), dp(8));
+        lp.setMargins(dp(20), dp(10), dp(20), 0);
         return lp;
+    }
+
+    private static GradientDrawable round(int color, int radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(radius);
+        return d;
+    }
+
+    /** 圆角背景 + 点按水波纹。 */
+    private Drawable ripple(int color, int radius) {
+        GradientDrawable mask = round(Color.WHITE, radius);
+        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), round(color, radius), mask);
     }
 
     private void toast(String s) {

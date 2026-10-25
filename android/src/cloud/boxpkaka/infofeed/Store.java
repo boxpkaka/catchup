@@ -34,6 +34,15 @@ final class Store {
         return DEFAULT_SERVER;
     }
 
+    /** 上次离开界面时看到的最新消息 id，比它新的消息在列表里标未读点。 */
+    static long seenId(Context c) {
+        return prefs(c).getLong("seenId", -1);
+    }
+
+    static void markSeen(Context c, long id) {
+        prefs(c).edit().putLong("seenId", id).apply();
+    }
+
     static long lastId(Context c) {
         return prefs(c).getLong("lastId", 0);
     }
@@ -69,6 +78,36 @@ final class Store {
     /** 把推送里的 Markdown 转成适合通知和列表显示的纯文本。 */
     static String plain(String md) {
         return LINK.matcher(md.replace("**", "")).replaceAll("$1").replace("  \n", "\n");
+    }
+
+    /**
+     * 列表展示用的拆分。推送正文由一条或多条 "**[标题](链接)**  \n来源 · 摘要" 组成，空行分隔；
+     * 消息标题是 "话题 · N 条新内容"。不符合这个格式的消息原样显示。
+     */
+    static final class Entry {
+        String topic = "", headline = "", source = "", snippet = "";
+        int count = 1;
+    }
+
+    static Entry entry(JSONObject m) {
+        Entry v = new Entry();
+        String title = m.optString("title");
+        String message = m.optString("message").replace("**", "");
+        int sep = title.indexOf(" · ");
+        Matcher link = LINK.matcher(message);
+        if (sep < 0 || !link.find()) {
+            v.headline = title;
+            v.snippet = plain(message).trim();
+            return v;
+        }
+        v.topic = title.substring(0, sep);
+        v.headline = link.group(1);
+        String rest = message.substring(link.end()).split("\n\n", 2)[0].replace("  \n", "\n").trim();
+        int dot = rest.indexOf(" · ");
+        v.source = dot > 0 ? rest.substring(0, dot) : "";
+        v.snippet = dot > 0 ? rest.substring(dot + 3) : rest;
+        v.count = Math.max(1, message.split("\n\n").length);
+        return v;
     }
 
     /** 提取消息里的链接：[标题, URL] 对。 */
