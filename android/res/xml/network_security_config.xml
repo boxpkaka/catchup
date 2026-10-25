@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 服务器用 IP 直连（域名未备案，443 会被腾讯云拦截）。证书由服务器上 Caddy 的内部 CA 签发，
+     只对这个 IP 信任该 CA 根证书（res/raw/catchup_ca.crt，有效期到 2036 年），其他地址仍用系统 CA。 -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">43.139.27.91</domain>
+        <trust-anchors>
+            <certificates src="@raw/catchup_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
