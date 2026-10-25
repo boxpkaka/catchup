@@ -22,15 +22,16 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /** 前台服务：与服务器保持 SSE 长连接，收到消息就存下来并弹通知。 */
 public class FeedService extends Service {
-    static final String ACTION_UPDATE = "cloud.boxpkaka.infofeed.UPDATE";
+    static final String ACTION_UPDATE = "cloud.boxpkaka.infofeed.UPDATE";   // 连接状态变化
+    static final String ACTION_PUSHED = "cloud.boxpkaka.infofeed.PUSHED";   // 收到新推送，首页应刷新事件流
     static volatile String status = "未启动";
 
     private static final int FG_ID = 1;
+    private static final String EVENT_LINK = "catchup://event/";
     private static final long NOTIFY_MAX_AGE_MS = 3600_000; // 补发的旧消息只入列表，不弹通知
 
     private volatile boolean running;
@@ -122,9 +123,9 @@ public class FeedService extends Service {
                         data.append(line.substring(5).trim());
                     } else if (line.isEmpty() && data.length() > 0) {
                         JSONObject m = new JSONObject(data.toString());
-                        Store.addAll(this, Collections.singletonList(m));
+                        Store.setLastId(this, m.optLong("id"));
                         notifyIfRecent(m);
-                        sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
+                        sendBroadcast(new Intent(ACTION_PUSHED).setPackage(getPackageName()));
                         Trace.log(this, "stream.message", "id=" + m.optLong("id"));
                         events++;
                         data.setLength(0);
@@ -177,10 +178,10 @@ public class FeedService extends Service {
             List<JSONObject> ms = new ArrayList<>();
             for (int i = 0; i < rows.length(); i++) ms.add(rows.getJSONObject(i));
             if (ms.isEmpty()) return;
-            Store.addAll(this, ms);
             for (JSONObject m : ms) notifyIfRecent(m);
+            Store.setLastId(this, ms.get(ms.size() - 1).optLong("id"));
             Trace.log(this, "catchup", "n=" + ms.size() + " last=" + Store.lastId(this));
-            sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
+            sendBroadcast(new Intent(ACTION_PUSHED).setPackage(getPackageName()));
         } finally {
             c.disconnect();
         }
@@ -189,12 +190,17 @@ public class FeedService extends Service {
     private void notifyIfRecent(JSONObject m) throws Exception {
         long when = (long) (m.optDouble("time", 0) * 1000);
         if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS) {
-            Store.Entry e = Store.entry(m);
-            String body = e.snippet.isEmpty() ? e.headline : e.headline + "\n" + e.snippet;
+            String body = m.optString("message");
             String click = m.optString("click");
-            Intent open = click.isEmpty() || "null".equals(click)
-                    ? new Intent(this, MainActivity.class)
-                    : new Intent(Intent.ACTION_VIEW, Uri.parse(click));
+            Intent open;
+            if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
+                open = new Intent(this, EventActivity.class)
+                        .putExtra(EventActivity.EXTRA_ID, Long.parseLong(click.substring(EVENT_LINK.length())));
+            } else if (click.isEmpty() || "null".equals(click)) {
+                open = new Intent(this, MainActivity.class);
+            } else {
+                open = new Intent(Intent.ACTION_VIEW, Uri.parse(click));
+            }
             open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             int id = (int) (m.getLong("id") % 100000) + 1000;
             PendingIntent pi = PendingIntent.getActivity(this, id, open,

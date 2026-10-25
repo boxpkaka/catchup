@@ -1,6 +1,8 @@
 package cloud.boxpkaka.infofeed;
 
 import android.Manifest;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -10,19 +12,18 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.SpannableString;
@@ -33,11 +34,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -48,42 +52,66 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
- * 主界面：按天分组的消息时间索引。配色沿用图标：宣纸底、墨色文字、朱砂只用于未读点和连接异常。
- * 不需要任何设置即可使用，菜单里只有检查更新和后台运行设置。
+ * 首页：顶部一句“补课”告诉你离开期间有几件值得知道的事，下面是“值得知道”的事件卡和其余动态。
+ * 下拉刷新，左滑标记不需要（可撤销），点开看详情。
  */
 public class MainActivity extends Activity {
-    private static final int CINNABAR = 0xFFFF5A36;
-    private static final long DAY_MS = 86400_000L;
+    private static final int MAX_HIGHLIGHTS = 8;
+    private static final int MAX_OTHERS = 40;
+    private static final long REFETCH_MS = 30_000;
+    private static final long UNDO_MS = 4000;
 
-    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.CHINA);
-    private final SimpleDateFormat dateFmt = new SimpleDateFormat("M月d日", Locale.CHINA);
-    private final SimpleDateFormat weekFmt = new SimpleDateFormat("EEEE", Locale.CHINA);
-    private int bg, fg, sub, raise;
-    private boolean night;
+    private Theme t;
+    private final Handler main = new Handler(Looper.getMainLooper());
 
-    private TextView status;
-    private View statusDot;
-    private LinearLayout updateNotice;
-    private TextView updateText, updateAction;
-    private LinearLayout batteryNotice;
-    private TextView empty;
+    private FrameLayout root;
+    private LinearLayout topBar;
+    private View topDivider;
     private ListView list;
-    private BaseAdapter adapter;
-    private final List<Object> rows = new ArrayList<>(); // String 是分组标题，JSONObject 是消息
-    private JSONArray messages = new JSONArray();
-    private long seenAtOpen; // 本次打开前已看过的最新 id，比它新的显示未读点
-    private Updater.Release release;
-    private boolean receiving;
-    private String shownStatus = ""; // 只在界面显示的状态变化时记一条埋点
+    private PullLayout pull;
+    private LinearLayout header;
+    private TextView catchLine, catchSub, statusChip;
+    private LinearLayout updateNotice, batteryNotice;
+    private TextView updateText, updateAction;
+    private View skeleton;
+    private ValueAnimator skeletonPulse;
+    private LinearLayout stateView;
+    private LinearLayout undoBar;
 
-    private final BroadcastReceiver updates = new BroadcastReceiver() {
+    private final List<Row> rows = new ArrayList<>();
+    private final FeedAdapter adapter = new FeedAdapter();
+    private JSONObject feed;
+    private long seenAtOpen, lastFetch;
+    private boolean loading, receiving;
+    private final Set<Long> hidden = new HashSet<>();
+    private long pendingDismiss = -1;
+    private final Runnable commitDismiss = this::commitDismiss;
+    private Updater.Release release;
+
+    private static final class Row {
+        final int type; // 0 分组标题，1 事件卡，2 紧凑行
+        final String label;
+        final JSONObject e;
+
+        Row(int type, String label, JSONObject e) {
+            this.type = type;
+            this.label = label;
+            this.e = e;
+        }
+    }
+
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
-        public void onReceive(Context context, Intent intent) {
-            refresh();
+        public void onReceive(Context c, Intent i) {
+            if (FeedService.ACTION_PUSHED.equals(i.getAction())) load();
+            else updateStatusChip();
         }
     };
 
@@ -91,21 +119,12 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                == Configuration.UI_MODE_NIGHT_YES;
-        bg = night ? 0xFF161618 : 0xFFF3EEE4;
-        fg = night ? 0xFFEDE7DA : 0xFF1A1A1D;
-        sub = night ? 0xFF9B958A : 0xFF6E6A63;
-        raise = night ? 0xFF202023 : 0xFFFBF8F2;
-        Window w = getWindow();
-        w.setStatusBarColor(bg);
-        w.setNavigationBarColor(bg);
-        if (!night) {
-            w.getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        }
-        setContentView(buildMain());
-
+        t = new Theme(this);
+        t.applyWindow(this);
+        setContentView(build());
+        feed = Store.loadFeed(this);
+        seenAtOpen = Store.seenAt(this);
+        render();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
@@ -124,18 +143,19 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         Trace.log(this, "ui.resume", "service=" + FeedService.status);
-        seenAtOpen = Store.seenId(this);
-        if (seenAtOpen < 0) { // 第一次打开：已有的历史消息不算未读
-            seenAtOpen = Store.lastId(this);
-            Store.markSeen(this, seenAtOpen);
-        }
+        seenAtOpen = Store.seenAt(this);
         if (!receiving) {
             IntentFilter f = new IntentFilter(FeedService.ACTION_UPDATE);
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(updates, f, Context.RECEIVER_NOT_EXPORTED);
-            else registerReceiver(updates, f);
+            f.addAction(FeedService.ACTION_PUSHED);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(receiver, f);
             receiving = true;
         }
-        refresh();
+        updateStatusChip();
+        batteryNotice.setVisibility(getSystemService(PowerManager.class)
+                .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
+        render();
+        if (System.currentTimeMillis() - lastFetch > REFETCH_MS) load();
         if (Updater.due(this)) checkUpdate(false);
     }
 
@@ -144,87 +164,331 @@ public class MainActivity extends Activity {
         super.onPause();
         Trace.log(this, "ui.pause", "");
         if (receiving) {
-            unregisterReceiver(updates);
+            unregisterReceiver(receiver);
             receiving = false;
         }
-        Store.markSeen(this, Store.lastId(this)); // 离开时视为已看过当前全部消息
+        if (feed != null) Store.setSeenAt(this, System.currentTimeMillis()); // 看过的事件下次不再算“新的”
+        commitDismiss();
     }
 
-    // ---------- 界面 ----------
+    // ---------- 布局 ----------
 
-    private View buildMain() {
-        LinearLayout root = column();
-        root.setBackgroundColor(bg);
+    private View build() {
+        root = new FrameLayout(this);
+        root.setBackgroundColor(t.bg);
 
-        // 顶栏：字标 + 连接状态，右侧菜单
-        LinearLayout top = new LinearLayout(this);
-        top.setPadding(dp(20), dp(16), dp(10), dp(4));
-        LinearLayout titles = column();
-        titles.addView(wordmark(30));
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusRow.setPadding(0, dp(6), 0, 0);
-        statusDot = new View(this);
-        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(6), dp(6));
-        dotLp.rightMargin = dp(7);
-        statusRow.addView(statusDot, dotLp);
-        status = text("", 12, sub, false);
-        statusRow.addView(status);
-        titles.addView(statusRow);
-        top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView menu = text("⋯", 22, fg, true);
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        root.addView(column, match());
+
+        topBar = new LinearLayout(this);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(t.dp(20), t.dp(12), t.dp(8), t.dp(8));
+        topBar.setBackgroundColor(t.bg);
+        topBar.addView(wordmark(24), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView menu = t.text(this, "⋯", 22, t.ink, 700);
         menu.setGravity(Gravity.CENTER);
         menu.setContentDescription("菜单");
-        menu.setBackground(ripple(Color.TRANSPARENT, dp(22)));
+        menu.setBackground(t.ripple(Color.TRANSPARENT, 22));
         menu.setOnClickListener(v -> showMenu());
-        top.addView(menu, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        root.addView(top);
+        topBar.addView(menu, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
+        column.addView(topBar);
+        topDivider = new View(this);
+        topDivider.setBackgroundColor(t.line);
+        topDivider.setAlpha(0);
+        column.addView(topDivider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1));
 
-        // 新版本提示：反色横条
-        updateNotice = notice(fg);
-        updateText = text("", 13, bg, true);
-        updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        updateAction = text("更新", 12, fg, true);
-        updateAction.setPadding(dp(14), dp(6), dp(14), dp(6));
-        updateAction.setBackground(round(bg, dp(99)));
-        updateNotice.addView(updateAction);
-        updateNotice.setOnClickListener(v -> installUpdate());
-        updateNotice.setVisibility(View.GONE);
-        root.addView(updateNotice, noticeLp());
-
-        // 电池优化提示
-        batteryNotice = notice(raise);
-        LinearLayout bt = column();
-        bt.addView(text("允许后台运行", 13, fg, true));
-        bt.addView(text("关闭电池优化后才能及时收到推送", 12, sub, false));
-        batteryNotice.addView(bt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        batteryNotice.addView(text("去设置", 13, fg, true));
-        batteryNotice.setOnClickListener(v -> startActivity(new Intent(
-                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))));
-        root.addView(batteryNotice, noticeLp());
-
-        FrameLayout content = new FrameLayout(this);
         list = new ListView(this);
         list.setDivider(null);
         list.setSelector(new ColorDrawable(Color.TRANSPARENT));
         list.setClipToPadding(false);
-        list.setPadding(0, dp(6), 0, dp(28));
         list.setVerticalScrollBarEnabled(false);
-        adapter = new FeedAdapter();
+        list.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        list.setPadding(0, 0, 0, t.dp(96));
+        list.addHeaderView(buildHeader(), null, false);
         list.setAdapter(adapter);
-        list.setOnItemClickListener((p, v, i, id) -> {
-            Object row = rows.get(i);
-            if (row instanceof JSONObject) openLinks((JSONObject) row);
+        list.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView v, int s) {
+            }
+
+            @Override
+            public void onScroll(AbsListView v, int first, int visible, int total) {
+                boolean scrolled = first > 0 || (v.getChildCount() > 0 && v.getChildAt(0).getTop() < 0);
+                topDivider.setAlpha(scrolled ? 1f : 0f);
+            }
         });
-        content.addView(list);
-        empty = text("还没有消息\n有重要变化时会推送到这里", 14, sub, false);
-        empty.setGravity(Gravity.CENTER);
-        empty.setLineSpacing(0, 1.5f);
-        content.addView(empty, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        pull = new PullLayout(this, t, list);
+        pull.setOnRefresh(this::load);
+        column.addView(pull, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        skeleton = buildSkeleton();
+        root.addView(skeleton, match());
+        stateView = new LinearLayout(this);
+        stateView.setOrientation(LinearLayout.VERTICAL);
+        stateView.setGravity(Gravity.CENTER_VERTICAL);
+        stateView.setPadding(t.dp(28), 0, t.dp(28), 0);
+        stateView.setBackgroundColor(t.bg);
+        stateView.setVisibility(View.GONE);
+        root.addView(stateView, match());
+
+        undoBar = new LinearLayout(this);
+        undoBar.setGravity(Gravity.CENTER_VERTICAL);
+        undoBar.setPadding(t.dp(18), t.dp(14), t.dp(10), t.dp(14));
+        undoBar.setBackground(t.round(t.ink, 16));
+        undoBar.setElevation(t.dp(6));
+        undoBar.addView(t.text(this, "已标记为不需要", 14, t.bg, 500),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView undo = t.text(this, "撤销", 14, t.bg, 800);
+        undo.setPadding(t.dp(14), t.dp(6), t.dp(14), t.dp(6));
+        undo.setBackground(t.ripple(Color.TRANSPARENT, 12));
+        undo.setOnClickListener(v -> undoDismiss());
+        undoBar.addView(undo);
+        undoBar.setVisibility(View.GONE);
+        FrameLayout.LayoutParams ub = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+        ub.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
+        root.addView(undoBar, ub);
+
+        if (Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
+                Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                topBar.setPadding(t.dp(20), bars.top + t.dp(12), t.dp(8), t.dp(8));
+                skeleton.setPadding(0, bars.top + t.dp(88), 0, 0);
+                list.setPadding(0, 0, 0, bars.bottom + t.dp(96));
+                ub.bottomMargin = bars.bottom + t.dp(16);
+                undoBar.setLayoutParams(ub);
+                return WindowInsets.CONSUMED;
+            });
+        }
         return root;
     }
+
+    private View buildHeader() {
+        header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setPadding(t.dp(20), t.dp(8), t.dp(20), t.dp(4));
+
+        statusChip = t.text(this, "", 12, Theme.CINNABAR, 500);
+        statusChip.setPadding(0, 0, 0, t.dp(12));
+        statusChip.setVisibility(View.GONE);
+        header.addView(statusChip);
+
+        updateNotice = notice(t.ink);
+        updateText = t.text(this, "", 14, t.bg, 600);
+        updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        updateAction = t.text(this, "更新", 13, t.ink, 800);
+        updateAction.setPadding(t.dp(14), t.dp(7), t.dp(14), t.dp(7));
+        updateAction.setBackground(t.round(t.bg, 99));
+        updateNotice.addView(updateAction);
+        updateNotice.setOnClickListener(v -> installUpdate());
+        updateNotice.setVisibility(View.GONE);
+        header.addView(updateNotice, noticeLp());
+
+        batteryNotice = notice(t.sheet);
+        LinearLayout bt = new LinearLayout(this);
+        bt.setOrientation(LinearLayout.VERTICAL);
+        bt.addView(t.text(this, "允许后台运行", 14, t.ink, 600));
+        TextView bs = t.text(this, "关闭电池优化后，推送才不会延迟", 12, t.sub, 400);
+        bs.setPadding(0, t.dp(4), 0, 0);
+        bt.addView(bs);
+        batteryNotice.addView(bt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        batteryNotice.addView(t.text(this, "去设置", 13, t.ink, 700));
+        batteryNotice.setOnClickListener(v -> startActivity(new Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))));
+        header.addView(batteryNotice, noticeLp());
+
+        catchLine = t.text(this, "", 30, t.ink, 900);
+        catchLine.setLineSpacing(t.dp(4), 1f);
+        catchLine.setLetterSpacing(-0.02f);
+        catchLine.setPadding(0, t.dp(14), 0, 0);
+        header.addView(catchLine);
+        catchSub = t.text(this, "", 13, t.sub, 400);
+        catchSub.setPadding(0, t.dp(12), 0, t.dp(10));
+        header.addView(catchSub);
+        return header;
+    }
+
+    private View buildSkeleton() {
+        LinearLayout s = new LinearLayout(this);
+        s.setOrientation(LinearLayout.VERTICAL);
+        s.setBackgroundColor(t.bg);
+        s.setPadding(0, t.dp(88), 0, 0);
+        s.addView(bar(220, 26, 20, 10));
+        s.addView(bar(160, 26, 20, 16));
+        s.addView(bar(260, 12, 20, 28));
+        for (int i = 0; i < 3; i++) {
+            View card = new View(this);
+            card.setBackground(t.round(t.sheet, 22));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(150));
+            lp.setMargins(t.dp(16), t.dp(6), t.dp(16), t.dp(6));
+            s.addView(card, lp);
+        }
+        skeletonPulse = ObjectAnimator.ofFloat(s, View.ALPHA, 1f, 0.55f);
+        skeletonPulse.setDuration(800);
+        skeletonPulse.setRepeatMode(ValueAnimator.REVERSE);
+        skeletonPulse.setRepeatCount(ValueAnimator.INFINITE);
+        skeletonPulse.start();
+        return s;
+    }
+
+    private View bar(int widthDp, int heightDp, int leftDp, int bottomDp) {
+        View v = new View(this);
+        v.setBackground(t.round(t.line, 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(t.dp(widthDp), t.dp(heightDp));
+        lp.setMargins(t.dp(leftDp), 0, 0, t.dp(bottomDp));
+        v.setLayoutParams(lp);
+        return v;
+    }
+
+    // ---------- 数据 ----------
+
+    private void load() {
+        if (loading) return;
+        loading = true;
+        new Thread(() -> {
+            JSONObject f = null;
+            Exception err = null;
+            int pendingDevice = -1;
+            try {
+                f = Api.get(this, "/v1/feed");
+                Store.saveFeed(this, f);
+            } catch (Exception e) {
+                err = e;
+                if (e instanceof Api.Failure && ((Api.Failure) e).code == 403) {
+                    try {
+                        pendingDevice = Api.get(this, "/v1/me").optInt("id", -1);
+                    } catch (Exception ignored) {
+                        // 拿不到 id 也照样显示待确认页
+                    }
+                }
+                Trace.log(this, "feed.fail", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            JSONObject got = f;
+            Exception error = err;
+            int device = pendingDevice;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                loading = false;
+                pull.done();
+                if (got != null) {
+                    lastFetch = System.currentTimeMillis();
+                    feed = got;
+                    hidden.clear();
+                    if (pendingDismiss >= 0) hidden.add(pendingDismiss);
+                    updateStatusChip(); // 清掉“刷新失败”，只保留推送连接的状态
+                    render();
+                } else {
+                    onLoadFailed(error, device);
+                }
+            });
+        }, "feed-load").start();
+    }
+
+    private void onLoadFailed(Exception e, int pendingDevice) {
+        if (e instanceof Api.Failure && ((Api.Failure) e).code == 403) {
+            showState("这台手机还没被确认",
+                    "在服务器上运行下面的命令，再回来点“重新检查”：\n\npython3 -m catchup devices approve "
+                            + (pendingDevice >= 0 ? pendingDevice : "<设备编号>"));
+            return;
+        }
+        if (feed == null) {
+            showState("连不上服务器", "检查网络后重试。\n" + reason(e));
+        } else {
+            statusChip.setText("刷新失败：" + reason(e));
+            statusChip.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void showState(String title, String body) {
+        stopSkeleton();
+        stateView.removeAllViews();
+        stateView.addView(t.text(this, title, 26, t.ink, 900));
+        TextView b = t.text(this, body, 14, t.sub, 400);
+        b.setLineSpacing(t.dp(3), 1f);
+        b.setTextIsSelectable(true);
+        b.setPadding(0, t.dp(14), 0, t.dp(28));
+        stateView.addView(b);
+        TextView retry = t.text(this, "重新检查", 15, t.bg, 800);
+        retry.setGravity(Gravity.CENTER);
+        retry.setPadding(0, t.dp(15), 0, t.dp(15));
+        retry.setBackground(t.ripple(t.ink, 99));
+        retry.setOnClickListener(v -> {
+            stateView.setVisibility(View.GONE);
+            load();
+        });
+        stateView.addView(retry);
+        stateView.setVisibility(View.VISIBLE);
+    }
+
+    private void render() {
+        if (feed == null) return;
+        stopSkeleton();
+        stateView.setVisibility(View.GONE);
+        JSONArray all = feed.optJSONArray("events");
+        List<JSONObject> highlights = new ArrayList<>(), others = new ArrayList<>();
+        Set<String> sources = new LinkedHashSet<>();
+        int newHighlights = 0;
+        for (int i = 0; all != null && i < all.length(); i++) {
+            JSONObject e = all.optJSONObject(i);
+            if (e == null || hidden.contains(e.optLong("id"))) continue;
+            JSONArray src = e.optJSONArray("sources");
+            for (int j = 0; src != null && j < src.length(); j++) sources.add(src.optString(j));
+            if (e.optBoolean("highlight") && highlights.size() < MAX_HIGHLIGHTS) {
+                highlights.add(e);
+                if (isNew(e)) newHighlights++;
+            } else if (others.size() < MAX_OTHERS) {
+                others.add(e);
+            }
+        }
+        others.sort((a, b) -> Long.compare(Theme.millis(b.optString("time")), Theme.millis(a.optString("time"))));
+
+        catchLine.setText(catchUpLine(highlights.size(), newHighlights));
+        int total = all == null ? 0 : all.length();
+        catchSub.setText("过去三天整理了 " + total + " 件事，来自 " + sources.size() + " 个来源");
+
+        rows.clear();
+        if (!highlights.isEmpty()) rows.add(new Row(0, "值得知道", null));
+        for (JSONObject e : highlights) rows.add(new Row(1, null, e));
+        if (!others.isEmpty()) rows.add(new Row(0, "其他动态", null));
+        for (JSONObject e : others) rows.add(new Row(2, null, e));
+        adapter.notifyDataSetChanged();
+    }
+
+    /** 首页最大的那句话：产品名字的由来。 */
+    private String catchUpLine(int highlights, int fresh) {
+        if (seenAtOpen == 0) {
+            return highlights > 0 ? "为你整理了 " + highlights + " 件\n值得知道的事。" : "正在替你\n留意 AI 世界。";
+        }
+        if (fresh > 0) return "离开" + away(System.currentTimeMillis() - seenAtOpen) + "，\n有 " + fresh + " 件值得知道。";
+        if (highlights > 0) return "值得知道的 " + highlights + " 件，\n你都看过了。";
+        return "暂时没有\n值得打扰你的事。";
+    }
+
+    private static String away(long ms) {
+        long h = ms / 3600_000;
+        if (h < 1) return "不到 1 小时";
+        if (h < 24) return " " + h + " 小时";
+        return " " + (h / 24) + " 天";
+    }
+
+    private boolean isNew(JSONObject e) {
+        return seenAtOpen > 0 && Theme.millis(e.optString("first_seen")) > seenAtOpen;
+    }
+
+    private void stopSkeleton() {
+        if (skeleton.getVisibility() == View.GONE) return;
+        skeletonPulse.cancel();
+        skeleton.animate().alpha(0f).setDuration(200).withEndAction(() -> skeleton.setVisibility(View.GONE)).start();
+    }
+
+    private void updateStatusChip() {
+        boolean bad = FeedService.status.startsWith("连接断开");
+        statusChip.setText(bad ? "推送连接断开，正在重试" : "");
+        statusChip.setVisibility(bad ? View.VISIBLE : View.GONE);
+    }
+
+    // ---------- 列表 ----------
 
     private final class FeedAdapter extends BaseAdapter {
         @Override
@@ -239,162 +503,274 @@ public class MainActivity extends Activity {
 
         @Override
         public long getItemId(int i) {
-            return i;
+            Row r = rows.get(i);
+            return r.e == null ? -i - 1 : r.e.optLong("id");
+        }
+
+        @Override
+        public boolean hasStableIds() {
+            return true;
         }
 
         @Override
         public int getViewTypeCount() {
-            return 2;
+            return 3;
         }
 
         @Override
         public int getItemViewType(int i) {
-            return rows.get(i) instanceof String ? 0 : 1;
-        }
-
-        @Override
-        public boolean areAllItemsEnabled() {
-            return false;
+            return rows.get(i).type;
         }
 
         @Override
         public boolean isEnabled(int i) {
-            return getItemViewType(i) == 1;
+            return false; // 点击由每一行自己处理，便于和左滑共存
         }
 
         @Override
         public View getView(int i, View convert, ViewGroup parent) {
-            Object row = rows.get(i);
-            if (row instanceof String) {
-                if (convert == null) convert = newDayRow();
-                TextView[] v = (TextView[]) convert.getTag();
-                String[] parts = ((String) row).split("\n", 2);
-                v[0].setText(parts[0]);
-                v[1].setText(parts[1]);
-                return convert;
+            Row r = rows.get(i);
+            if (r.type == 0) {
+                TextView label = convert != null ? (TextView) convert : sectionLabel();
+                label.setText(r.label);
+                return label;
             }
-            if (convert == null) convert = newItemRow(); // 复用滚出屏幕的行
-            Object[] v = (Object[]) convert.getTag();
-            JSONObject m = (JSONObject) row;
-            Store.Entry e = Store.entry(m);
-            boolean unread = m.optLong("id") > seenAtOpen;
-            TextView when = (TextView) v[0];
-            when.setText(timeFmt.format(new Date(millis(m))));
-            when.setTextColor(unread ? fg : sub);
-            when.setTypeface(unread ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            ((View) v[1]).setVisibility(unread ? View.VISIBLE : View.INVISIBLE);
-            show((TextView) v[2], e.topic);
-            ((TextView) v[3]).setText(e.headline);
-            show((TextView) v[4], e.snippet);
-            String meta = e.count > 1 ? (e.source.isEmpty() ? "" : e.source + "，") + "共 " + e.count + " 条" : e.source;
-            show((TextView) v[5], meta);
+            if (convert == null) convert = r.type == 1 ? newCard() : newRow();
+            Holder h = (Holder) convert.getTag();
+            SwipeDismiss.reset(h.front, h.behind);
+            if (r.type == 1) bindCard(h, r.e);
+            else bindRow(h, r.e);
+            h.front.setOnClickListener(v -> open(r.e));
+            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e)));
             return convert;
         }
     }
 
-    private View newDayRow() {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.BOTTOM);
-        row.setPadding(dp(20), dp(18), dp(20), dp(6));
-        TextView label = text("", 13, fg, true);
-        TextView date = text("", 12, sub, false);
-        date.setPadding(dp(8), 0, 0, 0);
-        row.addView(label);
-        row.addView(date);
-        row.setTag(new TextView[]{label, date});
-        return row;
+    private static final class Holder {
+        View front, behind, dot, whyRow;
+        TextView chipA, chipB, headline, summary, why, meta, time;
     }
 
-    private View newItemRow() {
+    private TextView sectionLabel() {
+        TextView v = t.text(this, "", 13, t.sub, 700);
+        v.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(10));
+        return v;
+    }
+
+    private FrameLayout swipeFrame(Holder h, View front) {
+        FrameLayout frame = new FrameLayout(this);
+        TextView behind = t.text(this, "不需要", 14, Theme.CINNABAR, 800);
+        behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        behind.setPadding(0, 0, t.dp(28), 0);
+        behind.setVisibility(View.INVISIBLE);
+        frame.addView(behind, match());
+        frame.addView(front, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        h.front = front;
+        h.behind = behind;
+        frame.setTag(h);
+        return frame;
+    }
+
+    private View newCard() {
+        Holder h = new Holder();
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(16));
+        card.setBackground(t.ripple(t.sheet, 22));
+        card.setClickable(true);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        h.chipA = chip();
+        h.chipB = chip();
+        top.addView(h.chipA);
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        gap.leftMargin = t.dp(6);
+        top.addView(h.chipB, gap);
+        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        h.dot = dot();
+        top.addView(h.dot, new LinearLayout.LayoutParams(t.dp(8), t.dp(8)));
+        card.addView(top);
+
+        h.headline = t.text(this, "", 18, t.ink, 700);
+        h.headline.setLineSpacing(t.dp(3), 1f);
+        h.headline.setPadding(0, t.dp(12), 0, 0);
+        card.addView(h.headline);
+        h.summary = t.text(this, "", 14.5f, t.ink, 400);
+        h.summary.setAlpha(0.78f);
+        h.summary.setLineSpacing(t.dp(4), 1f);
+        h.summary.setMaxLines(3);
+        h.summary.setEllipsize(TextUtils.TruncateAt.END);
+        h.summary.setPadding(0, t.dp(8), 0, 0);
+        card.addView(h.summary);
+
+        LinearLayout whyRow = new LinearLayout(this);
+        whyRow.setPadding(0, t.dp(12), 0, 0);
+        View accent = new View(this);
+        accent.setBackground(t.round(Theme.CINNABAR, 2));
+        whyRow.addView(accent, new LinearLayout.LayoutParams(t.dp(3), ViewGroup.LayoutParams.MATCH_PARENT));
+        h.why = t.text(this, "", 13.5f, t.ink, 500);
+        h.why.setLineSpacing(t.dp(3), 1f);
+        h.why.setPadding(t.dp(10), 0, 0, 0);
+        whyRow.addView(h.why);
+        h.whyRow = whyRow;
+        card.addView(whyRow);
+
+        h.meta = t.text(this, "", 12, t.sub, 500);
+        h.meta.setFontFeatureSettings("tnum");
+        h.meta.setPadding(0, t.dp(14), 0, 0);
+        card.addView(h.meta);
+
+        FrameLayout frame = swipeFrame(h, card);
+        frame.setPadding(t.dp(16), t.dp(6), t.dp(16), t.dp(6));
+        return frame;
+    }
+
+    private View newRow() {
+        Holder h = new Holder();
         LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, dp(10), dp(20), dp(12));
-        row.setBackground(ripple(Color.TRANSPARENT, 0));
+        row.setPadding(0, t.dp(12), t.dp(20), t.dp(12));
+        row.setBackground(t.ripple(t.bg, 0));
+        row.setClickable(true);
 
         FrameLayout gutter = new FrameLayout(this);
-        TextView when = text("", 12, sub, false);
-        when.setGravity(Gravity.END);
-        when.setFontFeatureSettings("tnum");
-        when.setPadding(0, dp(1), dp(12), 0);
-        gutter.addView(when, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+        h.time = t.text(this, "", 12, t.sub, 500);
+        h.time.setFontFeatureSettings("tnum");
+        h.time.setGravity(Gravity.END);
+        h.time.setPadding(0, t.dp(2), t.dp(14), 0);
+        gutter.addView(h.time, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        View dot = new View(this);
-        dot.setBackground(round(CINNABAR, dp(4)));
-        FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(dp(7), dp(7));
-        dlp.leftMargin = dp(10);
-        dlp.topMargin = dp(7);
-        gutter.addView(dot, dlp);
-        row.addView(gutter, new LinearLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.WRAP_CONTENT));
+        h.dot = dot();
+        FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(t.dp(7), t.dp(7));
+        dl.leftMargin = t.dp(12);
+        dl.topMargin = t.dp(6);
+        gutter.addView(h.dot, dl);
+        row.addView(gutter, new LinearLayout.LayoutParams(t.dp(72), ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout col = column();
-        TextView topic = text("", 11, sub, false);
-        TextView headline = text("", 15, fg, true);
-        headline.setLineSpacing(0, 1.2f);
-        headline.setMaxLines(3);
-        headline.setEllipsize(TextUtils.TruncateAt.END);
-        TextView snippet = text("", 13, sub, false);
-        snippet.setLineSpacing(0, 1.3f);
-        snippet.setMaxLines(2);
-        snippet.setEllipsize(TextUtils.TruncateAt.END);
-        snippet.setPadding(0, dp(3), 0, 0);
-        TextView meta = text("", 12, fg, false);
-        meta.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        meta.setPadding(0, dp(5), 0, 0);
-        col.addView(topic);
-        col.addView(headline);
-        col.addView(snippet);
-        col.addView(meta);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        h.headline = t.text(this, "", 15, t.ink, 600);
+        h.headline.setLineSpacing(t.dp(3), 1f);
+        h.headline.setMaxLines(2);
+        h.headline.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(h.headline);
+        h.meta = t.text(this, "", 12, t.sub, 400);
+        h.meta.setPadding(0, t.dp(6), 0, 0);
+        h.meta.setSingleLine();
+        h.meta.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(h.meta);
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.setTag(new Object[]{when, dot, topic, headline, snippet, meta});
-        return row;
+        return swipeFrame(h, row);
     }
 
-    private void refresh() {
-        String s = FeedService.status;
-        boolean ok = s.startsWith("已连接");
-        boolean bad = s.startsWith("连接断开");
-        JSONArray latest = Store.load(this);
-        boolean grew = latest.length() > messages.length();
-        messages = latest;
+    private void bindCard(Holder h, JSONObject e) {
+        JSONArray topics = e.optJSONArray("topics");
+        show(h.chipA, topics != null && topics.length() > 0 ? topics.optString(0) : "");
+        show(h.chipB, topics != null && topics.length() > 1 ? topics.optString(1) : "");
+        h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
+        h.headline.setText(e.optString("headline"));
+        show(h.summary, e.optString("summary"));
+        h.why.setText(e.optString("why"));
+        h.whyRow.setVisibility(e.optString("why").isEmpty() ? View.GONE : View.VISIBLE);
+        h.meta.setText(e.optInt("source_count") + " 个来源，" + Theme.ago(Theme.millis(e.optString("time"))));
+    }
 
-        long today = startOfToday();
-        int todayCount = 0;
-        rows.clear();
-        String lastDay = null;
-        for (int i = messages.length() - 1; i >= 0; i--) {
-            JSONObject m = messages.optJSONObject(i);
-            if (m == null) continue;
-            long t = millis(m);
-            if (t >= today) todayCount++;
-            String day = dayLabel(t, today);
-            if (!day.equals(lastDay)) {
-                rows.add(day);
-                lastDay = day;
+    private void bindRow(Holder h, JSONObject e) {
+        h.time.setText(shortTime(Theme.millis(e.optString("time"))));
+        h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
+        h.headline.setText(e.optString("headline"));
+        JSONArray src = e.optJSONArray("sources");
+        String first = src != null && src.length() > 0 ? src.optString(0) : "";
+        int n = e.optInt("source_count");
+        h.meta.setText(n > 1 ? first + " 等 " + n + " 个来源" : first);
+    }
+
+    private static String shortTime(long ms) {
+        Calendar today = Calendar.getInstance();
+        today.set(Calendar.HOUR_OF_DAY, 0);
+        today.set(Calendar.MINUTE, 0);
+        today.set(Calendar.SECOND, 0);
+        today.set(Calendar.MILLISECOND, 0);
+        long start = today.getTimeInMillis();
+        Date d = new Date(ms);
+        if (ms >= start) return new SimpleDateFormat("HH:mm", Locale.CHINA).format(d);
+        if (ms >= start - 86400_000L) return "昨天";
+        return new SimpleDateFormat("M/d", Locale.CHINA).format(d);
+    }
+
+    private TextView chip() {
+        TextView c = t.text(this, "", 11.5f, t.ink, 600);
+        c.setPadding(t.dp(9), t.dp(4), t.dp(9), t.dp(4));
+        c.setBackground(t.round(t.chip, 99));
+        return c;
+    }
+
+    private View dot() {
+        View d = new View(this);
+        d.setBackground(t.round(Theme.CINNABAR, 99));
+        return d;
+    }
+
+    private static void show(TextView v, String s) {
+        v.setText(s);
+        v.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    // ---------- 打开与移除 ----------
+
+    private void open(JSONObject e) {
+        Intent i = new Intent(this, EventActivity.class)
+                .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
+                .putExtra(EventActivity.EXTRA_JSON, e.toString());
+        startActivity(i);
+        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+    }
+
+    private void dismiss(JSONObject e) {
+        commitDismiss(); // 上一条还在撤销期内的，先提交
+        pendingDismiss = e.optLong("id");
+        hidden.add(pendingDismiss);
+        render();
+        Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
+        undoBar.animate().cancel();
+        undoBar.setTranslationY(t.dp(24));
+        undoBar.setAlpha(0f);
+        undoBar.setVisibility(View.VISIBLE);
+        undoBar.animate().translationY(0).alpha(1f).setDuration(180).start();
+        main.removeCallbacks(commitDismiss);
+        main.postDelayed(commitDismiss, UNDO_MS);
+    }
+
+    private void undoDismiss() {
+        main.removeCallbacks(commitDismiss);
+        if (pendingDismiss >= 0) hidden.remove(pendingDismiss);
+        pendingDismiss = -1;
+        hideUndo();
+        render();
+    }
+
+    private void commitDismiss() {
+        main.removeCallbacks(commitDismiss);
+        long id = pendingDismiss;
+        if (id < 0) return;
+        pendingDismiss = -1;
+        hideUndo();
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            try {
+                Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", "not_needed"));
+            } catch (Exception err) {
+                Trace.log(app, "feedback.fail", "id=" + id + " " + err);
             }
-            rows.add(m);
-        }
-
-        String shown = ok && todayCount > 0 ? "已连接，今天 " + todayCount + " 条" : s;
-        status.setText(shown);
-        if (!shown.equals(shownStatus)) {
-            Trace.log(this, "ui.status", shown + " rows=" + rows.size());
-            shownStatus = shown;
-        }
-        status.setTextColor(bad ? CINNABAR : sub);
-        statusDot.setBackground(round(bad ? CINNABAR : ok ? fg : sub, dp(3)));
-        statusDot.setAlpha(bad ? 1f : 0.55f);
-        batteryNotice.setVisibility(getSystemService(PowerManager.class)
-                .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
-        empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
-        adapter.notifyDataSetChanged();
-        if (grew && list.getFirstVisiblePosition() == 0) list.setSelection(0); // 新消息在顶部
+        }, "feedback").start();
     }
 
-    /** 分组标题，"标签\n补充"：今天 10月24日 / 昨天 10月23日 / 10月21日 星期二 */
-    private String dayLabel(long t, long today) {
-        Date d = new Date(t);
-        if (t >= today) return "今天\n" + dateFmt.format(d);
-        if (t >= today - DAY_MS) return "昨天\n" + dateFmt.format(d);
-        return dateFmt.format(d) + "\n" + weekFmt.format(d);
+    private void hideUndo() {
+        if (undoBar.getVisibility() != View.VISIBLE) return;
+        undoBar.animate().translationY(t.dp(24)).alpha(0f).setDuration(160)
+                .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
     }
 
     // ---------- 菜单 ----------
@@ -402,18 +778,19 @@ public class MainActivity extends Activity {
     private void showMenu() {
         Dialog d = new Dialog(this);
         d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout sheet = column();
-        sheet.setPadding(0, dp(10), 0, dp(18));
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(0, t.dp(10), 0, t.dp(24));
         GradientDrawable shape = new GradientDrawable();
-        shape.setColor(bg);
-        float r = dp(24);
+        shape.setColor(t.bg);
+        float r = t.dp(26);
         shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
         sheet.setBackground(shape);
         View grab = new View(this);
-        grab.setBackground(round(night ? 0xFF3A393E : 0xFFE2DCCF, dp(2)));
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(36), dp(4));
+        grab.setBackground(t.round(t.line, 2));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(t.dp(36), t.dp(4));
         glp.gravity = Gravity.CENTER_HORIZONTAL;
-        glp.bottomMargin = dp(8);
+        glp.bottomMargin = t.dp(10);
         sheet.addView(grab, glp);
         sheet.addView(menuRow("检查更新", "当前 " + Updater.currentVersion(this), () -> {
             d.dismiss();
@@ -433,31 +810,32 @@ public class MainActivity extends Activity {
         w.setGravity(Gravity.BOTTOM);
         w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0.35f);
+        w.setDimAmount(0.32f);
         d.show();
     }
 
     private View menuRow(String label, String detail, Runnable action) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(22), dp(15), dp(22), dp(15));
-        row.setBackground(ripple(Color.TRANSPARENT, 0));
-        row.addView(text(label, 15, fg, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        if (!detail.isEmpty()) row.addView(text(detail, 13, sub, false));
+        row.setPadding(t.dp(24), t.dp(16), t.dp(24), t.dp(16));
+        row.setBackground(t.ripple(Color.TRANSPARENT, 0));
+        row.addView(t.text(this, label, 16, t.ink, 500), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (!detail.isEmpty()) row.addView(t.text(this, detail, 13, t.sub, 400));
         row.setOnClickListener(v -> action.run());
         return row;
     }
 
-    /** 显示本机最近的埋点日志，可复制后发给开发者；不依赖网络。 */
+    /** 显示本机最近的埋点日志，可复制；不依赖网络。 */
     private void showDiagnostics() {
         String text = "v" + Updater.currentVersion(this) + " Android " + Build.VERSION.RELEASE + " " + Build.MODEL
                 + "\n设备 " + Trace.device(this) + "  网络 " + Trace.network(this)
                 + "\n状态 " + FeedService.status + "\n\n" + Trace.tail(this, 6000);
-        TextView body = text(text, 11, fg, false);
+        TextView body = t.text(this, text, 11, t.ink, 400);
         body.setTypeface(Typeface.MONOSPACE);
         body.setTextIsSelectable(true);
-        body.setPadding(dp(20), dp(12), dp(20), dp(12));
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        body.setPadding(t.dp(20), t.dp(12), t.dp(20), t.dp(12));
+        ScrollView scroll = new ScrollView(this);
         scroll.addView(body);
         new AlertDialog.Builder(this)
                 .setTitle("诊断信息")
@@ -488,6 +866,7 @@ public class MainActivity extends Activity {
             Updater.Release found = r;
             String toastText = msg;
             runOnUiThread(() -> {
+                if (isDestroyed()) return;
                 if (found != null) {
                     release = found;
                     showUpdate("新版本 " + found.version + " 已就绪", true);
@@ -534,48 +913,27 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---------- 打开链接 ----------
-
-    private void openLinks(JSONObject m) {
-        List<String[]> links = Store.links(m);
-        if (links.isEmpty()) return;
-        if (links.size() == 1) {
-            open(links.get(0)[1]);
-            return;
-        }
-        String[] titles = new String[links.size()];
-        for (int i = 0; i < titles.length; i++) titles[i] = links.get(i)[0];
-        new AlertDialog.Builder(this)
-                .setTitle(m.optString("title"))
-                .setItems(titles, (d, which) -> open(links.get(which)[1]))
-                .show();
-    }
-
-    private void open(String url) {
-        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-    }
-
     // ---------- 小工具 ----------
+
+    static String reason(Exception e) {
+        if (e instanceof java.net.UnknownHostException) return "无法解析服务器地址";
+        if (e instanceof java.net.SocketTimeoutException) return "连接超时";
+        if (e instanceof java.net.ConnectException) return "无法访问服务器";
+        if (e instanceof javax.net.ssl.SSLException) return "安全连接失败";
+        return String.valueOf(e == null ? "未知错误" : e.getMessage());
+    }
 
     /** 字标：小写粗体 catchup，末尾一个落在基线上的朱砂圆点，与图标里被 C 接住的点呼应。 */
     private TextView wordmark(int sp) {
-        TextView t = text("", sp, fg, false);
-        t.setTypeface(Typeface.create("sans-serif-black", Typeface.NORMAL));
-        t.setLetterSpacing(-0.035f);
-        t.setIncludeFontPadding(false);
+        TextView v = t.text(this, "", sp, t.ink, 900);
+        v.setLetterSpacing(-0.035f);
         SpannableString s = new SpannableString("catchup.");
-        s.setSpan(new DotSpan(CINNABAR), 7, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        t.setText(s);
-        return t;
+        s.setSpan(new DotSpan(), 7, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        v.setText(s);
+        return v;
     }
 
     private static final class DotSpan extends ReplacementSpan {
-        private final int color;
-
-        DotSpan(int color) {
-            this.color = color;
-        }
-
         @Override
         public int getSize(Paint p, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
             return Math.round(p.getTextSize() * 0.26f);
@@ -585,78 +943,32 @@ public class MainActivity extends Activity {
         public void draw(Canvas c, CharSequence text, int start, int end, float x, int top, int y, int bottom, Paint p) {
             float r = p.getTextSize() * 0.095f;
             int old = p.getColor();
-            p.setColor(color);
+            p.setColor(Theme.CINNABAR);
             c.drawCircle(x + p.getTextSize() * 0.06f + r, y - r, r, p);
             p.setColor(old);
         }
     }
 
-    private static long millis(JSONObject m) {
-        return (long) (m.optDouble("time") * 1000);
-    }
-
-    private static long startOfToday() {
-        Calendar day = Calendar.getInstance();
-        day.set(Calendar.HOUR_OF_DAY, 0);
-        day.set(Calendar.MINUTE, 0);
-        day.set(Calendar.SECOND, 0);
-        day.set(Calendar.MILLISECOND, 0);
-        return day.getTimeInMillis();
-    }
-
-    private static void show(TextView t, String s) {
-        t.setText(s);
-        t.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
-    }
-
-    private LinearLayout column() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.VERTICAL);
-        return l;
-    }
-
-    private TextView text(String s, int sp, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(sp);
-        t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
-        return t;
-    }
-
     private LinearLayout notice(int color) {
         LinearLayout n = new LinearLayout(this);
         n.setGravity(Gravity.CENTER_VERTICAL);
-        n.setPadding(dp(14), dp(12), dp(14), dp(12));
-        n.setBackground(ripple(color, dp(14)));
+        n.setPadding(t.dp(16), t.dp(14), t.dp(14), t.dp(14));
+        n.setBackground(t.ripple(color, 18));
         return n;
     }
 
     private LinearLayout.LayoutParams noticeLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(20), dp(10), dp(20), 0);
+        lp.bottomMargin = t.dp(10);
         return lp;
     }
 
-    private static GradientDrawable round(int color, int radius) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(radius);
-        return d;
-    }
-
-    /** 圆角背景 + 点按水波纹。 */
-    private Drawable ripple(int color, int radius) {
-        GradientDrawable mask = round(Color.WHITE, radius);
-        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), round(color, radius), mask);
+    private static FrameLayout.LayoutParams match() {
+        return new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
     }
 
     private void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_LONG).show();
-    }
-
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density);
     }
 }

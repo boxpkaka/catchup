@@ -19,6 +19,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_collect = sub.add_parser("collect", help="运行一次采集，写入数据库")
     p_collect.add_argument("--only", nargs="+", metavar="SOURCE", help="只运行指定的来源实例")
+    p_collect.add_argument("--no-update", action="store_true", help="只采集，不做事件、简报和推送")
+    p_update = sub.add_parser("update", help="不采集，只做事件归并、简报和推送")
+    p_update.add_argument("--no-push", action="store_true", help="不推送到手机")
+    p_devices = sub.add_parser("devices", help="查看或批准 App 设备")
+    p_devices.add_argument("action", nargs="?", choices=["list", "approve", "revoke"], default="list")
+    p_devices.add_argument("id", nargs="?", type=int)
     p_serve = sub.add_parser("serve", help="启动只读预览页")
     p_serve.add_argument("--host")
     p_serve.add_argument("--port", type=int)
@@ -37,7 +43,28 @@ def main(argv: list[str] | None = None) -> int:
             if unknown:
                 parser.error(f"unknown source(s): {', '.join(sorted(unknown))}")
             sources = {k: v for k, v in sources.items() if k in args.only}
-        return 0 if collect(sources, Store(config.db_path)) else 1
+        store = Store(config.db_path)
+        ok = collect(sources, store)
+        if not args.no_update:
+            from .pipeline.update import update
+            update(config, store)
+        return 0 if ok else 1
+
+    if args.command == "update":
+        from .pipeline.update import update
+        update(config, Store(config.db_path), deliver=not args.no_push)
+        return 0
+
+    if args.command == "devices":
+        store = Store(config.db_path)
+        if args.action != "list":
+            if args.id is None:
+                parser.error("approve/revoke 需要设备 id")
+            if not store.set_device_approved(args.id, args.action == "approve"):
+                parser.error(f"没有设备 {args.id}")
+        for d in store.devices():
+            print(f"{d['id']:>3}  {'已批准' if d['approved'] else '待确认'}  {d['name']}  创建 {d['created']}  最近 {d['last_seen']}")
+        return 0
 
     if args.command == "serve":
         from .web.server import serve

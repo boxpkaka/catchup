@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
+        android:name=".App"
         android:label="Catchup"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -24,6 +25,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity android:name=".EventActivity" android:exported="false" />
 
         <service android:name=".FeedService" android:exported="false"
             android:foregroundServiceType="specialUse">

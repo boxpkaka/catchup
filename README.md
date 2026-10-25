@@ -8,12 +8,12 @@
 
 | 阶段 | 状态 |
 |---|---|
-| 信号采集（GitHub / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit） | ✅ 每小时运行 |
-| 事件合并（同一论文/仓库/模型 + 标题相似度） | ✅ 规则版 |
-| 相关性排序与“为什么推给你” | ✅ 规则版，兴趣画像手写在配置里 |
-| 预览页（今日推送 / 事件流 / 来源） | ✅ 只读 |
-| 安卓 App（`android/`，自建服务器分发 + 应用内更新，GitHub Release 存档） | ✅ 已迁入，推送仍走 `../infofeed` 的 hub |
-| 推送到手机、持续追踪、反馈学习 | ⏳ 未开始 |
+| 信号采集（GitHub / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit / DeepSeek 搜索 / 页面监控） | ✅ 每小时运行 |
+| 事件合并：规则聚类 + DeepSeek 合并同一件事，事件持久化有固定 id | ✅ |
+| 排序：规则分（兴趣、来源、多源、热度）× 模型给的重要性；每个事件有 AI 简报（发生了什么 / 与你有关） | ✅ |
+| 推送：只推重要且未推过的事件，每次最多 2 条、24 小时最多 6 条、23:00～8:00 不推 | ✅ 经 `../infofeed` 的 hub 送达 |
+| 安卓 App：首页补课句 + 事件卡、详情页、左滑“不需要”、下拉刷新、设备自动绑定 | ✅ |
+| 事件下对话、对话沉淀为记忆、记忆驱动排序（P1）；补课简报、持续追踪（P2） | ⏳ |
 
 ## 使用
 
@@ -21,13 +21,17 @@
 
 ```bash
 python3 -m catchup sources            # 列出已配置的来源和可用类型
-python3 -m catchup collect            # 采集一次
+python3 -m catchup collect            # 采集一次，之后自动做事件归并、简报和推送（--no-update 只采集）
 python3 -m catchup collect --only youtube reddit
-python3 -m catchup serve              # 预览页 http://127.0.0.1:2591
+python3 -m catchup update --no-push   # 不采集，只重新归并事件、写简报（不推送）
+python3 -m catchup serve              # 预览页 http://127.0.0.1:2591，以及 App 接口 /v1
+python3 -m catchup devices            # 查看 App 设备；devices approve <id> 批准新设备
 python3 -m unittest                   # 测试
 ```
 
-凭据放在 `.env`（参考 `.env.example`），目前只有 `GITHUB_TOKEN`，不配也能跑，只是调用额度低。
+凭据放在 `.env`（参考 `.env.example`）：`GITHUB_TOKEN`（可选，提高额度）、`DEEPSEEK_API_KEY`（简报、合并和 DeepSeek 来源，没有则只跑规则部分）、`FEED_URL` / `FEED_TOKEN`（推送到 hub）。
+
+`catchup serve` 作为 systemd 用户服务 `catchup-web` 常驻（`systemctl --user restart catchup-web`）。App 经 Caddy 访问 `https://43.139.27.91:8443/v1/*`；第一台注册的设备自动批准，之后的新设备要用 `devices approve` 确认。
 
 定时任务：
 
@@ -58,16 +62,22 @@ catchup/
   sources/           来源插件：base.py 定义基类和注册表，每种来源一个类
   store.py           SQLite 存储与顺序迁移（PRAGMA user_version）
   collector.py       依次运行来源，单个来源失败不影响其他来源
+  llm.py             DeepSeek 对话接口（deepseek-flash，关闭思考，输出 JSON）
   pipeline/
-    events.py        信号 → 事件
+    events.py        信号 → 事件：规则聚类，并持久化为有固定 id 的事件
     ranking.py       事件打分，每项加分都附带可解释的理由
-    feed.py          组装给前端的数据
-  web/               只读预览服务和页面
+    brief.py         模型合并同一件事、写简报（标题 / 摘要 / 与你有关 / 重要性）
+    push.py          选择要推送的事件并经 hub 送达
+    update.py        采集之后的整条处理流程
+    feed.py          预览页用的数据
+  web/
+    server.py        预览页 + App 接口路由
+    app_api.py       App 接口：设备绑定、事件流、详情、反馈
 config.json          来源、兴趣、排序参数
 data/catchup.db      数据库（不入库）
 ```
 
-数据流：`sources → store(signals) → events → ranking → web`。采集和呈现完全解耦，改排序不需要重新采集。
+数据流：`sources → store(signals) → events(持久化) → ranking → brief(LLM) → push / App`。采集和呈现解耦，改排序不需要重新采集。
 
 ## 配置
 

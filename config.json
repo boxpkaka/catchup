@@ -250,6 +250,55 @@
         "speechtech"
       ],
       "delay": 60
+    },
+    "deepseek_search": {
+      "type": "deepseek_search",
+      "title": "DeepSeek 搜索",
+      "lookback_days": 1,
+      "min_score": 1.0,
+      "queries": [
+        {
+          "name": "DeepSeek 动态",
+          "query": "DeepSeek 发布 OR 更新",
+          "count": 10
+        },
+        {
+          "name": "大模型新发布",
+          "query": "大模型 发布 lang:zh,en",
+          "count": 10
+        },
+        {
+          "name": "AI Agent 工具",
+          "query": "AI Agent 编程工具 新版本",
+          "count": 10
+        }
+      ]
+    },
+    "page_watch": {
+      "type": "page_watch",
+      "title": "页面监控",
+      "pages": [
+        {
+          "name": "DeepSeek 更新日志",
+          "url": "https://api-docs.deepseek.com/zh-cn/updates"
+        }
+      ]
     }
+  },
+  "llm": {
+    "model": "deepseek-flash",
+    "brief_top": 25,
+    "merge_top": 40
+  },
+  "push": {
+    "min_importance": 4,
+    "min_score": 1.5,
+    "per_run": 2,
+    "per_day": 6,
+    "quiet_hours": [
+      23,
+      8
+    ],
+    "utc_offset": 8
   }
 }

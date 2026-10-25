@@ -19,3 +19,11 @@ def get(url: str, headers: dict | None = None) -> bytes:
 
 def get_json(url: str, headers: dict | None = None):
     return json.loads(get(url, headers))
+
+
+def post_json(url: str, payload, headers: dict | None = None, timeout: int = TIMEOUT):
+    req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
+                                          **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())

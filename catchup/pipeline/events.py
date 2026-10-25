@@ -78,3 +78,34 @@ def cluster(signals: list[Signal]) -> list[Event]:
         merged.setdefault(find(i), []).extend(groups[key])
     return [Event(key=keys[root], signals=sorted(sigs, key=lambda s: s.published))
             for root, sigs in merged.items()]
+
+
+def assign_events(store, signals: list[Signal], now) -> int:
+    """把窗口内尚未归属的信号归入持久化事件，返回新建的事件数。
+
+    已归属的信号不再移动（只有 merge_events 会移动），所以事件 id 稳定：规则聚类里只要有一个成员已有事件，
+    其余新信号就并进那个事件；整组都是新信号才新建事件。
+    """
+    created = 0
+    for e in cluster(signals):
+        owners = sorted({s.event_id for s in e.signals if s.event_id is not None})
+        fresh = [s for s in e.signals if s.event_id is None]
+        if not fresh:
+            continue
+        target = owners[0] if owners else store.new_event(e.key, now)
+        created += not owners
+        store.assign(target, [s.url for s in fresh])
+        for s in fresh:
+            s.event_id = target
+    store.commit()
+    return created
+
+
+def group_events(signals: list[Signal]) -> list[Event]:
+    """按持久化的 event_id 把信号分组成事件；未归属的信号忽略。"""
+    groups: dict[int, list[Signal]] = {}
+    for s in signals:
+        if s.event_id is not None:
+            groups.setdefault(s.event_id, []).append(s)
+    return [Event(key=f"event:{i}", id=i, signals=sorted(sigs, key=lambda s: s.published))
+            for i, sigs in groups.items()]

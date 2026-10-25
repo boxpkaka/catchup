@@ -14,6 +14,8 @@ class Config:
     ranking: dict = field(default_factory=dict)
     storage: dict = field(default_factory=dict)
     web: dict = field(default_factory=dict)
+    llm: dict = field(default_factory=dict)
+    push: dict = field(default_factory=dict)
 
     @property
     def db_path(self) -> Path:
@@ -24,7 +26,8 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).resolve()
     raw = json.loads(path.read_text())
     return Config(root=path.parent, sources=raw.get("sources", {}), interests=raw.get("interests", []),
-                  ranking=raw.get("ranking", {}), storage=raw.get("storage", {}), web=raw.get("web", {}))
+                  ranking=raw.get("ranking", {}), storage=raw.get("storage", {}), web=raw.get("web", {}),
+                  llm=raw.get("llm", {}), push=raw.get("push", {}))
 
 
 def load_env(path: Path) -> None:
