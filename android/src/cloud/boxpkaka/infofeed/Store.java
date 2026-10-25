@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 
 /** 本地保存最近的消息，以及断线续传用的 lastId。 */
 final class Store {
-    static final String DEFAULT_SERVER = "https://boxpkaka.cloud/feed";
+    static final String DEFAULT_SERVER = "https://boxpkaka.cloud/catchup";
     private static final int KEEP = 200;
     private static final Pattern LINK = Pattern.compile("\\[((?:[^\\[\\]]|\\[[^\\]]*\\])*)\\]\\((https?://[^)\\s]+)\\)"); // 标题里允许一层方括号，如 [[开源] xx](url)
 

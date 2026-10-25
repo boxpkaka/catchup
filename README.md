@@ -48,7 +48,7 @@ python3 -m unittest                   # 测试
 
 App 名为 Catchup（包名仍是 `cloud.boxpkaka.infofeed`，保证能覆盖升级），打开即用，不需要令牌：hub 的 `/stream` 免认证，只有 `/publish` 需要 `FEED_TOKEN`。图标是 `res/mipmap-anydpi-v26/` 下的自适应图标（宣纸底、墨色 C、朱砂点）。
 
-发布前要先提交并 `git push`，脚本会检查。手机在国内网络下连 GitHub 不稳定，所以 App 只访问推送用的同一个服务器：`../infofeed/hub.py` 从 `android/dist/` 提供 `/app/version` 和 `/app.apk`（经 `https://boxpkaka.cloud/feed`）。App 打开时每 6 小时最多检查一次，版本号比当前新就显示“发现新版本”，点击后下载并调起系统安装；设置里也可以手动“检查更新”。首次安装从 `https://boxpkaka.cloud/feed/app.apk` 下载。
+发布前要先提交并 `git push`，脚本会检查。手机在国内网络下连 GitHub 不稳定，所以 App 只访问推送用的同一个服务器：`../infofeed/hub.py` 从 `android/dist/` 提供 `/app/version` 和 `/app.apk`（经 `https://boxpkaka.cloud/catchup`）。App 打开时每 6 小时最多检查一次，版本号比当前新就显示“发现新版本”，点击后下载并调起系统安装；设置里也可以手动“检查更新”。首次安装从 `https://boxpkaka.cloud/catchup/app.apk` 下载。旧路径 `/feed` 暂时保留给 v1.2.0 及更早的 App，手机升级后可在 Caddyfile 里删除。
 
 ## 结构
 
