@@ -63,16 +63,20 @@ final class Store {
         return cache;
     }
 
-    static synchronized void add(Context c, JSONObject m) throws Exception {
+    /** 追加一批消息（按 id 升序），只写一次文件。 */
+    static synchronized void addAll(Context c, List<JSONObject> ms) throws Exception {
+        if (ms.isEmpty()) return;
         JSONArray all = load(c);
+        int total = all.length() + ms.size();
         JSONArray kept = new JSONArray();
-        for (int i = Math.max(0, all.length() + 1 - KEEP); i < all.length(); i++) kept.put(all.get(i));
-        kept.put(m);
+        for (int i = Math.max(0, total - KEEP); i < total; i++) {
+            kept.put(i < all.length() ? all.get(i) : ms.get(i - all.length()));
+        }
         try (FileOutputStream out = new FileOutputStream(file(c))) {
             out.write(kept.toString().getBytes(StandardCharsets.UTF_8));
         }
         cache = kept;
-        prefs(c).edit().putLong("lastId", m.getLong("id")).apply();
+        prefs(c).edit().putLong("lastId", ms.get(ms.size() - 1).getLong("id")).apply();
     }
 
     /** 把推送里的 Markdown 转成适合通知和列表显示的纯文本。 */

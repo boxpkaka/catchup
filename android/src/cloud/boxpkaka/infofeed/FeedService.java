@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -20,6 +21,9 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /** 前台服务：与服务器保持 SSE 长连接，收到消息就存下来并弹通知。 */
 public class FeedService extends Service {
@@ -53,12 +57,10 @@ public class FeedService extends Service {
         } else {
             startForeground(FG_ID, n);
         }
-        if (worker == null || !worker.isAlive()) {
+        if (worker == null || !worker.isAlive()) { // 已在运行时什么都不做，不要打断现有连接
             running = true;
             worker = new Thread(this::loop, "feed-stream");
             worker.start();
-        } else {
-            reconnectNow(); // 设置改了，用新配置立刻重连
         }
         return START_STICKY;
     }
@@ -87,6 +89,7 @@ public class FeedService extends Service {
             String server = Store.server(this);
             try {
                 setStatus("连接中…");
+                catchUp(server);
                 HttpURLConnection c = (HttpURLConnection) new URL(server + "/stream?since=" + Store.lastId(this)).openConnection();
                 conn = c;
                 c.setConnectTimeout(15000);
@@ -103,7 +106,10 @@ public class FeedService extends Service {
                     if (line.startsWith("data:")) {
                         data.append(line.substring(5).trim());
                     } else if (line.isEmpty() && data.length() > 0) {
-                        onMessage(new JSONObject(data.toString()));
+                        JSONObject m = new JSONObject(data.toString());
+                        Store.addAll(this, Collections.singletonList(m));
+                        notifyIfRecent(m);
+                        sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
                         data.setLength(0);
                     }
                 }
@@ -137,8 +143,29 @@ public class FeedService extends Service {
         }
     }
 
-    private void onMessage(JSONObject m) throws Exception {
-        Store.add(this, m);
+    /**
+     * 先用普通请求补齐离线期间的消息再连长连接。它一次返回、带长度，
+     * 部分手机网络的代理会掐断长连接，至少补发不受影响，每次重连都能把缺的消息拿全。
+     */
+    private void catchUp(String server) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(server + "/messages?since=" + Store.lastId(this)).openConnection();
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(30000);
+        try {
+            if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
+            JSONArray rows = new JSONArray(Updater.read(c.getInputStream()));
+            List<JSONObject> ms = new ArrayList<>();
+            for (int i = 0; i < rows.length(); i++) ms.add(rows.getJSONObject(i));
+            if (ms.isEmpty()) return;
+            Store.addAll(this, ms);
+            for (JSONObject m : ms) notifyIfRecent(m);
+            sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private void notifyIfRecent(JSONObject m) throws Exception {
         long when = (long) (m.optDouble("time", 0) * 1000);
         if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS) {
             Store.Entry e = Store.entry(m);
@@ -163,7 +190,6 @@ public class FeedService extends Service {
                     .setShowWhen(true)
                     .build());
         }
-        sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
     }
 
     private void setStatus(String s) {
