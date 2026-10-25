@@ -58,6 +58,8 @@ public class FeedService extends Service {
             startForeground(FG_ID, n);
         }
         if (worker == null || !worker.isAlive()) { // 已在运行时什么都不做，不要打断现有连接
+            Trace.log(this, "service.start", "v" + Updater.currentVersion(this) + " sdk=" + Build.VERSION.SDK_INT
+                    + " model=" + Build.MODEL + " net=" + Trace.network(this));
             running = true;
             worker = new Thread(this::loop, "feed-stream");
             worker.start();
@@ -67,6 +69,7 @@ public class FeedService extends Service {
 
     @Override
     public void onDestroy() {
+        Trace.log(this, "service.stop", "");
         running = false;
         reconnectNow();
         setStatus("已停止");
@@ -87,22 +90,34 @@ public class FeedService extends Service {
         long backoff = 2000;
         while (running) {
             String server = Store.server(this);
+            long opened = 0, lastUpload = 0;
+            int events = 0;
             try {
                 setStatus("连接中…");
+                Trace.log(this, "connect", "since=" + Store.lastId(this) + " net=" + Trace.network(this));
                 catchUp(server);
+                Trace.upload(this, server);
+                lastUpload = System.currentTimeMillis();
                 HttpURLConnection c = (HttpURLConnection) new URL(server + "/stream?since=" + Store.lastId(this)).openConnection();
                 conn = c;
                 c.setConnectTimeout(15000);
                 c.setReadTimeout(70000); // 服务端每 25 秒发一次心跳
                 c.setRequestProperty("Accept", "text/event-stream");
+                long t0 = System.currentTimeMillis();
                 int code = c.getResponseCode();
+                Trace.log(this, "stream.open", "code=" + code + " ms=" + (System.currentTimeMillis() - t0));
                 if (code != 200) throw new IOException("HTTP " + code);
+                opened = System.currentTimeMillis();
                 setStatus("已连接");
                 backoff = 2000;
                 BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
                 StringBuilder data = new StringBuilder();
                 String line;
                 while (running && (line = r.readLine()) != null) {
+                    if (line.startsWith(":") && System.currentTimeMillis() - lastUpload > 60_000) {
+                        Trace.upload(this, server); // 借心跳顺带上传埋点，最多每分钟一次
+                        lastUpload = System.currentTimeMillis();
+                    }
                     if (line.startsWith("data:")) {
                         data.append(line.substring(5).trim());
                     } else if (line.isEmpty() && data.length() > 0) {
@@ -110,11 +125,16 @@ public class FeedService extends Service {
                         Store.addAll(this, Collections.singletonList(m));
                         notifyIfRecent(m);
                         sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
+                        Trace.log(this, "stream.message", "id=" + m.optLong("id"));
+                        events++;
                         data.setLength(0);
                     }
                 }
                 throw new IOException("连接被关闭");
             } catch (Exception e) {
+                Trace.log(this, "stream.end", "after=" + (opened == 0 ? "-" : (System.currentTimeMillis() - opened) / 1000 + "s")
+                        + " events=" + events + " error=" + e.getClass().getName() + ": " + e.getMessage()
+                        + " net=" + Trace.network(this) + " running=" + running);
                 if (!running) break;
                 if (Thread.interrupted()) continue;
                 setStatus("连接断开，" + backoff / 1000 + " 秒后重试（" + reason(e) + "）");
@@ -159,6 +179,7 @@ public class FeedService extends Service {
             if (ms.isEmpty()) return;
             Store.addAll(this, ms);
             for (JSONObject m : ms) notifyIfRecent(m);
+            Trace.log(this, "catchup", "n=" + ms.size() + " last=" + Store.lastId(this));
             sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));
         } finally {
             c.disconnect();
@@ -193,6 +214,7 @@ public class FeedService extends Service {
     }
 
     private void setStatus(String s) {
+        Trace.log(this, "status", s);
         status = s;
         if (running) nm.notify(FG_ID, statusNotification(s));
         sendBroadcast(new Intent(ACTION_UPDATE).setPackage(getPackageName()));

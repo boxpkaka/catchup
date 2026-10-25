@@ -78,6 +78,7 @@ public class MainActivity extends Activity {
     private long seenAtOpen; // 本次打开前已看过的最新 id，比它新的显示未读点
     private Updater.Release release;
     private boolean receiving;
+    private String shownStatus = ""; // 只在界面显示的状态变化时记一条埋点
 
     private final BroadcastReceiver updates = new BroadcastReceiver() {
         @Override
@@ -122,6 +123,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        Trace.log(this, "ui.resume", "service=" + FeedService.status);
         seenAtOpen = Store.seenId(this);
         if (seenAtOpen < 0) { // 第一次打开：已有的历史消息不算未读
             seenAtOpen = Store.lastId(this);
@@ -140,6 +142,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        Trace.log(this, "ui.pause", "");
         if (receiving) {
             unregisterReceiver(updates);
             receiving = false;
@@ -370,7 +373,12 @@ public class MainActivity extends Activity {
             rows.add(m);
         }
 
-        status.setText(ok && todayCount > 0 ? "已连接，今天 " + todayCount + " 条" : s);
+        String shown = ok && todayCount > 0 ? "已连接，今天 " + todayCount + " 条" : s;
+        status.setText(shown);
+        if (!shown.equals(shownStatus)) {
+            Trace.log(this, "ui.status", shown + " rows=" + rows.size());
+            shownStatus = shown;
+        }
         status.setTextColor(bad ? CINNABAR : sub);
         statusDot.setBackground(round(bad ? CINNABAR : ok ? fg : sub, dp(3)));
         statusDot.setAlpha(bad ? 1f : 0.55f);
