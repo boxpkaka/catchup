@@ -134,7 +134,7 @@ public class FeedService extends Service {
             } catch (Exception e) {
                 Trace.log(this, "stream.end", "after=" + (opened == 0 ? "-" : (System.currentTimeMillis() - opened) / 1000 + "s")
                         + " events=" + events + " error=" + e.getClass().getName() + ": " + e.getMessage()
-                        + " net=" + Trace.network(this) + " running=" + running);
+                        + " net=" + Trace.network(this) + " dns=" + Trace.resolve(server) + " running=" + running);
                 if (!running) break;
                 if (Thread.interrupted()) continue;
                 setStatus("连接断开，" + backoff / 1000 + " 秒后重试（" + reason(e) + "）");

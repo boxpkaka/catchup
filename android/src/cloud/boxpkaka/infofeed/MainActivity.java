@@ -419,6 +419,10 @@ public class MainActivity extends Activity {
             d.dismiss();
             checkUpdate(true);
         }));
+        sheet.addView(menuRow("诊断信息", "", () -> {
+            d.dismiss();
+            showDiagnostics();
+        }));
         sheet.addView(menuRow("后台运行设置", "", () -> {
             d.dismiss();
             startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
@@ -442,6 +446,30 @@ public class MainActivity extends Activity {
         if (!detail.isEmpty()) row.addView(text(detail, 13, sub, false));
         row.setOnClickListener(v -> action.run());
         return row;
+    }
+
+    /** 显示本机最近的埋点日志，可复制后发给开发者；不依赖网络。 */
+    private void showDiagnostics() {
+        String text = "v" + Updater.currentVersion(this) + " Android " + Build.VERSION.RELEASE + " " + Build.MODEL
+                + "\n设备 " + Trace.device(this) + "  网络 " + Trace.network(this)
+                + "\n状态 " + FeedService.status + "\n\n" + Trace.tail(this, 6000);
+        TextView body = text(text, 11, fg, false);
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setTextIsSelectable(true);
+        body.setPadding(dp(20), dp(12), dp(20), dp(12));
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(body);
+        new AlertDialog.Builder(this)
+                .setTitle("诊断信息")
+                .setView(scroll)
+                .setPositiveButton("复制", (dlg, w) -> {
+                    getSystemService(android.content.ClipboardManager.class)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("Catchup 诊断信息", text));
+                    toast("已复制");
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
     // ---------- 应用内更新 ----------

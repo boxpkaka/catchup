@@ -68,6 +68,35 @@ final class Trace {
         return s.length() == 0 ? "other" : s.substring(0, s.length() - 1);
     }
 
+    /** 手机把服务器域名解析成了哪些 IP；代理软件的假 IP（198.18.x）或被劫持的解析会在这里暴露。 */
+    static String resolve(String url) {
+        try {
+            String host = new URL(url).getHost();
+            StringBuilder s = new StringBuilder();
+            for (java.net.InetAddress a : java.net.InetAddress.getAllByName(host)) s.append(a.getHostAddress()).append(',');
+            return s.length() == 0 ? "-" : s.substring(0, s.length() - 1);
+        } catch (Exception e) {
+            return e.getClass().getSimpleName();
+        }
+    }
+
+    /** 最近的日志尾部，供“诊断信息”页面显示；网络不通、无法上传时靠它排查。 */
+    static synchronized String tail(Context c, int maxBytes) {
+        File f = file(c);
+        if (!f.exists()) return "（还没有日志）";
+        long start = Math.max(0, f.length() - maxBytes);
+        byte[] b = new byte[(int) (f.length() - start)];
+        try (RandomAccessFile in = new RandomAccessFile(f, "r")) {
+            in.seek(start);
+            in.readFully(b);
+        } catch (IOException e) {
+            return "读取日志失败：" + e.getMessage();
+        }
+        String s = new String(b, StandardCharsets.UTF_8);
+        int nl = start > 0 ? s.indexOf('\n') : -1; // 去掉被截断的第一行
+        return nl >= 0 ? s.substring(nl + 1) : s;
+    }
+
     /** 上传尚未上传的日志，需在后台线程调用；失败只记一行，下次再传。 */
     static void upload(Context c, String server) {
         byte[] pending;
