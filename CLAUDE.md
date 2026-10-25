@@ -14,3 +14,4 @@
 - **App 版本**：`versionCode` 按构建时间自动递增；应用内更新比较的是 `versionName` 与服务器 `/app/version`（来自 `android/dist/version.json`）。App 不直连 GitHub（国内网络不稳定），GitHub Release 只做存档。发版用 `android/release.sh <版本号>`。
 - **App 埋点**：`Trace.log` 记到手机本地 `trace.log`，连上后上传到 hub `POST /log`，落在 `../infofeed/applogs/<机型>-<随机id>.log`。排查手机端问题先看这里。
 - **App 入口是 `https://43.139.27.91:8443`**：域名未备案，443 被腾讯云拦截。证书来自 Caddy 内部 CA（`caddy_data` 卷里的 root，有效期到 2036），App 内置该根证书做固定信任。重建 Caddy 数据卷会换 CA，已装的 App 将连不上，需要发新包并让用户用浏览器重装。
+- **记忆闭环**：记忆存在 `memories` 表，任何增删改都要调用 `personal.bump()`（简报靠 `memory_rev` 判断要不要按新记忆重写）。测试里涉及详情接口和对话时要 mock `catchup.chat.prefetch` 和 `catchup.personal.rebrief_async`，否则后台线程会访问真实网络和项目数据库。

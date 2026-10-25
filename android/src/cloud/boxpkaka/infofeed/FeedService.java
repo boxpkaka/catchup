@@ -196,7 +196,7 @@ public class FeedService extends Service {
             if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
                 open = new Intent(this, EventActivity.class)
                         .putExtra(EventActivity.EXTRA_ID, Long.parseLong(click.substring(EVENT_LINK.length())));
-            } else if (click.isEmpty() || "null".equals(click)) {
+            } else if (click.isEmpty() || "null".equals(click) || click.startsWith("catchup://")) {
                 open = new Intent(this, MainActivity.class);
             } else {
                 open = new Intent(Intent.ACTION_VIEW, Uri.parse(click));

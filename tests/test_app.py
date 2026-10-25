@@ -25,15 +25,30 @@ def sig(url, title, hours_ago=1, source="news"):
 class FakeLLM:
     model = "fake"
 
-    def __init__(self, groups=None, importance=4):
+    def __init__(self, groups=None, importance=4, memory=None, reply="Dessa 只用语音训练 [1]。", progress=None):
         self.groups, self.importance, self.calls = groups or [], importance, 0
+        self.memory = memory or {"add": [], "update": [], "remove": []}
+        self.reply, self.progress, self.prompts = reply, progress, []
 
     def json(self, system, user, max_tokens=800):
         self.calls += 1
+        self.prompts.append(user)
         if "分组" in system:
             return {"groups": self.groups}
+        if system.startswith("为下面这条"):
+            return {"keywords": ["funasr", "asr"]}
+        if system.startswith("你在维护"):
+            return self.memory
+        if "实质进展" in system:
+            return {"substantive": self.progress is not None, "update": self.progress or ""}
+        if "补课简报" in system:
+            return {"text": "你离开期间 Block 发布了 Dessa。"}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。", "why": "和你关注的 AI 语音直接相关",
-                "importance": self.importance}
+                "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"]}
+
+    def stream(self, messages):
+        self.prompts.append(messages[0]["content"])
+        yield from (self.reply[:4], self.reply[4:])
 
 
 def config():
@@ -71,10 +86,12 @@ class EventTest(unittest.TestCase):
         assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice")), NOW)
         events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
         llm = FakeLLM()
-        self.assertEqual(brief.write_briefs(self.store, events, INTERESTS, llm, {}, NOW), 1)
-        self.assertEqual(brief.write_briefs(self.store, events, INTERESTS, llm, {}, NOW), 0)
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 1)
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 0)
         self.assertEqual(llm.calls, 1)
-        self.assertEqual(self.store.briefs([events[0].id])[events[0].id]["importance"], 4)
+        saved = self.store.briefs([events[0].id])[events[0].id]
+        self.assertEqual((saved["importance"], len(saved["questions"])), (4, 2))
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW, memory_rev=1), 1)  # 记忆变了就重写
 
 
 class PushTest(unittest.TestCase):
@@ -84,7 +101,7 @@ class PushTest(unittest.TestCase):
         assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
         ranker = Ranker.from_config(INTERESTS, {})
         self.events = ranker.rank(group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)
-        brief.write_briefs(self.store, self.events, INTERESTS, FakeLLM(), {}, NOW)
+        brief.write_briefs(self.store, self.events, "关注语音", FakeLLM(), {}, NOW)
 
     def test_caps_quiet_hours_and_feedback(self):
         opts = {"min_score": 0, "per_run": 2, "per_day": 3}
@@ -131,7 +148,7 @@ class AppApiTest(unittest.TestCase):
 
     def test_feed_detail_and_feedback(self):
         token = self.call("POST", "/v1/devices", body={"name": "p"})[1]["token"]
-        with mock.patch("catchup.web.app_api.datetime") as dt:
+        with mock.patch("catchup.web.app_api.datetime") as dt, mock.patch("catchup.chat.prefetch"):
             dt.now.return_value = NOW
             status, feed = self.call("GET", "/v1/feed", token)
             [event] = feed["events"]
@@ -170,3 +187,155 @@ class DeepSeekSourceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PersonalTest(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def test_apply_ops_add_update_remove(self):
+        from catchup import personal
+        ops = {"add": [{"kind": "task", "text": "你在评估 FunASR", "keywords": ["funasr"]},
+                       {"kind": "bogus", "text": "x"}]}
+        changes = personal.apply_ops(self.store, ops, "对话", NOW)
+        [mem] = self.store.memories()
+        self.assertEqual((len(changes["added"]), mem["kind"], personal.memory_rev(self.store)), (1, "task", 1))
+        self.assertIsNotNone(mem["expires"])  # 正在做的事会过期
+        self.assertEqual(personal.apply_ops(self.store, ops, "对话", NOW)["added"], [])  # 同样的话不重复记
+        personal.apply_ops(self.store, {"update": [{"id": str(mem["id"]), "text": "你在用 FunASR 替换 Whisper"}],
+                                        "remove": []}, "对话", NOW)
+        self.assertEqual(self.store.memories()[0]["text"], "你在用 FunASR 替换 Whisper")
+        personal.apply_ops(self.store, {"remove": [mem["id"]]}, "对话", NOW)
+        self.assertEqual(self.store.memories(), [])
+
+    def test_memory_drives_ranking_and_can_be_turned_off(self):
+        from catchup import personal
+        self.store.add([sig("https://a/1", "FunASR 2.0 released"), sig("https://b/2", "Crypto coin voice launch")],
+                       now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        personal.apply_ops(self.store, {"add": [{"kind": "task", "text": "你在评估 FunASR", "keywords": ["funasr"]},
+                                                {"kind": "avoid", "text": "你不想看加密货币", "keywords": ["crypto"]}]},
+                           "对话", NOW)
+        cfg = config()
+        events = {e.lead.url: e for e in personal.build_ranker(cfg, self.store, NOW).rank(
+            group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)}
+        self.assertIn("和你说过的「你在评估 FunASR」有关", events["https://a/1"].reasons)
+        self.assertTrue(any("不想看" in r for r in events["https://b/2"].reasons))
+        self.assertIn("正在做：你在评估 FunASR", personal.focus(cfg, self.store, NOW))
+        self.store.set_setting("personalize", "0")
+        plain = personal.build_ranker(cfg, self.store, NOW).rank(
+            group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)
+        self.assertFalse(any("你说过" in r for e in plain for r in e.reasons))
+
+
+class ChatTest(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.store.add([sig("https://a/1", "Block unveils Dessa voice model")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        self.eid = group_events(self.store.recent(NOW - timedelta(days=3), NOW))[0].id
+        brief.write_briefs(self.store, group_events(self.store.recent(NOW - timedelta(days=3), NOW)), "", FakeLLM(), {},
+                           NOW)
+
+    def run_chat(self, llm, body):
+        from catchup import chat
+        with mock.patch("catchup.chat.tool", return_value={"content": "Dessa 原文：只用语音训练。"}), \
+                mock.patch("catchup.personal.rebrief_async") as rebrief:
+            out = list(chat.chat(config(), self.store, llm, body, NOW))
+        return out, rebrief
+
+    def test_event_chat_reads_sources_streams_and_remembers(self):
+        llm = FakeLLM(memory={"add": [{"kind": "task", "text": "你在做全双工语音", "keywords": ["full-duplex"]}]})
+        out, rebrief = self.run_chat(llm, {"event_id": self.eid, "message": "我在做全双工语音，这个能借鉴吗？"})
+        types = [e["type"] for e in out]
+        self.assertEqual(types[:2], ["thread", "status"])
+        self.assertEqual("".join(e["text"] for e in out if e["type"] == "delta"), llm.reply)
+        self.assertEqual(out[-2]["added"][0]["text"], "你在做全双工语音")
+        self.assertEqual(types[-1], "done")
+        self.assertIn("Dessa 原文", llm.prompts[0])  # 回答基于抓取的原文
+        rebrief.assert_called_once()
+        thread = self.store.latest_thread(self.eid)
+        self.assertEqual([m["role"] for m in self.store.messages(thread["id"])], ["user", "assistant"])
+        # 继续同一个对话：不再重复读原文，历史会带上
+        out, _ = self.run_chat(FakeLLM(), {"thread_id": thread["id"], "message": "那延迟呢？"})
+        self.assertNotIn("status", [e["type"] for e in out])
+        self.assertEqual(len(self.store.messages(thread["id"])), 4)
+
+    def test_global_ask_cites_events(self):
+        out, _ = self.run_chat(FakeLLM(reply=f"Block 发布了 Dessa [E{self.eid}]。"), {"message": "最近有什么语音模型？"})
+        refs = [e for e in out if e["type"] == "refs"]
+        self.assertEqual(refs[0]["events"][0]["id"], self.eid)
+
+    def test_follow_finds_substantive_updates(self):
+        from catchup.pipeline import follow
+        self.store.set_follow(self.eid, True, 1, NOW)
+        found = {"results": [{"url": "https://c/3", "title": "Dessa weights released", "rerank_score": 1.5}]}
+        with mock.patch("catchup.pipeline.follow.tool", return_value=found):
+            updates = follow.run(self.store, FakeLLM(progress="Block 开源了 Dessa 权重"), NOW)
+        self.assertEqual(updates[0]["text"], "Block 开源了 Dessa 权重")
+        self.assertEqual(len(self.store.event_signals(self.eid)), 2)  # 搜到的报道并入了这个事件
+        with mock.patch("catchup.pipeline.follow.tool", return_value=found):
+            self.assertEqual(follow.run(self.store, FakeLLM(progress="x"), NOW), [])  # 没有新报道就不再判断
+
+
+class MorningDigestTest(unittest.TestCase):
+    def test_overnight_events_become_one_push(self):
+        store = Store(":memory:")
+        store.add([sig(f"https://github.com/o{i}/tts", f"Voice TTS {i}") for i in range(3)], now=NOW)
+        assign_events(store, store.recent(NOW - timedelta(days=3), NOW), NOW)
+        events = Ranker.from_config(INTERESTS, {}).rank(group_events(store.recent(NOW - timedelta(days=3), NOW)), NOW)
+        brief.write_briefs(store, events, "", FakeLLM(), {}, NOW)
+        at8 = NOW.replace(hour=0, minute=37)  # 北京时间 8:37
+        picked = push.select({"min_score": 0}, store, events, at8)
+        self.assertEqual(len(picked), 3)  # 早上不受每轮 2 条的限制
+        with mock.patch.dict("os.environ", {"FEED_URL": "u", "FEED_TOKEN": "t"}), \
+                mock.patch("catchup.http.post_json") as post:
+            self.assertEqual(push.deliver(store, picked, at8, {}), 3)
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[1]["click"], "catchup://home")
+
+
+class AppApiMoreTest(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.store.add([sig("https://a/1", "Block unveils Dessa voice model")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        brief.write_briefs(self.store, group_events(self.store.recent(NOW - timedelta(days=3), NOW)), "", FakeLLM(), {},
+                           NOW)
+        self.token = app_api.register(self.store, "p", NOW)[1]["token"]
+        self.patches = [mock.patch("catchup.web.app_api.datetime"), mock.patch("catchup.web.app_api.from_config",
+                                                                               return_value=FakeLLM()),
+                        mock.patch("catchup.personal.rebrief_async"), mock.patch("catchup.chat.prefetch")]
+        dt = self.patches[0].start()
+        dt.now.return_value, dt.fromtimestamp = NOW, datetime.fromtimestamp
+        for p in self.patches[1:]:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def call(self, method, path, body=None, query=None):
+        return app_api.handle(config(), self.store, method, path, {"Authorization": f"Bearer {self.token}"}, body, query)
+
+    def test_memories_crud_and_personalize_switch(self):
+        self.assertEqual(self.call("POST", "/v1/memories", {"kind": "task", "text": "你在评估 FunASR"})[0], 200)
+        [m] = self.call("GET", "/v1/memories")[1]["memories"]
+        self.assertEqual((m["kind_label"], m["days_left"], m["origin"]), ("正在做", 21, "你手动添加"))
+        self.call("POST", f"/v1/memories/{m['id']}", {"text": "你在用 FunASR"})
+        self.assertEqual(self.store.memories()[0]["keywords"], ["funasr", "asr"])
+        self.call("POST", f"/v1/memories/{m['id']}", {"delete": True})
+        self.assertEqual(self.call("GET", "/v1/memories")[1]["memories"], [])
+        self.assertFalse(self.call("POST", "/v1/settings", {"personalize": False})[1]["personalize"])
+
+    def test_follow_rating_digest_and_detail(self):
+        eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        self.call("POST", f"/v1/events/{eid}/follow", {"on": True})
+        self.call("POST", f"/v1/events/{eid}/rating", {"would_miss": True})
+        feed = self.call("GET", "/v1/feed")[1]
+        self.assertEqual((feed["following"][0]["id"], feed["events"][0]["following"]), (eid, True))
+        detail = self.call("GET", f"/v1/events/{eid}")[1]
+        self.assertEqual((detail["would_miss"], detail["questions"][0], detail["thread"]), (True, "能本地跑吗？", None))
+        since = int((NOW - timedelta(hours=9)).timestamp() * 1000)
+        self.assertIn("Dessa", self.call("GET", "/v1/digest", query={"since": str(since)})[1]["text"])
+        self.assertEqual(self.call("GET", "/v1/memories")[1]["week"]["would_miss"], 1)

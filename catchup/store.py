@@ -34,6 +34,29 @@ MIGRATIONS = [
         id integer primary key, name text, token_hash text not null unique,
         approved integer not null default 0, created text not null, last_seen text);
     """,
+    # 个人记忆、对话、追踪、补课简报、回顾。memories 的 kind 见 personal.py 的 KINDS
+    """
+    create table memories (
+        id integer primary key, kind text not null, text text not null, keywords text not null default '[]',
+        origin text, thread_id integer, event_id integer, created text not null, updated text not null,
+        expires text, deleted integer not null default 0);
+    create table threads (id integer primary key, event_id integer, created text not null, updated text not null);
+    create table messages (
+        id integer primary key, thread_id integer not null, role text not null, content text not null,
+        created text not null, meta text);
+    create index messages_thread on messages (thread_id);
+    create table pages (url text primary key, fetched text not null, content text);
+    create table follows (
+        event_id integer primary key, created text not null, active integer not null default 1,
+        seen_signals integer not null default 0, searched text);
+    create table event_updates (id integer primary key, event_id integer not null, at text not null, text text not null);
+    create table settings (key text primary key, value text);
+    create table digests (key text primary key, created text not null, text text not null);
+    create table ratings (event_id integer primary key, would_miss integer not null, at text not null);
+    create table misses (id integer primary key, text text not null, at text not null);
+    alter table briefs add column memory_rev integer not null default 0;
+    alter table briefs add column questions text;
+    """,
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -51,15 +74,29 @@ class Store:
         path = Path(path)
         if str(path) != ":memory:":
             path.parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(path)
+        self.con = sqlite3.connect(path, timeout=30)
         self._migrate()
 
     def _migrate(self) -> None:
-        version = self.con.execute("pragma user_version").fetchone()[0]
-        for i, sql in enumerate(MIGRATIONS[version:], start=version + 1):
-            self.con.executescript(sql)
-            self.con.execute(f"pragma user_version = {i}")
-        self.con.commit()
+        """在一个写事务里执行待做的迁移：先拿写锁再读版本号，多个进程或线程同时打开数据库时会排队，
+        失败则整体回滚。不能用 executescript，它会先提交、逐句自动提交，并发时会留下半迁移状态。"""
+        if self.con.execute("pragma user_version").fetchone()[0] >= len(MIGRATIONS):
+            return
+        self.con.isolation_level = None
+        try:
+            self.con.execute("begin immediate")
+            version = self.con.execute("pragma user_version").fetchone()[0]
+            for i, sql in enumerate(MIGRATIONS[version:], start=version + 1):
+                for statement in (part.strip() for part in sql.split(";")):
+                    if statement:
+                        self.con.execute(statement)
+                self.con.execute(f"pragma user_version = {i}")
+            self.con.execute("commit")
+        except Exception:
+            self.con.execute("rollback")
+            raise
+        finally:
+            self.con.isolation_level = ""
 
     def add(self, signals: Iterable[Signal], now: datetime | None = None) -> int:
         """写入信号并返回新增条数。URL 是主键，insert or ignore 同时完成写入和判新。"""
@@ -111,15 +148,22 @@ class Store:
 
     def briefs(self, ids: Iterable[int]) -> dict[int, dict]:
         ids = list(ids)
-        rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance "
-                                f"from briefs where event_id in ({','.join('?' * len(ids))})", ids)
-        keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance")
-        return {r[0]: dict(zip(keys, r[1:])) for r in rows}
+        rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance, "
+                                f"memory_rev, questions from briefs where event_id in ({','.join('?' * len(ids))})", ids)
+        keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance", "memory_rev")
+        out = {}
+        for r in rows:
+            out[r[0]] = dict(zip(keys, r[1:9]))
+            out[r[0]]["questions"] = json.loads(r[9] or "[]")
+        return out
 
-    def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict) -> None:
-        self.con.execute("insert or replace into briefs values (?, ?, ?, ?, ?, ?, ?, ?)",
+    def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict,
+                   memory_rev: int = 0) -> None:
+        self.con.execute("insert or replace into briefs (event_id, created, model, signal_count, headline, summary, "
+                         "why, importance, memory_rev, questions) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (event_id, to_iso(now), model, signal_count, brief["headline"], brief["summary"],
-                          brief["why"], brief["importance"]))
+                          brief["why"], brief["importance"], memory_rev,
+                          json.dumps(brief.get("questions", []), ensure_ascii=False)))
         self.con.commit()
 
     def feedback(self) -> dict[int, str]:
@@ -141,6 +185,174 @@ class Store:
     def record_push(self, event_id: int, now: datetime) -> None:
         self.con.execute("insert or ignore into pushes values (?, ?)", (event_id, to_iso(now)))
         self.con.commit()
+
+    def known_urls(self, urls: Iterable[str]) -> set[str]:
+        urls = list(urls)
+        rows = self.con.execute(f"select url from signals where url in ({','.join('?' * len(urls))})", urls)
+        return {r[0] for r in rows}
+
+    def feedback_since(self, since: str) -> list[tuple[int, str, str]]:
+        return self.con.execute("select event_id, value, at from feedback where at > ? order by at", (since,)).fetchall()
+
+    def set_rating(self, event_id: int, would_miss: bool, now: datetime) -> None:
+        self.con.execute("insert or replace into ratings values (?, ?, ?)", (event_id, int(would_miss), to_iso(now)))
+        self.con.commit()
+
+    def rating(self, event_id: int) -> bool | None:
+        r = self.con.execute("select would_miss from ratings where event_id = ?", (event_id,)).fetchone()
+        return None if r is None else bool(r[0])
+
+    # ---------- 设置 ----------
+
+    def setting(self, key: str, default: str | None = None) -> str | None:
+        r = self.con.execute("select value from settings where key = ?", (key,)).fetchone()
+        return r[0] if r else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.con.execute("insert or replace into settings values (?, ?)", (key, value))
+        self.con.commit()
+
+    # ---------- 记忆 ----------
+
+    def memories(self, include_deleted: bool = False) -> list[dict]:
+        rows = self.con.execute("select id, kind, text, keywords, origin, thread_id, event_id, created, updated, "
+                                "expires, deleted from memories" + ("" if include_deleted else " where deleted = 0")
+                                + " order by updated desc").fetchall()
+        keys = ("id", "kind", "text", "keywords", "origin", "thread_id", "event_id", "created", "updated", "expires",
+                "deleted")
+        out = [dict(zip(keys, r)) for r in rows]
+        for m in out:
+            m["keywords"] = json.loads(m["keywords"] or "[]")
+            m["deleted"] = bool(m["deleted"])
+        return out
+
+    def add_memory(self, kind: str, text: str, keywords: list[str], origin: str, now: datetime,
+                   expires: datetime | None = None, thread_id: int | None = None, event_id: int | None = None) -> int:
+        cur = self.con.execute(
+            "insert into memories (kind, text, keywords, origin, thread_id, event_id, created, updated, expires) "
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (kind, text, json.dumps(keywords, ensure_ascii=False), origin, thread_id, event_id, to_iso(now),
+             to_iso(now), to_iso(expires)))
+        self.con.commit()
+        return cur.lastrowid
+
+    def update_memory(self, memory_id: int, now: datetime, **fields) -> bool:
+        if "keywords" in fields:
+            fields["keywords"] = json.dumps(fields["keywords"], ensure_ascii=False)
+        if "expires" in fields:
+            fields["expires"] = to_iso(fields["expires"])
+        if "deleted" in fields:
+            fields["deleted"] = int(fields["deleted"])
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        n = self.con.execute(f"update memories set {sets}, updated = ? where id = ?",
+                             (*fields.values(), to_iso(now), memory_id)).rowcount
+        self.con.commit()
+        return n > 0
+
+    # ---------- 对话 ----------
+
+    def new_thread(self, event_id: int | None, now: datetime) -> int:
+        cur = self.con.execute("insert into threads (event_id, created, updated) values (?, ?, ?)",
+                               (event_id, to_iso(now), to_iso(now)))
+        self.con.commit()
+        return cur.lastrowid
+
+    def thread(self, thread_id: int) -> dict | None:
+        r = self.con.execute("select id, event_id, created, updated from threads where id = ?", (thread_id,)).fetchone()
+        return dict(zip(("id", "event_id", "created", "updated"), r)) if r else None
+
+    def latest_thread(self, event_id: int | None) -> dict | None:
+        where = "event_id = ?" if event_id is not None else "event_id is null"
+        args = (event_id,) if event_id is not None else ()
+        r = self.con.execute(f"select id from threads where {where} order by updated desc limit 1", args).fetchone()
+        return self.thread(r[0]) if r else None
+
+    def add_message(self, thread_id: int, role: str, content: str, now: datetime, meta: dict | None = None) -> int:
+        cur = self.con.execute("insert into messages (thread_id, role, content, created, meta) values (?, ?, ?, ?, ?)",
+                               (thread_id, role, content, to_iso(now), json.dumps(meta or {}, ensure_ascii=False)))
+        self.con.execute("update threads set updated = ? where id = ?", (to_iso(now), thread_id))
+        self.con.commit()
+        return cur.lastrowid
+
+    def messages(self, thread_id: int) -> list[dict]:
+        rows = self.con.execute("select id, role, content, created, meta from messages where thread_id = ? order by id",
+                                (thread_id,)).fetchall()
+        return [{"id": r[0], "role": r[1], "content": r[2], "created": r[3], "meta": json.loads(r[4] or "{}")}
+                for r in rows]
+
+    def thread_counts(self, event_ids: Iterable[int]) -> dict[int, int]:
+        ids = list(event_ids)
+        rows = self.con.execute("select t.event_id, count(m.id) from threads t join messages m on m.thread_id = t.id "
+                                f"where t.event_id in ({','.join('?' * len(ids))}) group by t.event_id", ids)
+        return dict(rows)
+
+    def page(self, url: str) -> str | None:
+        r = self.con.execute("select content from pages where url = ?", (url,)).fetchone()
+        return r[0] if r else None
+
+    def save_page(self, url: str, content: str, now: datetime) -> None:
+        self.con.execute("insert or replace into pages values (?, ?, ?)", (url, to_iso(now), content))
+        self.con.commit()
+
+    # ---------- 追踪 ----------
+
+    def follows(self, active_only: bool = True) -> list[dict]:
+        rows = self.con.execute("select event_id, created, active, seen_signals, searched from follows"
+                                + (" where active = 1" if active_only else "")).fetchall()
+        return [dict(zip(("event_id", "created", "active", "seen_signals", "searched"), r)) for r in rows]
+
+    def set_follow(self, event_id: int, on: bool, seen_signals: int, now: datetime) -> None:
+        if on:
+            self.con.execute("insert into follows (event_id, created, active, seen_signals) values (?, ?, 1, ?) "
+                             "on conflict(event_id) do update set active = 1", (event_id, to_iso(now), seen_signals))
+        else:
+            self.con.execute("update follows set active = 0 where event_id = ?", (event_id,))
+        self.con.commit()
+
+    def update_follow(self, event_id: int, **fields) -> None:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        self.con.execute(f"update follows set {sets} where event_id = ?", (*fields.values(), event_id))
+        self.con.commit()
+
+    def add_event_update(self, event_id: int, text: str, now: datetime) -> None:
+        self.con.execute("insert into event_updates (event_id, at, text) values (?, ?, ?)", (event_id, to_iso(now), text))
+        self.con.commit()
+
+    def event_updates(self, event_ids: Iterable[int]) -> dict[int, list[dict]]:
+        ids = list(event_ids)
+        rows = self.con.execute("select event_id, at, text from event_updates "
+                                f"where event_id in ({','.join('?' * len(ids))}) order by at desc", ids)
+        out: dict[int, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r[0], []).append({"at": r[1], "text": r[2]})
+        return out
+
+    # ---------- 补课简报、回顾 ----------
+
+    def digest(self, key: str) -> str | None:
+        r = self.con.execute("select text from digests where key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def save_digest(self, key: str, text: str, now: datetime) -> None:
+        self.con.execute("insert or replace into digests values (?, ?, ?)", (key, to_iso(now), text))
+        self.con.commit()
+
+    def add_miss(self, text: str, now: datetime) -> None:
+        self.con.execute("insert into misses (text, at) values (?, ?)", (text, to_iso(now)))
+        self.con.commit()
+
+    def week_stats(self, since: datetime) -> dict:
+        q = lambda sql: self.con.execute(sql, (to_iso(since),)).fetchone()[0]
+        return {
+            "pushed": q("select count(*) from pushes where at >= ?"),
+            "useful": q("select count(*) from feedback where value = 'useful' and at >= ?"),
+            "not_needed": q("select count(*) from feedback where value = 'not_needed' and at >= ?"),
+            "chats": q("select count(*) from messages where role = 'user' and created >= ?"),
+            "memories": q("select count(*) from memories where deleted = 0 and created >= ?"),
+            "would_miss": q("select count(*) from ratings where would_miss = 1 and at >= ?"),
+            "rated": q("select count(*) from ratings where at >= ?"),
+            "misses": q("select count(*) from misses where at >= ?"),
+        }
 
     # ---------- 设备 ----------
 

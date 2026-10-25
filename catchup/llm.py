@@ -19,10 +19,22 @@ class LLM:
         self.key = key
         self.model = model
 
+    def _body(self, messages: list[dict], max_tokens: int, **extra) -> dict:
+        return {"model": self.model, "temperature": 0.3, "max_tokens": max_tokens, "thinking": {"type": "disabled"},
+                "messages": messages, **extra}
+
+    def stream(self, messages: list[dict], max_tokens: int = 1500):
+        """流式对话，逐段产出回复文本。"""
+        for chunk in http.post_stream(API, self._body(messages, max_tokens, stream=True),
+                                      {"Authorization": f"Bearer {self.key}"}, timeout=120):
+            for choice in chunk.get("choices", []):
+                text = (choice.get("delta") or {}).get("content")
+                if text:
+                    yield text
+
     def json(self, system: str, user: str, max_tokens: int = 800) -> dict:
-        body = {"model": self.model, "temperature": 0.2, "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        body = self._body([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens,
+                          temperature=0.2, response_format={"type": "json_object"})
         resp = http.post_json(API, body, {"Authorization": f"Bearer {self.key}"}, timeout=90)
         return json.loads(resp["choices"][0]["message"]["content"])
 

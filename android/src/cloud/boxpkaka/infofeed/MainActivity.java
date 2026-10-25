@@ -77,7 +77,8 @@ public class MainActivity extends Activity {
     private ListView list;
     private PullLayout pull;
     private LinearLayout header;
-    private TextView catchLine, catchSub, statusChip;
+    private TextView catchLine, catchSub, statusChip, digestText;
+    private long digestFor = -1; // 已为哪个“上次离开时间”取过补课简报
     private LinearLayout updateNotice, batteryNotice;
     private TextView updateText, updateAction;
     private View skeleton;
@@ -186,6 +187,14 @@ public class MainActivity extends Activity {
         topBar.setPadding(t.dp(20), t.dp(12), t.dp(8), t.dp(8));
         topBar.setBackgroundColor(t.bg);
         topBar.addView(wordmark(24), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView ask = t.pill(this, "问一问", false);
+        ask.setTextSize(13);
+        ask.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        ask.setOnClickListener(v -> {
+            startActivity(new Intent(this, ChatActivity.class));
+            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        });
+        topBar.addView(ask);
         TextView menu = t.text(this, "⋯", 22, t.ink, 700);
         menu.setGravity(Gravity.CENTER);
         menu.setContentDescription("菜单");
@@ -303,6 +312,12 @@ public class MainActivity extends Activity {
         catchLine.setLetterSpacing(-0.02f);
         catchLine.setPadding(0, t.dp(14), 0, 0);
         header.addView(catchLine);
+        digestText = t.text(this, "", 15, t.ink, 400);
+        digestText.setAlpha(0.86f);
+        digestText.setLineSpacing(t.dp(6), 1f);
+        digestText.setPadding(0, t.dp(14), 0, 0);
+        digestText.setVisibility(View.GONE);
+        header.addView(digestText);
         catchSub = t.text(this, "", 13, t.sub, 400);
         catchSub.setPadding(0, t.dp(12), 0, t.dp(10));
         header.addView(catchSub);
@@ -448,11 +463,39 @@ public class MainActivity extends Activity {
         catchSub.setText("过去三天整理了 " + total + " 件事，来自 " + sources.size() + " 个来源");
 
         rows.clear();
+        JSONArray follows = feed.optJSONArray("following");
+        if (follows != null && follows.length() > 0) {
+            rows.add(new Row(0, "追踪中", null));
+            for (int i = 0; i < follows.length(); i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
+        }
         if (!highlights.isEmpty()) rows.add(new Row(0, "值得知道", null));
         for (JSONObject e : highlights) rows.add(new Row(1, null, e));
         if (!others.isEmpty()) rows.add(new Row(0, "其他动态", null));
         for (JSONObject e : others) rows.add(new Row(2, null, e));
         adapter.notifyDataSetChanged();
+        if (newHighlights > 0 && digestFor != seenAtOpen) loadDigest(seenAtOpen);
+        else if (newHighlights == 0) digestText.setVisibility(View.GONE);
+    }
+
+    /** 离开期间的补课简报：AI 把这段时间的重要事件写成一段话，放在首页大字下面。 */
+    private void loadDigest(long since) {
+        digestFor = since;
+        new Thread(() -> {
+            String text = "";
+            try {
+                text = Api.get(this, "/v1/digest?since=" + since).optString("text");
+            } catch (Exception e) {
+                Trace.log(this, "digest.fail", e.toString());
+            }
+            String got = text;
+            runOnUiThread(() -> {
+                if (isDestroyed() || got.isEmpty()) return;
+                digestText.setText(got);
+                digestText.setAlpha(0f);
+                digestText.setVisibility(View.VISIBLE);
+                digestText.animate().alpha(0.86f).setDuration(240).start();
+            });
+        }, "digest").start();
     }
 
     /** 首页最大的那句话：产品名字的由来。 */
@@ -504,7 +547,8 @@ public class MainActivity extends Activity {
         @Override
         public long getItemId(int i) {
             Row r = rows.get(i);
-            return r.e == null ? -i - 1 : r.e.optLong("id");
+            if (r.e == null) return -i - 1;
+            return r.type == 3 ? -1_000_000L - r.e.optLong("id") : r.e.optLong("id"); // 追踪的事件也可能出现在下面
         }
 
         @Override
@@ -514,7 +558,7 @@ public class MainActivity extends Activity {
 
         @Override
         public int getViewTypeCount() {
-            return 3;
+            return 4;
         }
 
         @Override
@@ -534,6 +578,11 @@ public class MainActivity extends Activity {
                 TextView label = convert != null ? (TextView) convert : sectionLabel();
                 label.setText(r.label);
                 return label;
+            }
+            if (r.type == 3) {
+                if (convert == null) convert = newFollowRow();
+                bindFollow((Holder) convert.getTag(), r.e);
+                return convert;
             }
             if (convert == null) convert = r.type == 1 ? newCard() : newRow();
             Holder h = (Holder) convert.getTag();
@@ -665,6 +714,57 @@ public class MainActivity extends Activity {
         return swipeFrame(h, row);
     }
 
+    /** 追踪中的事件：标题 + 最近一条进展；上次看过之后有新进展的标朱砂点。 */
+    private View newFollowRow() {
+        Holder h = new Holder();
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
+        card.setBackground(t.ripple(t.sheet, 18));
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        h.headline = t.text(this, "", 15, t.ink, 700);
+        h.headline.setMaxLines(2);
+        h.headline.setEllipsize(TextUtils.TruncateAt.END);
+        top.addView(h.headline, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        h.dot = dot();
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(8), t.dp(8));
+        dl.leftMargin = t.dp(10);
+        top.addView(h.dot, dl);
+        card.addView(top);
+        h.summary = t.text(this, "", 13.5f, t.ink, 400);
+        h.summary.setAlpha(0.78f);
+        h.summary.setLineSpacing(t.dp(3), 1f);
+        h.summary.setMaxLines(2);
+        h.summary.setEllipsize(TextUtils.TruncateAt.END);
+        h.summary.setPadding(0, t.dp(6), 0, 0);
+        card.addView(h.summary);
+        h.meta = t.text(this, "", 12, t.sub, 500);
+        h.meta.setPadding(0, t.dp(8), 0, 0);
+        card.addView(h.meta);
+        h.front = card;
+        FrameLayout frame = new FrameLayout(this);
+        frame.setPadding(t.dp(16), t.dp(4), t.dp(16), t.dp(4));
+        frame.addView(card);
+        frame.setTag(h);
+        return frame;
+    }
+
+    private void bindFollow(Holder h, JSONObject f) {
+        h.headline.setText(f.optString("headline"));
+        String update = f.optString("update");
+        show(h.summary, update.isEmpty() ? "还没有新进展，有实质变化时会告诉你" : update);
+        int n = f.optInt("update_count");
+        h.meta.setText((n > 0 ? n + " 条进展，" : "") + "最近 " + Theme.ago(Theme.millis(f.optString("updated"))));
+        h.dot.setVisibility(n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen
+                ? View.VISIBLE : View.INVISIBLE);
+        long id = f.optLong("id");
+        h.front.setOnClickListener(v -> {
+            startActivity(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        });
+    }
+
     private void bindCard(Holder h, JSONObject e) {
         JSONArray topics = e.optJSONArray("topics");
         show(h.chipA, topics != null && topics.length() > 0 ? topics.optString(0) : "");
@@ -776,22 +876,14 @@ public class MainActivity extends Activity {
     // ---------- 菜单 ----------
 
     private void showMenu() {
-        Dialog d = new Dialog(this);
-        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(0, t.dp(10), 0, t.dp(24));
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(t.bg);
-        float r = t.dp(26);
-        shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
-        sheet.setBackground(shape);
-        View grab = new View(this);
-        grab.setBackground(t.round(t.line, 2));
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(t.dp(36), t.dp(4));
-        glp.gravity = Gravity.CENTER_HORIZONTAL;
-        glp.bottomMargin = t.dp(10);
-        sheet.addView(grab, glp);
+        Dialog d = t.sheet(this, sheet);
+        sheet.addView(menuRow("记忆", "Catchup 记得的关于你的事", () -> {
+            d.dismiss();
+            startActivity(new Intent(this, MemoryActivity.class));
+            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        }));
         sheet.addView(menuRow("检查更新", "当前 " + Updater.currentVersion(this), () -> {
             d.dismiss();
             checkUpdate(true);
@@ -804,13 +896,6 @@ public class MainActivity extends Activity {
             d.dismiss();
             startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
         }));
-        d.setContentView(sheet);
-        Window w = d.getWindow();
-        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        w.setGravity(Gravity.BOTTOM);
-        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0.32f);
         d.show();
     }
 

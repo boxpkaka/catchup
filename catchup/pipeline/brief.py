@@ -17,7 +17,8 @@ BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下�
 {"headline": "中文标题，不超过 24 个字，说清谁做了什么",
  "summary": "1～2 句中文事实陈述，不超过 90 个字，只写报道里有的信息，不夸大、不评价",
  "why": "直接对读者说话，用“你”称呼，结合他的关注点说明这件事和你有什么关系，不超过 50 个字；和关注点无关就输出空字符串",
- "importance": 1～5 的整数}
+ "importance": 1～5 的整数,
+ "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"]}
 importance 的含义：5 = 行业重大发布，或读者关注领域的关键进展；4 = 值得当天知道；3 = 一般动态；2 = 边缘信息；1 = 噪声、营销或与 AI 无关。
 不要编造报道里没有的数字和结论。"""
 
@@ -62,25 +63,27 @@ def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source]
     return merged
 
 
-def write_briefs(store, events: list[Event], interests: list[dict], llm, sources: dict[str, Source],
-                 now: datetime, top: int = 25) -> int:
-    """给排名前 top 的事件写简报；已有简报且没有新报道的跳过。返回新写的条数。"""
+def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str, Source],
+                 now: datetime, top: int = 25, memory_rev: int = 0) -> int:
+    """给排名前 top 的事件写简报；已有简报、没有新报道且记忆没变过的跳过。返回新写的条数。
+
+    focus 是“读者是谁”的描述（配置兴趣 + 个人记忆，见 personal.focus），记忆变化后 memory_rev 变大，简报按新记忆重写。
+    """
     pool = events[:top]
     existing = store.briefs(e.id for e in pool)
-    focus = "；".join(f"{i['name']}（{'、'.join(i['keywords'][:8])}）" for i in interests)
     written = 0
     for e in pool:
         old = existing.get(e.id)
-        if old and old["signal_count"] >= len(e.signals):
+        if old and old["signal_count"] >= len(e.signals) and old["memory_rev"] >= memory_rev:
             continue
         reports = "\n".join(f"- [{_label(s, sources)}] {s.title}\n  {s.summary[:200]}" for s in e.signals[:8])
         try:
-            brief = _clean(llm.json(BRIEF_SYSTEM, f"读者关注：{focus}\n\n报道：\n{reports}", max_tokens=500))
+            brief = _clean(llm.json(BRIEF_SYSTEM, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=600))
         except Exception as err:
             log.warning("brief for event %d failed: %r", e.id, err)
             continue
         if brief:
-            store.save_brief(e.id, now, llm.model, len(e.signals), brief)
+            store.save_brief(e.id, now, llm.model, len(e.signals), brief, memory_rev)
             written += 1
     return written
 
@@ -93,8 +96,9 @@ def _clean(raw: dict) -> dict | None:
         importance = min(max(int(raw.get("importance", 3)), 1), 5)
     except (TypeError, ValueError):
         importance = 3
+    questions = [str(q).strip()[:40] for q in raw.get("questions") or [] if str(q).strip()][:3]
     return {"headline": headline[:60], "summary": str(raw.get("summary") or "").strip()[:200],
-            "why": str(raw.get("why") or "").strip()[:120], "importance": importance}
+            "why": str(raw.get("why") or "").strip()[:120], "importance": importance, "questions": questions}
 
 
 def _label(signal, sources: dict[str, Source]) -> str:

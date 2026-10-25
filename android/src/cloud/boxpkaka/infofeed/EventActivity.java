@@ -33,8 +33,9 @@ public class EventActivity extends Activity {
     private long id;
     private JSONObject event;
     private LinearLayout body, sources, actions;
-    private TextView useful;
+    private TextView useful, follow;
     private String feedback;
+    private boolean following;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -81,15 +82,19 @@ public class EventActivity extends Activity {
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        TextView back = t.text(this, "←", 20, t.ink, 700);
-        back.setGravity(Gravity.CENTER);
-        back.setContentDescription("返回");
-        back.setBackground(t.ripple(t.sheet, 22));
+        TextView back = t.backButton(this);
         back.setElevation(t.dp(2));
-        back.setOnClickListener(v -> onBackPressed());
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(44), t.dp(44));
         bl.setMargins(t.dp(14), t.dp(14), 0, 0);
         root.addView(back, bl);
+
+        follow = t.pill(this, "追踪", false);
+        follow.setElevation(t.dp(2));
+        follow.setOnClickListener(v -> toggleFollow());
+        FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(44),
+                Gravity.END | Gravity.TOP);
+        fl.setMargins(0, t.dp(14), t.dp(14), 0);
+        root.addView(follow, fl);
 
         actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
@@ -99,10 +104,10 @@ public class EventActivity extends Activity {
         useful = action("有用", v -> toggleUseful());
         actions.addView(useful, weight());
         actions.addView(action("不需要", v -> notNeeded()), weight());
-        TextView source = action("看原文", v -> openUrl(event == null ? "" : event.optString("url")));
-        source.setBackground(t.ripple(t.ink, 99));
-        source.setTextColor(t.bg);
-        actions.addView(source, weight());
+        TextView ask = action("问一问", v -> openChat(null));
+        ask.setBackground(t.ripple(t.ink, 99));
+        ask.setTextColor(t.bg);
+        actions.addView(ask, weight());
         FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
         al.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
@@ -113,6 +118,8 @@ public class EventActivity extends Activity {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
                 bl.topMargin = bars.top + t.dp(10);
                 back.setLayoutParams(bl);
+                fl.topMargin = bars.top + t.dp(10);
+                follow.setLayoutParams(fl);
                 body.setPadding(t.dp(22), bars.top + t.dp(72), t.dp(22), bars.bottom + t.dp(120));
                 al.bottomMargin = bars.bottom + t.dp(16);
                 actions.setLayoutParams(al);
@@ -167,10 +174,17 @@ public class EventActivity extends Activity {
         headline.setPadding(0, t.dp(16), 0, 0);
         body.addView(headline);
 
-        TextView meta = t.text(this, e.optInt("source_count") + " 个来源，最近一条 "
-                + Theme.ago(Theme.millis(e.optString("time"))), 13, t.sub, 500);
-        meta.setPadding(0, t.dp(12), 0, 0);
-        body.addView(meta);
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(0, t.dp(12), 0, 0);
+        metaRow.addView(t.text(this, e.optInt("source_count") + " 个来源，最近一条 "
+                + Theme.ago(Theme.millis(e.optString("time"))), 13, t.sub, 500));
+        TextView original = t.text(this, "看原文 ↗", 13, t.ink, 700);
+        original.setPadding(t.dp(12), t.dp(4), t.dp(4), t.dp(4));
+        original.setBackground(t.ripple(Color.TRANSPARENT, 8));
+        original.setOnClickListener(v -> openUrl(e.optString("url")));
+        metaRow.addView(original);
+        body.addView(metaRow);
 
         String summary = e.optString("summary");
         if (!summary.isEmpty()) {
@@ -220,6 +234,14 @@ public class EventActivity extends Activity {
             body.addView(ai);
         }
 
+        JSONArray updates = e.optJSONArray("updates");
+        if (updates != null && updates.length() > 0) {
+            body.addView(sectionLabel("进展"));
+            for (int i = 0; i < updates.length(); i++) body.addView(updateRow(updates.optJSONObject(i), i == 0));
+        }
+
+        body.addView(askSection(e));
+
         TextView srcLabel = t.text(this, "来源", 13, t.sub, 700);
         srcLabel.setPadding(0, t.dp(32), 0, t.dp(4));
         body.addView(srcLabel);
@@ -234,7 +256,135 @@ public class EventActivity extends Activity {
         } else {
             for (int i = 0; i < signals.length(); i++) sources.addView(sourceRow(signals.optJSONObject(i)));
         }
+        if (e.has("would_miss")) body.addView(wouldMiss(e.isNull("would_miss") ? null : e.optBoolean("would_miss")));
+        following = e.optBoolean("following");
         updateActions();
+    }
+
+    private TextView sectionLabel(String text) {
+        TextView v = t.text(this, text, 13, t.sub, 700);
+        v.setPadding(0, t.dp(30), 0, t.dp(10));
+        return v;
+    }
+
+    /** 追踪发现的实质进展，最新的在上，最新一条用朱砂点标出。 */
+    private View updateRow(JSONObject u, boolean latest) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, t.dp(6), 0, t.dp(10));
+        View dot = new View(this);
+        dot.setBackground(t.round(latest ? Theme.CINNABAR : t.line, 99));
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(8), t.dp(8));
+        dl.topMargin = t.dp(6);
+        row.addView(dot, dl);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(t.dp(12), 0, 0, 0);
+        TextView text = t.text(this, u.optString("text"), 15, t.ink, 500);
+        text.setLineSpacing(t.dp(4), 1f);
+        col.addView(text);
+        TextView time = t.text(this, Theme.ago(Theme.millis(u.optString("at"))), 12, t.sub, 400);
+        time.setPadding(0, t.dp(4), 0, 0);
+        col.addView(time);
+        row.addView(col);
+        return row;
+    }
+
+    /** 问一问：建议问题直接发出；有过对话的可以接着聊。 */
+    private View askSection(JSONObject e) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(sectionLabel("问一问"));
+        JSONObject thread = e.optJSONObject("thread");
+        if (thread != null && thread.optInt("count") > 0) {
+            TextView resume = t.text(this, "继续上次的对话（" + thread.optInt("count") + " 条）", 15, t.ink, 600);
+            resume.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
+            resume.setBackground(t.ripple(t.chip, 16));
+            resume.setOnClickListener(v -> openChat(null));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = t.dp(8);
+            box.addView(resume, lp);
+        }
+        JSONArray qs = e.optJSONArray("questions");
+        for (int i = 0; qs != null && i < qs.length(); i++) {
+            String q = qs.optString(i);
+            TextView chip = t.text(this, q, 15, t.ink, 500);
+            chip.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
+            chip.setBackground(t.ripple(t.sheet, 16));
+            chip.setOnClickListener(v -> openChat(q));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = t.dp(8);
+            box.addView(chip, lp);
+        }
+        return box;
+    }
+
+    /** “要不是 Catchup，你会错过它吗？”——衡量产品核心价值的那个问题。 */
+    private View wouldMiss(Boolean answer) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, t.dp(32), 0, 0);
+        box.addView(t.text(this, "要不是 Catchup，你会错过它吗？", 14, t.ink, 600));
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, t.dp(12), 0, 0);
+        TextView yes = t.pill(this, "会错过", Boolean.TRUE.equals(answer));
+        TextView no = t.pill(this, "本来就知道", Boolean.FALSE.equals(answer));
+        yes.setOnClickListener(v -> rate(true, yes, no));
+        no.setOnClickListener(v -> rate(false, yes, no));
+        row.addView(yes);
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        gap.leftMargin = t.dp(8);
+        row.addView(no, gap);
+        box.addView(row);
+        return box;
+    }
+
+    private void rate(boolean wouldMiss, TextView yes, TextView no) {
+        restyle(yes, wouldMiss);
+        restyle(no, !wouldMiss);
+        yes.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
+        post("/v1/events/" + id + "/rating", "{\"would_miss\": " + wouldMiss + "}");
+    }
+
+    private void restyle(TextView pill, boolean filled) {
+        pill.setTextColor(filled ? t.bg : t.ink);
+        pill.setBackground(t.ripple(filled ? t.ink : t.chip, 99));
+    }
+
+    private void toggleFollow() {
+        following = !following;
+        updateActions();
+        follow.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
+        post("/v1/events/" + id + "/follow", "{\"on\": " + following + "}");
+        toast(following ? "开始追踪：有实质进展时会告诉你" : "已取消追踪");
+    }
+
+    private void openChat(String question) {
+        Intent i = new Intent(this, ChatActivity.class)
+                .putExtra(ChatActivity.EXTRA_EVENT, id)
+                .putExtra(ChatActivity.EXTRA_TITLE, event == null ? "" : event.optString("headline"));
+        JSONArray qs = event == null ? null : event.optJSONArray("questions");
+        if (qs != null) {
+            String[] arr = new String[qs.length()];
+            for (int k = 0; k < arr.length; k++) arr[k] = qs.optString(k);
+            i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
+        }
+        if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
+        startActivity(i);
+        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+    }
+
+    private void post(String path, String json) {
+        android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            try {
+                Api.post(app, path, new JSONObject(json));
+            } catch (Exception err) {
+                Trace.log(app, "post.fail", path + " " + err);
+            }
+        }, "post").start();
     }
 
     private View sourceRow(JSONObject s) {
@@ -274,6 +424,9 @@ public class EventActivity extends Activity {
         boolean on = "useful".equals(feedback);
         useful.setText(on ? "已标记有用" : "有用");
         useful.setBackground(t.ripple(on ? t.chip : Color.TRANSPARENT, 99));
+        follow.setText(following ? "追踪中" : "追踪");
+        follow.setTextColor(following ? t.bg : t.ink);
+        follow.setBackground(t.ripple(following ? t.ink : t.sheet, 99));
     }
 
     private void toggleUseful() {

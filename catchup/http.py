@@ -21,6 +21,22 @@ def get_json(url: str, headers: dict | None = None):
     return json.loads(get(url, headers))
 
 
+def post_stream(url: str, payload, headers: dict | None = None, timeout: int = TIMEOUT):
+    """POST 后逐条产出服务端 SSE 里 data: 行的 JSON，遇到 [DONE] 结束。"""
+    req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
+                                          "Accept": "text/event-stream", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            yield json.loads(data)
+
+
 def post_json(url: str, payload, headers: dict | None = None, timeout: int = TIMEOUT):
     req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
                                  headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",

@@ -19,6 +19,8 @@ DEFAULTS = {
     "max_report_bonus": 2.0,
     "max_heat": 3.0,
     "off_topic_factor": 0.4,   # 与任何兴趣都无关的事件乘以这个系数
+    "avoid_factor": 0.25,      # 命中“不想看”的记忆
+    "source_bonus": 1.0,       # 来自偏好的来源
 }
 
 
@@ -27,6 +29,7 @@ class Interest:
     name: str
     weight: float
     keywords: list[str]
+    said: str = ""   # 来自记忆时是用户说过的原话，理由里直接引用
 
     def hits(self, text: str) -> list[str]:
         return sorted(k for k in self.keywords if keyword_in(k.lower(), text))
@@ -42,8 +45,11 @@ def keyword_in(keyword: str, text: str) -> bool:
 
 
 class Ranker:
-    def __init__(self, interests: list[Interest], **options):
+    def __init__(self, interests: list[Interest], avoid: list[Interest] | None = None,
+                 sources: list[Interest] | None = None, **options):
         self.interests = interests
+        self.avoid = avoid or []       # 不想看：命中即大幅降权
+        self.sources = sources or []   # 偏好的来源：关键词匹配来源名和频道
         self.opt = {**DEFAULTS, **options}
 
     @classmethod
@@ -62,7 +68,15 @@ class Ranker:
             if hits := interest.hits(text):
                 score += interest.weight + 0.3 * (len(hits) - 1)
                 topics.append(interest.name)
-                reasons.append(f"命中你关注的「{interest.name}」：{'、'.join(hits[:3])}")
+                reasons.append(f"和你说过的「{interest.said}」有关" if interest.said
+                               else f"命中你关注的「{interest.name}」：{'、'.join(hits[:3])}")
+
+        origin = " ".join(f"{s.source} {s.channel}" for s in event.signals).lower()
+        for pref in self.sources:
+            if pref.hits(origin):
+                score += opt["source_bonus"]
+                reasons.append(f"来自你偏好的来源：{pref.said or pref.name}")
+                break
 
         score += opt["tier_weights"].get(lead.tier, 0.0)
         if lead.tier == "official":
@@ -83,6 +97,11 @@ class Ranker:
         score *= 0.5 ** (age_hours / opt["half_life_hours"])
         if not topics:
             score *= opt["off_topic_factor"]
+        for a in self.avoid:
+            if a.hits(text):
+                score *= opt["avoid_factor"]
+                reasons.append(f"你说过不想看「{a.said or a.name}」，已降低优先级")
+                break
 
         event.score, event.topics, event.reasons = round(score, 2), topics, reasons
         return event

@@ -27,6 +27,8 @@
         </activity>
 
         <activity android:name=".EventActivity" android:exported="false" />
+        <activity android:name=".ChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".MemoryActivity" android:exported="false" />
 
         <service android:name=".FeedService" android:exported="false"
             android:foregroundServiceType="specialUse">

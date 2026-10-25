@@ -26,13 +26,25 @@ DEFAULTS = {
 }
 
 
-def select(options: dict, store, events: list[Event], now: datetime) -> list[Event]:
+def quiet(options: dict, now: datetime) -> bool:
     opt = {**DEFAULTS, **options}
     start, end = opt["quiet_hours"]
     hour = (now + timedelta(hours=opt["utc_offset"])).hour
-    if (start <= hour or hour < end) if start > end else (start <= hour < end):
+    return (start <= hour or hour < end) if start > end else (start <= hour < end)
+
+
+def morning(options: dict, now: datetime) -> bool:
+    """免打扰结束后的第一个小时：夜里攒下的事件合成一条早报推送。"""
+    opt = {**DEFAULTS, **options}
+    return (now + timedelta(hours=opt["utc_offset"])).hour == opt["quiet_hours"][1]
+
+
+def select(options: dict, store, events: list[Event], now: datetime) -> list[Event]:
+    opt = {**DEFAULTS, **options}
+    if quiet(opt, now):
         return []
-    room = min(opt["per_run"], opt["per_day"] - store.pushes_since(now - timedelta(hours=24)))
+    per_run = opt["per_day"] if morning(opt, now) else opt["per_run"]
+    room = min(per_run, opt["per_day"] - store.pushes_since(now - timedelta(hours=24)))
     if room <= 0:
         return []
     pushed, feedback = store.pushed(), store.feedback()
@@ -47,23 +59,40 @@ def select(options: dict, store, events: list[Event], now: datetime) -> list[Eve
     return candidates[:room]
 
 
-def deliver(store, events: list[Event], now: datetime) -> int:
-    """逐条发到 hub；单条失败只记日志，成功的才记为已推送。"""
+def _send(title: str, message: str, click: str) -> bool:
     url, token = os.environ.get("FEED_URL"), os.environ.get("FEED_TOKEN")
     if not url or not token:
         log.warning("FEED_URL / FEED_TOKEN not set, skipping push")
-        return 0
+        return False
+    try:
+        http.post_json(url, {"title": title, "message": message, "click": click}, {"Authorization": f"Bearer {token}"})
+        return True
+    except Exception as err:
+        log.warning("push %r failed: %r", title, err)
+        return False
+
+
+def deliver(store, events: list[Event], now: datetime, options: dict | None = None) -> int:
+    """逐条发到 hub，成功的才记为已推送。早上第一轮且攒了两件以上时合成一条早报，点开进首页。"""
     briefs = store.briefs(e.id for e in events)
+    if len(events) >= 2 and morning(options or {}, now):
+        lines = "\n".join(f"· {briefs[e.id]['headline']}" for e in events)
+        if not _send(f"夜里有 {len(events)} 件值得知道", lines, "catchup://home"):
+            return 0
+        for e in events:
+            store.record_push(e.id, now)
+        return len(events)
     sent = 0
     for e in events:
         b = briefs[e.id]
-        message = b["summary"] + (f"\n{b['why']}" if b["why"] else "")
-        try:
-            http.post_json(url, {"title": b["headline"], "message": message, "click": f"catchup://event/{e.id}"},
-                           {"Authorization": f"Bearer {token}"})
-        except Exception as err:
-            log.warning("push event %d failed: %r", e.id, err)
-            continue
-        store.record_push(e.id, now)
-        sent += 1
+        if _send(b["headline"], b["summary"] + (f"\n{b['why']}" if b["why"] else ""), f"catchup://event/{e.id}"):
+            store.record_push(e.id, now)
+            sent += 1
     return sent
+
+
+def deliver_updates(options: dict, updates: list[dict], now: datetime, limit: int = 3) -> int:
+    """追踪事件的实质进展；免打扰时段只记入时间线、不推送。"""
+    if quiet(options, now):
+        return 0
+    return sum(_send(f"追踪：{u['headline']}", u["text"], f"catchup://event/{u['event_id']}") for u in updates[:limit])

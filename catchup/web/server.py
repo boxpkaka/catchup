@@ -6,7 +6,7 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from ..config import Config
 from ..pipeline.feed import build_feed
@@ -43,12 +43,30 @@ def make_handler(config: Config) -> type[BaseHTTPRequestHandler]:
                     body = json.loads(self.rfile.read(length) or b"{}")
                 except ValueError:
                     return self.reply(400, b'{"error": "bad json"}', "application/json")
+            url = urlparse(self.path)
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
             store = Store(config.db_path)
             try:
-                status, payload = app_api.handle(config, store, method, urlparse(self.path).path, self.headers, body)
+                status, payload = app_api.handle(config, store, method, url.path, self.headers, body, query)
+                if isinstance(payload, (dict, list)):
+                    self.reply(status, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+                else:
+                    self.stream(payload)
             finally:
                 store.con.close()
-            self.reply(status, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+
+        def stream(self, events) -> None:
+            """把生成器产出的消息逐条以 SSE 写回；客户端断开就停止。"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                for event in events:
+                    self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                log.info("client left during stream")
 
         def do_POST(self):
             if urlparse(self.path).path.startswith("/v1/"):

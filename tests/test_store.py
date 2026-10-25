@@ -28,6 +28,29 @@ class StoreTest(unittest.TestCase):
         self.assertEqual([s.url for s in got], ["https://undated"])
         self.assertEqual(got[0].published, NOW)
 
+    def test_concurrent_open_migrates_once(self):
+        # 回归：服务重启后多个请求同时打开数据库，executescript 曾留下半迁移状态
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            path, errors = f"{d}/c.db", []
+
+            def open_store():
+                try:
+                    Store(path).con.close()
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=open_store) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [])
+            store = Store(path)
+            self.assertEqual(store.con.execute("pragma user_version").fetchone()[0], len(MIGRATIONS))
+            self.assertIn("questions", [r[1] for r in store.con.execute("pragma table_info(briefs)")])
+
     def test_last_runs(self):
         self.store.record_run("x", NOW, 3, 1)
         self.store.record_run("x", NOW, 0, 0, "boom")
