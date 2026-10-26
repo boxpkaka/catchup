@@ -103,19 +103,16 @@ class PushTest(unittest.TestCase):
         self.events = ranker.rank(group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)
         brief.write_briefs(self.store, self.events, "关注语音", FakeLLM(), {}, NOW)
 
-    def test_caps_quiet_hours_and_feedback(self):
-        opts = {"min_score": 0, "per_hour": 2, "per_day": 3}
-        self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 2)
+    def test_quiet_hours_pushed_and_feedback(self):
+        opts = {"min_score": 0}
+        self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 5)  # 过了门槛的都推，不限条数
         self.assertEqual(push.select(opts, self.store, self.events, NOW.replace(hour=16)), [])  # 北京时间 0 点
         for e in self.events[:2]:
             self.store.record_push(e.id, NOW - timedelta(minutes=30))
-        self.assertEqual(push.select(opts, self.store, self.events, NOW), [])  # 一小时内已推 2 条
-        later = NOW + timedelta(minutes=31)
-        self.assertEqual(len(push.select(opts, self.store, self.events, later)), 1)  # 24 小时上限只剩 1 条
-        self.store.con.execute("delete from pushes")
-        self.store.set_feedback(self.events[0].id, "not_needed", NOW)
-        picked = push.select({**opts, "per_hour": 9, "per_day": 9}, self.store, self.events, NOW)
-        self.assertNotIn(self.events[0].id, [e.id for e in picked])
+        self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 3)  # 推过的不再推
+        self.store.set_feedback(self.events[2].id, "not_needed", NOW)
+        picked = push.select(opts, self.store, self.events, NOW)
+        self.assertNotIn(self.events[2].id, [e.id for e in picked])
 
     def test_low_importance_is_not_pushed(self):
         self.store.con.execute("update briefs set importance = 3")
@@ -359,7 +356,7 @@ class MorningDigestTest(unittest.TestCase):
         brief.write_briefs(store, events, "", FakeLLM(), {}, NOW)
         at8 = NOW.replace(hour=0, minute=37)  # 北京时间 8:37
         picked = push.select({"min_score": 0}, store, events, at8)
-        self.assertEqual(len(picked), 3)  # 早上不受每小时 2 条的限制
+        self.assertEqual(len(picked), 3)
         with mock.patch.dict("os.environ", {"FEED_URL": "u", "FEED_TOKEN": "t"}), \
                 mock.patch("catchup.http.post_json") as post:
             self.assertEqual(push.deliver(store, picked, at8, {}), 3)
