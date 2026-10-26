@@ -34,7 +34,7 @@ FOLLOW_DAYS = 30
 DISMISSED_DAYS = 30
 
 DIGEST_SYSTEM = """用户离开了一段时间，下面是这期间出现的值得他知道的事件。写一段补课简报：2～4 句、不超过 140 个字，
-先说最重要的；直接用“你”称呼他，口吻像替他盯着信息的助理；结合他的情况点明和他的关系；不要列表、不要寒暄。
+先说最重要的，只讲发生了什么和关键内容；口吻像替他盯着信息的助理；不要列表、不要寒暄。
 输出 JSON：{"text": "..."}"""
 
 
@@ -296,7 +296,7 @@ def digest(config: Config, store: Store, since_ms: int, now: datetime) -> dict:
         if llm is None:
             return {"text": "", "count": len(fresh)}
         hours = max(1, int((now - since).total_seconds() // 3600))
-        lines = "\n".join(f"- {e['headline']}：{e['summary']}（与他的关系：{e['why'] or '无'}）" for e in fresh[:8])
+        lines = "\n".join(f"- {e['headline']}：{e['summary']}" for e in fresh[:8])
         try:
             text = str(llm.json(DIGEST_SYSTEM, f"用户是谁：\n{personal.focus(config, store, now)}\n\n"
                                                f"离开约 {hours} 小时，期间的事件：\n{lines}", max_tokens=400)

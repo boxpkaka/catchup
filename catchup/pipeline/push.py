@@ -83,7 +83,7 @@ def deliver(store, events: list[Event], now: datetime, options: dict | None = No
     sent = 0
     for e in events:
         b = briefs[e.id]
-        if _send(b["headline"], b["summary"] + (f"\n{b['why']}" if b["why"] else ""), f"catchup://event/{e.id}"):
+        if _send(b["headline"], b["summary"], f"catchup://event/{e.id}"):
             store.record_push(e.id, now)
             sent += 1
     return sent

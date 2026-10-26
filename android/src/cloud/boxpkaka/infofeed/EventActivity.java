@@ -22,7 +22,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 事件详情：标题、事实摘要、与你有关、为什么排在前面、全部来源。底部浮动操作条：有用 / 不需要 / 看原文。
+ * 事件详情：标题、概要和要点、全部来源。底部浮动操作条：有用 / 不需要 / 看原文。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
 public class EventActivity extends Activity {
@@ -208,40 +208,6 @@ public class EventActivity extends Activity {
             p.setPadding(t.dp(12), 0, 0, 0);
             row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             body.addView(row);
-        }
-
-        String why = e.optString("why");
-        JSONArray reasons = e.optJSONArray("reasons");
-        if (!why.isEmpty() || (reasons != null && reasons.length() > 0)) {
-            LinearLayout block = new LinearLayout(this);
-            block.setOrientation(LinearLayout.VERTICAL);
-            block.setPadding(t.dp(16), t.dp(16), t.dp(16), t.dp(16));
-            block.setBackground(t.round(t.sheet, 18));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = t.dp(24);
-            LinearLayout title = new LinearLayout(this);
-            title.setGravity(Gravity.CENTER_VERTICAL);
-            View dot = new View(this);
-            dot.setBackground(t.round(Theme.CINNABAR, 99));
-            title.addView(dot, new LinearLayout.LayoutParams(t.dp(7), t.dp(7)));
-            TextView label = t.text(this, "与你有关", 13, t.ink, 700);
-            label.setPadding(t.dp(8), 0, 0, 0);
-            title.addView(label);
-            block.addView(title);
-            if (!why.isEmpty()) {
-                TextView w = t.text(this, why, 15, t.ink, 500);
-                w.setLineSpacing(t.dp(5), 1f);
-                w.setPadding(0, t.dp(10), 0, 0);
-                block.addView(w);
-            }
-            for (int i = 0; reasons != null && i < reasons.length(); i++) {
-                TextView r = t.text(this, reasons.optString(i), 13, t.sub, 400);
-                r.setLineSpacing(t.dp(3), 1f);
-                r.setPadding(0, t.dp(i == 0 ? 12 : 6), 0, 0);
-                block.addView(r);
-            }
-            body.addView(block, lp);
         }
 
         if (e.optBoolean("ai")) {
