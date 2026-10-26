@@ -684,8 +684,8 @@ public class MainActivity extends Activity {
     }
 
     private static final class Holder {
-        View front, behind, dot, whyRow;
-        TextView chipA, chipB, headline, summary, why, meta, time;
+        View front, behind, dot;
+        TextView chipA, chipB, headline, summary, meta, time;
     }
 
     private TextView sectionLabel() {
@@ -742,18 +742,6 @@ public class MainActivity extends Activity {
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
         h.summary.setPadding(0, t.dp(8), 0, 0);
         card.addView(h.summary);
-
-        LinearLayout whyRow = new LinearLayout(this);
-        whyRow.setPadding(0, t.dp(12), 0, 0);
-        View accent = new View(this);
-        accent.setBackground(t.round(Theme.CINNABAR, 2));
-        whyRow.addView(accent, new LinearLayout.LayoutParams(t.dp(3), ViewGroup.LayoutParams.MATCH_PARENT));
-        h.why = t.text(this, "", 13.5f, t.ink, 500);
-        h.why.setLineSpacing(t.dp(3), 1f);
-        h.why.setPadding(t.dp(10), 0, 0, 0);
-        whyRow.addView(h.why);
-        h.whyRow = whyRow;
-        card.addView(whyRow);
 
         h.meta = t.text(this, "", 12, t.sub, 500);
         h.meta.setFontFeatureSettings("tnum");
@@ -884,8 +872,6 @@ public class MainActivity extends Activity {
         h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
         h.headline.setText(e.optString("headline"));
         show(h.summary, e.optString("summary"));
-        h.why.setText(e.optString("why"));
-        h.whyRow.setVisibility(e.optString("why").isEmpty() ? View.GONE : View.VISIBLE);
         h.meta.setText(e.optInt("source_count") + " 个来源，" + Theme.ago(Theme.millis(e.optString("time")))
                 + (e.optBoolean("pushed") ? " · 已推送" : ""));
     }

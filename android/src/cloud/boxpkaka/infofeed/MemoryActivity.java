@@ -260,7 +260,7 @@ public class MemoryActivity extends Activity {
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
         texts.addView(t.text(this, "根据记忆个性化", 15, t.ink, 600));
-        TextView s = t.text(this, personalize ? "排序和“与你有关”会参考这些记忆" : "已关闭：按通用规则排序，不使用任何个人信息",
+        TextView s = t.text(this, personalize ? "排序会参考这些记忆" : "已关闭：按通用规则排序，不使用任何个人信息",
                 12, t.sub, 400);
         s.setPadding(0, t.dp(4), 0, 0);
         texts.addView(s);

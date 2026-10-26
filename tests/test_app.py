@@ -44,7 +44,7 @@ class FakeLLM:
             return {"substantive": self.progress is not None, "update": self.progress or ""}
         if "补课简报" in system:
             return {"text": "你离开期间 Block 发布了 Dessa。"}
-        return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。", "why": "和你关注的 AI 语音直接相关",
+        return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
                 "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"]}
 
     def stream(self, messages):
