@@ -31,7 +31,7 @@ import java.util.Map;
 
 /**
  * 记忆页：Catchup 记得的关于你的事，按类别列出，都能改、能删、能手动添加；
- * 顶部是这一周的回顾，以及“根据记忆个性化”的总开关（关掉后不使用任何个人信息排序）。
+ * 顶部是“根据记忆个性化”的总开关（关掉后不使用任何个人信息排序）。
  */
 public class MemoryActivity extends Activity {
     private Theme t;
@@ -141,7 +141,6 @@ public class MemoryActivity extends Activity {
         sub.setPadding(0, t.dp(12), 0, t.dp(20));
         body.addView(sub);
 
-        body.addView(week(r.optJSONObject("week")));
         body.addView(toggleRow());
 
         Map<String, List<JSONObject>> groups = new LinkedHashMap<>();
@@ -220,37 +219,6 @@ public class MemoryActivity extends Activity {
         lp.bottomMargin = t.dp(8);
         row.setLayoutParams(lp);
         return row;
-    }
-
-    /** 这一周的回顾：推送、反馈、对话、“要不是 Catchup 会错过”的比例。 */
-    private View week(JSONObject w) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(18));
-        card.setBackground(t.round(t.sheet, 20));
-        card.addView(t.text(this, "这一周", 13, t.sub, 700));
-        LinearLayout nums = new LinearLayout(this);
-        nums.setPadding(0, t.dp(12), 0, 0);
-        String[][] cells = {{"pushed", "推送"}, {"useful", "有用"}, {"not_needed", "不需要"}, {"chats", "对话"}};
-        for (String[] c : cells) {
-            LinearLayout cell = new LinearLayout(this);
-            cell.setOrientation(LinearLayout.VERTICAL);
-            TextView n = t.text(this, String.valueOf(w == null ? 0 : w.optInt(c[0])), 24, t.ink, 800);
-            n.setFontFeatureSettings("tnum");
-            cell.addView(n);
-            TextView l = t.text(this, c[1], 12, t.sub, 500);
-            l.setPadding(0, t.dp(4), 0, 0);
-            cell.addView(l);
-            nums.addView(cell, weight());
-        }
-        card.addView(nums);
-        if (w != null && w.optInt("rated") > 0) {
-            TextView miss = t.text(this, "你评价过的 " + w.optInt("rated") + " 件里，有 " + w.optInt("would_miss")
-                    + " 件要不是 Catchup 就会错过", 13, t.ink, 500);
-            miss.setPadding(0, t.dp(14), 0, 0);
-            card.addView(miss);
-        }
-        return card;
     }
 
     private View toggleRow() {
@@ -404,7 +372,7 @@ public class MemoryActivity extends Activity {
                     JSONObject r = Api.post(this, "/v1/misses", new JSONObject().put("text", text));
                     JSONArray added = r.optJSONArray("added");
                     msg = added != null && added.length() > 0 ? "已记下：" + added.optJSONObject(0).optString("text")
-                            : "已记下，谢谢";
+                            : "已记下";
                 } catch (Exception e) {
                     msg = "提交失败：" + MainActivity.reason(e);
                 }

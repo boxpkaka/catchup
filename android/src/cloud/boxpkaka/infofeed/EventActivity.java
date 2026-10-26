@@ -210,12 +210,6 @@ public class EventActivity extends Activity {
             body.addView(row);
         }
 
-        if (e.optBoolean("ai")) {
-            TextView ai = t.text(this, "标题、概要和要点由 AI 根据来源整理，请以原文为准", 12, t.sub, 400);
-            ai.setPadding(0, t.dp(14), 0, 0);
-            body.addView(ai);
-        }
-
         JSONArray updates = e.optJSONArray("updates");
         if (updates != null && updates.length() > 0) {
             body.addView(sectionLabel("进展"));
@@ -238,7 +232,6 @@ public class EventActivity extends Activity {
         } else {
             for (int i = 0; i < signals.length(); i++) sources.addView(sourceRow(signals.optJSONObject(i)));
         }
-        if (e.has("would_miss")) body.addView(wouldMiss(e.isNull("would_miss") ? null : e.optBoolean("would_miss")));
         following = e.optBoolean("following");
         updateActions();
     }
@@ -303,44 +296,12 @@ public class EventActivity extends Activity {
     }
 
     /** “要不是 Catchup，你会错过它吗？”——衡量产品核心价值的那个问题。 */
-    private View wouldMiss(Boolean answer) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, t.dp(32), 0, 0);
-        box.addView(t.text(this, "要不是 Catchup，你会错过它吗？", 14, t.ink, 600));
-        LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, t.dp(12), 0, 0);
-        TextView yes = t.pill(this, "会错过", Boolean.TRUE.equals(answer));
-        TextView no = t.pill(this, "本来就知道", Boolean.FALSE.equals(answer));
-        yes.setOnClickListener(v -> rate(true, yes, no));
-        no.setOnClickListener(v -> rate(false, yes, no));
-        row.addView(yes);
-        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        gap.leftMargin = t.dp(8);
-        row.addView(no, gap);
-        box.addView(row);
-        return box;
-    }
-
-    private void rate(boolean wouldMiss, TextView yes, TextView no) {
-        restyle(yes, wouldMiss);
-        restyle(no, !wouldMiss);
-        yes.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
-        post("/v1/events/" + id + "/rating", "{\"would_miss\": " + wouldMiss + "}");
-    }
-
-    private void restyle(TextView pill, boolean filled) {
-        pill.setTextColor(filled ? t.bg : t.ink);
-        pill.setBackground(t.ripple(filled ? t.ink : t.chip, 99));
-    }
-
     private void toggleFollow() {
         following = !following;
         updateActions();
         follow.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
         post("/v1/events/" + id + "/follow", "{\"on\": " + following + "}");
-        toast(following ? "开始追踪：有实质进展时会告诉你" : "已取消追踪");
+        toast(following ? "已开始追踪" : "已取消追踪");
     }
 
     private void openChat(String question) {

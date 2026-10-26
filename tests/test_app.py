@@ -42,8 +42,6 @@ class FakeLLM:
             return self.memory
         if "实质进展" in system:
             return {"substantive": self.progress is not None, "update": self.progress or ""}
-        if "补课简报" in system:
-            return {"text": "你离开期间 Block 发布了 Dessa。"}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
                 "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"]}
 
@@ -377,6 +375,8 @@ class MorningDigestTest(unittest.TestCase):
             self.assertEqual(push.deliver(store, picked, at8, {}), 3)
         post.assert_called_once()
         self.assertEqual(post.call_args.args[1]["click"], "catchup://home")
+        self.assertEqual(post.call_args.args[1]["title"], "Block 发布语音模型 Dessa")  # 最重要的那件做标题
+        self.assertEqual(len(post.call_args.args[1]["message"].splitlines()), 2)  # 其余两件列在正文
         self.assertFalse(push.morning({}, store, at8 + timedelta(minutes=10)))  # 这一小时后面几轮不再发早报
 
 
@@ -462,7 +462,7 @@ class AppApiMoreTest(unittest.TestCase):
         [s] = self.call("GET", "/v1/feed")[1]["skipped"]  # 和你有关的 Dessa 不在里面
         self.assertEqual((s["headline"], s["why"]), ("UK invests in biosecurity lab", "和你的关注无关"))
 
-    def test_follow_rating_digest_and_detail(self):
+    def test_follow_rating_and_detail(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
         self.call("POST", f"/v1/events/{eid}/follow", {"on": True})
         self.call("POST", f"/v1/events/{eid}/rating", {"would_miss": True})
@@ -470,6 +470,3 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual((feed["following"][0]["id"], feed["events"][0]["following"]), (eid, True))
         detail = self.call("GET", f"/v1/events/{eid}")[1]
         self.assertEqual((detail["would_miss"], detail["questions"][0], detail["thread"]), (True, "能本地跑吗？", None))
-        since = int((NOW - timedelta(hours=9)).timestamp() * 1000)
-        self.assertIn("Dessa", self.call("GET", "/v1/digest", query={"since": str(since)})[1]["text"])
-        self.assertEqual(self.call("GET", "/v1/memories")[1]["week"]["would_miss"], 1)

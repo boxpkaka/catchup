@@ -91,7 +91,7 @@ public class ShareActivity extends Activity {
         }
         String host = Uri.parse(m.group()).getHost();
         title.setText("正在读这篇…");
-        detail.setText((host == null ? "" : host + "\n") + "读完会整理成简报，结合你的情况说明和你有什么关系。");
+        detail.setText((host == null ? "" : host + "\n") + "读完会整理成简报。");
         retry.setVisibility(View.GONE);
         startPulse();
         Trace.log(this, "share.start", host == null ? "" : host);

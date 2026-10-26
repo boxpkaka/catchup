@@ -71,11 +71,12 @@ def _send(title: str, message: str, click: str) -> bool:
 
 
 def deliver(store, events: list[Event], now: datetime, options: dict | None = None) -> int:
-    """逐条发到 hub，成功的才记为已推送。早上第一轮且攒了两件以上时合成一条早报，点开进首页。"""
+    """逐条发到 hub，成功的才记为已推送。早上第一轮且攒了两件以上时合成一条早报：标题是最重要的那件，
+    正文列出其余几件，点开进首页。"""
     briefs = store.briefs(e.id for e in events)
     if len(events) >= 2 and morning(options or {}, store, now):
-        lines = "\n".join(f"· {briefs[e.id]['headline']}" for e in events)
-        if not _send(f"夜里有 {len(events)} 件值得知道", lines, "catchup://home"):
+        lines = "\n".join(f"· {briefs[e.id]['headline']}" for e in events[1:])
+        if not _send(briefs[events[0].id]["headline"], lines, "catchup://home"):
             return 0
         for e in events:
             store.record_push(e.id, now)
