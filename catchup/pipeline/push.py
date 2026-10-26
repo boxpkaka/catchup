@@ -1,7 +1,7 @@
 """决定哪些事件值得现在打扰用户，并经 hub 推到手机。
 
-原则（产品论文的 Push-first）：宁可少推。只推模型判定重要、规则分也过线、还没推过的事件；
-每次采集最多推几条、24 小时内有上限，夜里不推（留到早上那次采集）。参数见 config.json 的 push。
+原则：有价值就推，不限条数。只推模型判定重要、规则分也过线、还没推过的事件；
+夜里不推（攒到早上合成一条早报）。参数见 config.json 的 push。
 """
 from __future__ import annotations
 
@@ -19,8 +19,6 @@ log = logging.getLogger(__name__)
 DEFAULTS = {
     "min_importance": 4,     # 模型给的重要性至少到“值得当天知道”
     "min_score": 1.5,        # 规则分（兴趣 + 来源 + 多源 + 热度，含时间衰减）
-    "per_hour": 2,           # 滚动 1 小时；采集每 10 分钟一轮，按轮限制会让一小时里连推好几条
-    "per_day": 6,            # 滚动 24 小时
     "quiet_hours": [23, 8],  # 本地时间 23:00～8:00 不推
     "utc_offset": 8,
     "max_age_hours": 24,     # 最新报道超过这个时间的事件不再推
@@ -46,13 +44,6 @@ def select(options: dict, store, events: list[Event], now: datetime) -> list[Eve
     opt = {**DEFAULTS, **options}
     if quiet(opt, now):
         return []
-    if morning(opt, store, now):
-        room = opt["per_day"]
-    else:
-        room = opt["per_hour"] - store.pushes_since(now - timedelta(hours=1))
-    room = min(room, opt["per_day"] - store.pushes_since(now - timedelta(hours=24)))
-    if room <= 0:
-        return []
     pushed, feedback = store.pushed(), store.feedback()
     briefs = store.briefs(e.id for e in events)
     candidates = [
@@ -63,7 +54,7 @@ def select(options: dict, store, events: list[Event], now: datetime) -> list[Eve
         and now - max(s.published for s in e.signals) <= timedelta(hours=opt["max_age_hours"])
     ]
     candidates.sort(key=lambda e: -final_score(e, briefs[e.id]))
-    return candidates[:room]
+    return candidates
 
 
 def _send(title: str, message: str, click: str) -> bool:

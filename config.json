@@ -336,8 +336,6 @@
   "push": {
     "min_importance": 4,
     "min_score": 1.5,
-    "per_hour": 2,
-    "per_day": 6,
     "quiet_hours": [
       23,
       8
