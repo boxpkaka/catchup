@@ -298,7 +298,7 @@ class ChatTest(unittest.TestCase):
 
     def run_chat(self, llm, body):
         from catchup import chat
-        with mock.patch("catchup.chat.tool", return_value={"content": "Dessa 原文：只用语音训练。"}), \
+        with mock.patch("catchup.reader.tool", return_value={"content": "Dessa 原文：只用语音训练。"}), \
                 mock.patch("catchup.personal.rebrief_async") as rebrief:
             out = list(chat.chat(config(), self.store, llm, body, NOW))
         return out, rebrief
@@ -323,7 +323,7 @@ class ChatTest(unittest.TestCase):
     def test_failed_fetch_retried_later(self):
         from catchup import chat
         signals = self.store.event_signals(self.eid)
-        with mock.patch("catchup.chat.tool", side_effect=OSError("504")) as tool:
+        with mock.patch("catchup.reader.tool", side_effect=OSError("504")) as tool:
             self.assertEqual(chat._read(self.store, signals, NOW, timeout=5), {"https://a/1": ""})
             chat._read(self.store, signals, NOW + timedelta(hours=1), timeout=5)
             self.assertEqual(tool.call_count, 1)  # 刚失败过，先用摘要，不重抓
@@ -400,7 +400,7 @@ class AppApiMoreTest(unittest.TestCase):
         from catchup.pipeline.update import ranked
         dessa = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
         page = {"title": "Qwen3-TTS 技术报告", "content": "导航\n\nQwen3-TTS 是一个支持流式合成的开源语音合成模型，首包延迟 97 毫秒，支持十种语言。"}
-        with mock.patch("catchup.share.tool", return_value=page):
+        with mock.patch("catchup.reader.tool", return_value=page):
             status, r = self.call("POST", "/v1/shares", {"text": "看看这个 https://qwen.ai/tts-report。"})
         [s] = self.store.event_signals(r["event_id"])
         self.assertEqual((status, s.url, s.source, s.title), (200, "https://qwen.ai/tts-report", "shared", "Qwen3-TTS 技术报告"))
@@ -418,7 +418,7 @@ class AppApiMoreTest(unittest.TestCase):
         from catchup.pipeline import answers
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
         llm = FakeLLM(memory={"add": [], "pending": {"text": "Dessa 什么时候开放权重？", "keywords": ["dessa", "weights"]}})
-        with mock.patch("catchup.chat.tool", return_value={"content": "原文"}):
+        with mock.patch("catchup.reader.tool", return_value={"content": "原文"}):
             out = list(chat.chat(config(), self.store, llm, {"event_id": eid, "message": "权重会开源吗？"}, NOW))
         self.assertEqual([e["text"] for e in out if e["type"] == "watch"], ["Dessa 什么时候开放权重？"])
         later = NOW + timedelta(hours=2)

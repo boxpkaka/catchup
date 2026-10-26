@@ -18,11 +18,10 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 
-from . import personal
+from . import personal, reader
 from .config import Config
 from .pipeline.events import group_events
 from .sources import build_sources, source_of
-from .sources.deepseek import tool, unescape_md
 from .util import parse_time
 
 log = logging.getLogger(__name__)
@@ -143,7 +142,7 @@ def _pick(signals) -> list:
 
 def _fetch(url: str) -> str:
     try:
-        return unescape_md(tool("fetch", {"url": url}).get("content", ""))[:SOURCE_CHARS * 2]
+        return reader.read(url)[1][:SOURCE_CHARS * 2]
     except Exception as e:
         log.info("fetch %s failed: %r", url, e)
         return ""

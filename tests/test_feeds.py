@@ -65,3 +65,44 @@ class FeedSourceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+REDDIT_POST = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+<entry><author><name>/u/op</name></author><title>Lure-TTS: 600M voice model</title>
+<link href="https://www.reddit.com/r/LocalLLaMA/comments/1xf14j2/lure/"/>
+<content type="html">&lt;div class="md"&gt;&lt;p&gt;I finetuned Qwen3-TTS.&lt;/p&gt;&lt;/div&gt; submitted by /u/op [link] [comments]</content></entry>
+<entry><author><name>/u/fan</name></author><title>/u/fan on Lure-TTS</title>
+<link href="https://www.reddit.com/r/LocalLLaMA/comments/1xf14j2/lure/c1/"/>
+<content type="html">&lt;p&gt;Online demo?&lt;/p&gt;</content></entry>
+</feed>"""
+
+
+class ReaderTest(unittest.TestCase):
+    def test_google_news_link_resolved_before_reading(self):
+        from catchup import reader
+        page = b'<c-wiz><div jscontroller="x" data-n-a-sg="SIG" data-n-a-ts="1761400000"></div></c-wiz>'
+        reply = b')]}\'\n\n[["wrb.fr","Fbv4je","[\\"garturlres\\",\\"https://gigazine.net/a/\\",1]",null,null,null,"generic"]]'
+        with mock.patch("catchup.reader.http.get", return_value=page), \
+                mock.patch("catchup.reader.http.post_form", return_value=reply) as post, \
+                mock.patch("catchup.reader.tool", return_value={"title": "OmniVoice", "content": "a\\.b"}) as tool:
+            self.assertEqual(reader.read("https://news.google.com/rss/articles/CBMiYkFV?oc=5"), ("OmniVoice", "a.b"))
+        self.assertIn("SIG", post.call_args[0][1]["f.req"])
+        tool.assert_called_once_with("fetch", {"url": "https://gigazine.net/a/"})
+
+    def test_reddit_post_read_from_its_feed(self):
+        from catchup import reader
+        with mock.patch("catchup.reader.http.get", return_value=REDDIT_POST) as get:
+            title, text = reader.read("https://www.reddit.com/r/LocalLLaMA/comments/1xf14j2/lure/")
+        get.assert_called_once_with("https://www.reddit.com/r/LocalLLaMA/comments/1xf14j2/.rss")
+        self.assertEqual((title, text), ("Lure-TTS: 600M voice model", "I finetuned Qwen3-TTS.\n\n评论：\n- fan：Online demo?"))
+
+    def test_hugging_face_model_reads_card(self):
+        from catchup import reader
+        card = b"---\nlicense: apache-2.0\n---\n# Raon-Speech\n\nA 9B speech model."
+        with mock.patch("catchup.reader.http.get", return_value=card) as get:
+            self.assertEqual(reader.read("https://huggingface.co/KRAFTON/Raon-Speech-9B"),
+                             ("KRAFTON/Raon-Speech-9B", "# Raon-Speech\n\nA 9B speech model."))
+        get.assert_called_once_with("https://huggingface.co/KRAFTON/Raon-Speech-9B/raw/main/README.md")
+        with mock.patch("catchup.reader.tool", return_value={"content": "x"}) as tool:
+            reader.read("https://huggingface.co/papers/2610.31066")  # 论文页不是模型
+        tool.assert_called_once()

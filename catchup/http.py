@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import urllib.parse
 import urllib.request
 
 USER_AGENT = "Mozilla/5.0 (compatible; catchup/0.1)"
@@ -35,6 +36,14 @@ def post_stream(url: str, payload, headers: dict | None = None, timeout: int = T
             if data == "[DONE]":
                 return
             yield json.loads(data)
+
+
+def post_form(url: str, fields: dict) -> bytes:
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(),
+                                 headers={"User-Agent": USER_AGENT,
+                                          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read()
 
 
 def post_json(url: str, payload, headers: dict | None = None, timeout: int = TIMEOUT):

@@ -10,13 +10,12 @@ import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FetchTimeout
 from datetime import datetime, timedelta
 
-from . import personal
+from . import personal, reader
 from .config import Config
 from .models import Signal
 from .pipeline import brief
 from .pipeline.events import assign_events, group_events
 from .sources import SHARED, build_sources
-from .sources.deepseek import tool, unescape_md
 from .util import clean_text
 
 log = logging.getLogger(__name__)
@@ -40,14 +39,9 @@ def share(config: Config, store, llm, text: str, subject: str, now: datetime) ->
     return event_id
 
 
-def _read(url: str) -> tuple[str, str]:
-    r = tool("fetch", {"url": url})
-    return str(r.get("title") or ""), unescape_md(r.get("content") or "")
-
-
 def _add(config: Config, store, llm, url: str, note: str, now: datetime) -> int:
     title, content = "", ""
-    future = _pool.submit(_read, url)
+    future = _pool.submit(reader.read, url)
     try:
         title, content = future.result(timeout=FETCH_WAIT)
     except FetchTimeout:

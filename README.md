@@ -74,6 +74,7 @@ catchup/
   personal.py        个人记忆：提取、反馈学习、漏报、构建带记忆的排序器和“读者是谁”
   chat.py            对话：读原文回答（标注 [1]）或问事件库（标注 [E12]），每轮后提取记忆和待留意的问题
   share.py           分享进来的链接：读原文、归入事件、写简报
+  reader.py          读原文：一般网页走 DeepSeek fetch，Google News 跳转链接、Reddit 帖子、HF 模型页另行处理
   pipeline/
     events.py        信号 → 事件：规则聚类，并持久化为有固定 id 的事件
     ranking.py       事件打分，每项加分都附带可解释的理由
