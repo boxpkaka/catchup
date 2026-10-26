@@ -6,6 +6,7 @@ chat() 是生成器，逐条产出给 App 的流式消息：
   {"type": "delta", "text"}      回复的增量文字
   {"type": "refs", "events"}     随便问时引用到的事件，App 显示成可点的卡片
   {"type": "memory", ...}        这轮对话新记住 / 改写 / 删除的记忆
+  {"type": "watch", "id", "text"} 暂时没有答案、之后替他留意的问题
   {"type": "done"} 或 {"type": "error", "text"}
 每轮回答后都会尝试从对话里提取记忆，记忆变化后在后台按新记忆重写前排简报。
 """
@@ -20,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from . import personal
 from .config import Config
 from .pipeline.events import group_events
-from .sources import build_sources
+from .sources import build_sources, source_of
 from .sources.deepseek import tool, unescape_md
 from .util import parse_time
 
@@ -116,10 +117,13 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
             yield {"type": "refs", "events": refs}
     store.add_message(thread["id"], "assistant", answer, now, {"refs": refs})
 
-    changes = personal.extract_from_chat(store, llm, message, answer, headline, now, thread["id"], event_id)
+    changes, pending = personal.extract_from_chat(store, llm, message, answer, headline, now, thread["id"], event_id)
     if any(changes.values()):
         yield {"type": "memory", **changes}
         personal.rebrief_async(config)
+    if pending:  # 暂时没有答案的问题，之后每次采集都替他看看有没有答案，见 pipeline/answers.py
+        qid = store.add_question(thread["id"], event_id, pending["text"], pending["keywords"], now)
+        yield {"type": "watch", "id": qid, "text": pending["text"]}
     yield {"type": "done"}
 
 
@@ -209,8 +213,7 @@ def _sources(config: Config, store, signals, now: datetime) -> str:
     parts = []
     for i, s in enumerate(picked, 1):
         text = texts.get(s.url) or ""
-        src = labels.get(s.source)
-        label = src.label(s.channel) if src else s.source
+        label = source_of(s, labels)[0]
         body = text[:SOURCE_CHARS] if text.strip() else s.summary
         parts.append(f"[{i}] {s.title}（{label}，{s.url}）\n{body}")
     rest = [s for s in signals if s not in picked][:10]

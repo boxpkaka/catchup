@@ -13,7 +13,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import brief, follow, push
+from . import answers, brief, follow, push
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "pushed": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0}
     _, events = ranked(config, store, now)
     updates = []
     if llm:
@@ -49,9 +49,11 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["briefs"] = refresh_briefs(config, store, llm, now)
         updates = follow.run(store, llm, now)
         stats["follow_updates"] = len(updates)
+        stats["answered"] = len(answers.run(store, llm, now))
         _, events = ranked(config, store, now)
     if deliver:
         stats["pushed"] = push.deliver(store, push.select(config.push, store, events, now), now, config.push)
         push.deliver_updates(config.push, updates, now)
+        push.deliver_answers(config.push, store, now)
     log.info("update: %s", stats)
     return stats

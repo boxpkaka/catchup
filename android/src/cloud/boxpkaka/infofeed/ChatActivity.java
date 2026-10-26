@@ -77,6 +77,12 @@ public class ChatActivity extends Activity {
         overridePendingTransition(R.anim.hold, R.anim.exit_down);
     }
 
+    @Override
+    public void onBackPressed() {
+        if (isTaskRoot()) startActivity(new Intent(this, MainActivity.class)); // 从“有答案了”的通知直接进来时，返回到首页
+        super.onBackPressed();
+    }
+
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
@@ -278,6 +284,9 @@ public class ChatActivity extends Activity {
             case "memory":
                 addMemory(e);
                 break;
+            case "watch":
+                addWatch(e.optLong("id"), e.optString("text"));
+                break;
             case "error":
                 if (full.length() == 0) answer.setText(e.optString("text"));
                 break;
@@ -381,6 +390,39 @@ public class ChatActivity extends Activity {
             lp.topMargin = t.dp(i == 0 ? 14 : 6);
             messages.addView(row, lp);
         }
+    }
+
+    /** 这轮里暂时没有答案的问题：之后有报道回答了它，会写回这个对话并推送。不需要可以当场取消。 */
+    private void addWatch(long id, String question) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(t.dp(14), t.dp(11), t.dp(8), t.dp(11));
+        row.setBackground(t.round(t.sheet, 14));
+        GradientDrawable ring = new GradientDrawable(); // 空心圆环：还在等答案，和“记住了”的实心朱砂点区分开
+        ring.setShape(GradientDrawable.OVAL);
+        ring.setStroke(t.dp(1.5f), t.ink);
+        View mark = new View(this);
+        mark.setBackground(ring);
+        row.addView(mark, new LinearLayout.LayoutParams(t.dp(8), t.dp(8)));
+        TextView text = t.text(this, "会替你留意：" + question, 13, t.ink, 500);
+        text.setLineSpacing(t.dp(2), 1f);
+        text.setPadding(t.dp(10), 0, t.dp(8), 0);
+        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView drop = t.text(this, "不用了", 13, t.sub, 700);
+        drop.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
+        drop.setBackground(t.ripple(Color.TRANSPARENT, 10));
+        drop.setOnClickListener(v -> {
+            drop.setEnabled(false);
+            drop.setText("已取消");
+            text.setAlpha(0.45f);
+            postAsync("/v1/questions/" + id, "{\"drop\": true}");
+        });
+        row.addView(drop);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = t.dp(8);
+        messages.addView(row, lp);
+        scrollToEnd();
     }
 
     /** 随便问时引用到的事件，点开看详情。 */

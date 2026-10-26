@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
             {"source", "不想看这个来源", "正在记下…"},
             {"known", "已经知道了", "好，这不影响同类内容"}};
     private static final int REQ_EVENT = 2;
+    private static final String ANSWER = "answer"; // 追踪中的行里，“你问过的问题有答案了”用这个 label 区分
 
     private Theme t;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -84,7 +85,7 @@ public class MainActivity extends Activity {
     private ListView list;
     private PullLayout pull;
     private LinearLayout header;
-    private TextView catchLine, catchSub, statusChip, digestText;
+    private TextView catchLine, catchSub, statusChip, digestText, skippedLine;
     private long digestFor = -1; // 已为哪个“上次离开时间”取过补课简报
     private LinearLayout updateNotice, batteryNotice;
     private TextView updateText, updateAction;
@@ -362,6 +363,15 @@ public class MainActivity extends Activity {
         catchSub = t.text(this, "", 13, t.sub, 400);
         catchSub.setPadding(0, t.dp(12), 0, t.dp(10));
         header.addView(catchSub);
+        skippedLine = t.text(this, "", 13, t.ink, 600);
+        skippedLine.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+        skippedLine.setBackground(t.ripple(t.chip, 99));
+        skippedLine.setOnClickListener(v -> showSkipped());
+        skippedLine.setVisibility(View.GONE);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        sl.bottomMargin = t.dp(10);
+        header.addView(skippedLine, sl);
         return header;
     }
 
@@ -502,13 +512,17 @@ public class MainActivity extends Activity {
         catchLine.setText(catchUpLine(highlights.size(), newHighlights));
         int total = all == null ? 0 : all.length();
         catchSub.setText("过去三天整理了 " + total + " 件事，来自 " + sources.size() + " 个来源");
+        JSONArray skipped = feed.optJSONArray("skipped");
+        int skippedCount = skipped == null ? 0 : skipped.length();
+        skippedLine.setText("替你略过 " + skippedCount + " 件热门但和你无关的事 ›");
+        skippedLine.setVisibility(skippedCount > 0 ? View.VISIBLE : View.GONE);
 
         rows.clear();
-        JSONArray follows = feed.optJSONArray("following");
-        if (follows != null && follows.length() > 0) {
-            rows.add(new Row(0, "追踪中", null));
-            for (int i = 0; i < follows.length(); i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
-        }
+        JSONArray follows = feed.optJSONArray("following"), answers = feed.optJSONArray("answers");
+        int followCount = follows == null ? 0 : follows.length(), answerCount = answers == null ? 0 : answers.length();
+        if (followCount + answerCount > 0) rows.add(new Row(0, "追踪中", null));
+        for (int i = 0; i < answerCount; i++) rows.add(new Row(3, ANSWER, answers.optJSONObject(i)));
+        for (int i = 0; i < followCount; i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
         if (!highlights.isEmpty()) rows.add(new Row(0, "值得知道", null));
         for (JSONObject e : highlights) rows.add(new Row(1, null, e));
         if (!others.isEmpty()) rows.add(new Row(0, "其他动态", null));
@@ -589,6 +603,7 @@ public class MainActivity extends Activity {
         public long getItemId(int i) {
             Row r = rows.get(i);
             if (r.e == null) return -i - 1;
+            if (ANSWER.equals(r.label)) return -2_000_000L - r.e.optLong("id");
             return r.type == 3 ? -1_000_000L - r.e.optLong("id") : r.e.optLong("id"); // 追踪的事件也可能出现在下面
         }
 
@@ -622,7 +637,8 @@ public class MainActivity extends Activity {
             }
             if (r.type == 3) {
                 if (convert == null) convert = newFollowRow();
-                bindFollow((Holder) convert.getTag(), r.e);
+                if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e);
+                else bindFollow((Holder) convert.getTag(), r.e);
                 return convert;
             }
             if (convert == null) convert = r.type == 1 ? newCard() : newRow();
@@ -802,6 +818,23 @@ public class MainActivity extends Activity {
         long id = f.optLong("id");
         h.front.setOnClickListener(v -> {
             startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        });
+    }
+
+    /** 替你留意的问题有了答案：点开回到当时的对话，答案已经写在里面。 */
+    private void bindAnswer(Holder h, JSONObject a) {
+        h.headline.setText("你问过：" + a.optString("question"));
+        show(h.summary, a.optString("answer"));
+        long at = Theme.millis(a.optString("answered"));
+        h.meta.setText("有了答案 · " + Theme.ago(at));
+        h.dot.setVisibility(seenAtOpen > 0 && at > seenAtOpen ? View.VISIBLE : View.INVISIBLE);
+        Intent chat = new Intent(this, ChatActivity.class)
+                .putExtra(ChatActivity.EXTRA_THREAD, a.optLong("thread_id"))
+                .putExtra(ChatActivity.EXTRA_EVENT, a.optLong("event_id", -1))
+                .putExtra(ChatActivity.EXTRA_TITLE, a.optString("question"));
+        h.front.setOnClickListener(v -> {
+            startActivity(chat);
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         });
     }
@@ -986,6 +1019,10 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, MemoryActivity.class));
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         }));
+        sheet.addView(menuRow("添加链接", "从剪贴板", () -> {
+            d.dismiss();
+            addLinkFromClipboard();
+        }));
         sheet.addView(menuRow("不需要的内容", "可以恢复", () -> {
             d.dismiss();
             showDismissed();
@@ -1021,32 +1058,132 @@ public class MainActivity extends Activity {
                     toast("没有连上服务器，稍后再试");
                     return;
                 }
-                LinearLayout content = new LinearLayout(this);
-                content.setOrientation(LinearLayout.VERTICAL);
-                TextView title = t.text(this, "不需要的内容", 20, t.ink, 800);
-                title.setPadding(t.dp(24), t.dp(8), t.dp(24), t.dp(4));
-                content.addView(title);
-                TextView sub = t.text(this, got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
-                        : "恢复后会重新出现在首页", 13, t.sub, 400);
-                sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(12));
-                content.addView(sub);
                 LinearLayout items = new LinearLayout(this);
                 items.setOrientation(LinearLayout.VERTICAL);
                 for (int i = 0; i < got.length(); i++) items.addView(dismissedRow(got.optJSONObject(i)));
-                int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
-                ScrollView scroll = new ScrollView(this) {
-                    @Override
-                    protected void onMeasure(int w, int h) { // 条目多时面板最高占屏幕 3/5，其余滚动
-                        super.onMeasure(w, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST));
-                    }
-                };
-                scroll.setVerticalScrollBarEnabled(false);
-                scroll.addView(items);
-                content.addView(scroll);
-                Dialog d = t.sheet(this, content);
-                d.show();
+                listSheet("不需要的内容", got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
+                        : "恢复后会重新出现在首页", items).show();
             });
         }, "dismissed").start();
+    }
+
+    /** 底部面板：标题、说明和一个长列表，列表最高占屏幕 3/5，其余滚动。 */
+    private Dialog listSheet(String heading, String note, View items) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        TextView title = t.text(this, heading, 20, t.ink, 800);
+        title.setPadding(t.dp(24), t.dp(8), t.dp(24), t.dp(4));
+        content.addView(title);
+        TextView sub = t.text(this, note, 13, t.sub, 400);
+        sub.setLineSpacing(t.dp(3), 1f);
+        sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(12));
+        content.addView(sub);
+        int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
+        ScrollView scroll = new ScrollView(this) {
+            @Override
+            protected void onMeasure(int w, int h) {
+                super.onMeasure(w, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST));
+            }
+        };
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(items);
+        content.addView(scroll);
+        return t.sheet(this, content);
+    }
+
+    /** 替你略过的：热度高但和你无关的事。点开看详情；点“想看这类”当场记成一条长期关注，以后同类的会排到前面。 */
+    private void showSkipped() {
+        JSONArray list = feed == null ? null : feed.optJSONArray("skipped");
+        if (list == null || list.length() == 0) return;
+        LinearLayout items = new LinearLayout(this);
+        items.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < list.length(); i++) items.addView(skippedRow(list.optJSONObject(i)));
+        listSheet("替你略过的", "这几件热度不低，但和你的关注无关，所以没放进“值得知道”，也不会推送。"
+                + "觉得该看的，点“想看这类”。", items).show();
+        Trace.log(this, "ui.skipped", "n=" + list.length());
+    }
+
+    private View skippedRow(JSONObject s) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(t.dp(24), t.dp(12), t.dp(16), t.dp(12));
+        row.setBackground(t.ripple(Color.TRANSPARENT, 0));
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView headline = t.text(this, s.optString("headline"), 15, t.ink, 500);
+        headline.setLineSpacing(t.dp(3), 1f);
+        headline.setMaxLines(2);
+        headline.setEllipsize(TextUtils.TruncateAt.END);
+        text.addView(headline);
+        TextView meta = t.text(this, s.optInt("outlets") + " 家媒体报道 · " + s.optString("why"), 12, t.sub, 400);
+        meta.setPadding(0, t.dp(5), 0, 0);
+        text.addView(meta);
+        TextView memo = t.text(this, "", 12, t.ink, 600);
+        memo.setPadding(0, t.dp(6), 0, 0);
+        memo.setVisibility(View.GONE);
+        text.addView(memo);
+        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView want = t.pill(this, "想看这类", false);
+        want.setTextSize(13);
+        want.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        wl.leftMargin = t.dp(12);
+        row.addView(want, wl);
+        long id = s.optLong("id");
+        row.setOnClickListener(v -> {
+            startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        });
+        want.setOnClickListener(v -> {
+            want.setEnabled(false);
+            want.setText("记下中…");
+            Context app = getApplicationContext();
+            new Thread(() -> {
+                JSONObject r = null;
+                try {
+                    r = Api.post(app, "/v1/events/" + id + "/feedback",
+                            new JSONObject().put("value", "useful").put("reason", "topic"));
+                } catch (Exception err) {
+                    Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
+                }
+                JSONObject got = r;
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    if (got == null) {
+                        want.setEnabled(true);
+                        want.setText("想看这类");
+                        toast("没有记下，请重试");
+                        return;
+                    }
+                    want.setText("已记下");
+                    want.setTextColor(t.sub);
+                    want.setBackground(null);
+                    JSONObject memory = got.optJSONObject("memory");
+                    JSONArray added = memory == null ? null : memory.optJSONArray("added");
+                    if (added != null && added.length() > 0) {
+                        memo.setText("记住了：" + added.optJSONObject(0).optString("text"));
+                        memo.setVisibility(View.VISIBLE);
+                    }
+                    lastFetch = 0;
+                    load(); // 记忆变了，首页按新记忆重新排
+                });
+            }, "want").start();
+            Trace.log(this, "ui.want", "id=" + id);
+        });
+        return row;
+    }
+
+    /** 微信等不支持系统分享的 App：复制链接后从菜单添加。 */
+    private void addLinkFromClipboard() {
+        android.content.ClipData clip = getSystemService(android.content.ClipboardManager.class).getPrimaryClip();
+        CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
+        if (text == null || !text.toString().contains("http")) {
+            toast("先在别的 App 里复制一条链接");
+            return;
+        }
+        startActivity(new Intent(this, ShareActivity.class).putExtra(Intent.EXTRA_TEXT, text.toString()));
+        overridePendingTransition(R.anim.enter_up, R.anim.hold);
     }
 
     private View dismissedRow(JSONObject e) {

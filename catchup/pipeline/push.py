@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from .. import http
 from ..models import Event
+from ..sources import SHARED
 from .brief import final_score
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def select(options: dict, store, events: list[Event], now: datetime) -> list[Eve
     candidates = [
         e for e in events
         if e.id not in pushed and feedback.get(e.id) != "not_needed" and e.id in briefs
+        and not any(s.source == SHARED for s in e.signals)  # 用户自己分享的，不用再推给他
         and briefs[e.id]["importance"] >= opt["min_importance"] and e.score >= opt["min_score"]
         and now - max(s.published for s in e.signals) <= timedelta(hours=opt["max_age_hours"])
     ]
@@ -87,6 +89,18 @@ def deliver(store, events: list[Event], now: datetime, options: dict | None = No
         b = briefs[e.id]
         if _send(b["headline"], b["summary"] + (f"\n{b['why']}" if b["why"] else ""), f"catchup://event/{e.id}"):
             store.record_push(e.id, now)
+            sent += 1
+    return sent
+
+
+def deliver_answers(options: dict, store, now: datetime, limit: int = 3) -> int:
+    """替你留意的问题有了答案：推送一次，点开回到原来的对话；免打扰时段先攒着，下一轮再推。"""
+    if quiet(options, now):
+        return 0
+    sent = 0
+    for q in [q for q in store.questions("answered") if not q["notified"]][:limit]:
+        if _send("你问过的问题有答案了", f"{q['text']}\n{q['answer']}", f"catchup://thread/{q['thread_id']}"):
+            store.update_question(q["id"], notified=1)
             sent += 1
     return sent
 

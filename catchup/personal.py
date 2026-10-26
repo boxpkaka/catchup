@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from .config import Config
 from .pipeline.events import group_events
 from .pipeline.ranking import Interest, Ranker
-from .sources import build_sources
+from .sources import build_sources, source_of
 from .util import parse_time
 
 log = logging.getLogger(__name__)
@@ -30,7 +30,8 @@ TASK_DAYS = 21          # “正在做”的事默认三周后过期，过期后
 WEIGHTS = {"task": 3.0, "interest": 2.0}
 REASONS = {"topic": "不想看这类", "source": "不想看这个来源", "known": "已经知道了"}  # “不需要”的原因
 FEEDBACK_ORIGIN = "你的反馈"          # 每小时从行为规律里归纳的
-DISMISS_ORIGIN = "你标记的不需要"      # 标“不需要”时明说了原因，当场记下，撤回时一起删
+# 标“不需要 / 想看”时明说了原因，当场记下（记 event_id），撤回时一起删
+REASON_ORIGINS = {"not_needed": "你标记的不需要", "useful": "你标记的想看"}
 LEARN_DAYS = 30
 
 EXTRACT_SYSTEM = """你在维护一位 AI 从业者的个人记忆，用来决定以后给他推什么、怎么写。
@@ -39,12 +40,16 @@ EXTRACT_SYSTEM = """你在维护一位 AI 从业者的个人记忆，用来决�
 记忆类型：task=最近在做的事或项目；interest=长期关注的领域、技术、公司；avoid=明确不想看的内容；
 source=更信任或更想看的来源；avoid_source=明确不想看的来源（网站、频道、社区）；style=希望内容怎么写（详略、角度、语言）。
 已有记忆会一并给出：同一件事已经记过就用 update 改写，不要重复添加；用户否认了某条就放进 remove。
+另外看用户这一轮想知道的事，回答里是不是明确说了目前还没有答案（还没公布、来源里没有提到、要等官方消息等）：
+是的话写进 pending，写成一句带上事件名的完整问题（如“Dessa 什么时候开放权重？”），并给 3～6 个用于匹配后续报道的关键词；
+回答已经解决了、或者问题太泛，pending 就是 null；已在留意的问题不要重复。
 输出 JSON：{"add": [{"kind": "...", "text": "第二人称、不超过 30 字，如“你在评估用 FunASR 替换 Whisper”",
 "keywords": ["用于匹配新闻的关键词，中英文都给，3～8 个"]}], "update": [{"id": 编号, "text": "...", "keywords": [...]}],
-"remove": [编号]}。没有就输出 {"add": [], "update": [], "remove": []}。"""
+"remove": [编号], "pending": {"text": "...", "keywords": [...]} 或 null}。
+没有就输出 {"add": [], "update": [], "remove": [], "pending": null}。"""
 
 FEEDBACK_SYSTEM = """下面是一位 AI 从业者最近 30 天对一些事件的行为，以及他已有的记忆。据此维护“由反馈归纳的记忆”。
-信号强弱：追踪、在事件下提问、会错过、有用是较强的正面信号；看原文是中等正面信号；不会错过是较弱的负面信号。
+信号强弱：你分享的、追踪、在事件下提问、会错过、有用是较强的正面信号；看原文是中等正面信号；不会错过是较弱的负面信号。
 带原因的“不需要：不想看这类 / 不想看这个来源”已经单独记下了，只作为规律的一部分；
 “不需要：已经知道了”只说明内容重复，不代表不感兴趣，不要当作负面信号；“误点了不需要，已撤回”不是证据，忽略。
 只有呈现出明确规律时（例如几件同类事件都追踪或提问过、都标了不需要）才归纳，单条不下结论。
@@ -60,6 +65,12 @@ FEEDBACK_SYSTEM = """下面是一位 AI 从业者最近 30 天对一些事件的
 MISS_SYSTEM = """用户反映：有一条他关心的消息 Catchup 没有推给他。请把它转成一条记忆，帮助以后不再漏掉同类内容。
 输出 JSON：{"add": [{"kind": "interest|task|source", "text": "第二人称、不超过 30 字", "keywords": ["3～8 个中英文关键词"]}],
 "update": [], "remove": []}。"""
+
+WANT_SYSTEM = """用户在“替你略过的”列表里对下面这条内容点了“想看这类”，说明这类内容他其实关心。
+判断“这类”具体指什么，写成一条“长期关注”的记忆。要具体，不要泛泛地写“AI 新闻”。
+keywords 写这一类内容常见的词，英文用不会有歧义的短语，不要写这条内容里的专有名词，也不写来源名。
+已有记忆里有同样意思的就输出空数组。
+输出 JSON：{"add": [{"kind": "interest", "text": "第二人称、不超过 30 字", "keywords": ["3～8 个中英文关键词"]}]}"""
 
 AVOID_SYSTEM = """用户把下面这条内容标为“不想看这类”。判断“这类”具体指什么，写成一条“不想看”的记忆。
 要具体，不要误伤他关注的方向：例如他关注 TTS 语音合成，而这条讲的是股票代码 TTS，就写“股票行情和估值”，不要写“TTS”。
@@ -170,16 +181,24 @@ def apply_ops(store, ops: dict, origin: str, now: datetime, thread_id: int | Non
 
 
 def extract_from_chat(store, llm, user: str, reply: str, event_headline: str | None, now: datetime,
-                      thread_id: int, event_id: int | None) -> dict:
+                      thread_id: int, event_id: int | None) -> tuple[dict, dict | None]:
+    """返回记忆的增删改，以及这一轮里暂时没有答案、值得替他留意的问题（{text, keywords} 或 None）。"""
     memories = "\n".join(f"{m['id']}: [{m['kind']}] {m['text']}" for m in store.memories()) or "（暂无）"
+    watching = "\n".join(q["text"] for q in store.questions("open") if q["thread_id"] == thread_id) or "（暂无）"
     context = f"讨论的事件：{event_headline}\n" if event_headline else ""
     try:
-        ops = llm.json(EXTRACT_SYSTEM, f"已有记忆：\n{memories}\n\n{context}用户：{user}\n助手：{reply[:1500]}",
-                       max_tokens=600)
+        ops = llm.json(EXTRACT_SYSTEM, f"已有记忆：\n{memories}\n\n已在留意的问题：\n{watching}\n\n{context}"
+                                       f"用户：{user}\n助手：{reply[:1500]}", max_tokens=700)
     except Exception as e:
         log.warning("memory extraction failed: %r", e)
-        return {"added": [], "updated": [], "removed": []}
-    return apply_ops(store, ops, "对话", now, thread_id, event_id)
+        return {"added": [], "updated": [], "removed": []}, None
+    pending = ops.get("pending")
+    if not (isinstance(pending, dict) and str(pending.get("text") or "").strip()):
+        pending = None
+    else:
+        pending = {"text": str(pending["text"]).strip()[:120],
+                   "keywords": [str(k)[:40] for k in pending.get("keywords") or []][:8]}
+    return apply_ops(store, ops, "对话", now, thread_id, event_id), pending
 
 
 def learn_from_feedback(config: Config, store, llm, now: datetime) -> dict:
@@ -220,7 +239,7 @@ def evidence(config: Config, store, actions) -> list[tuple[str, str]]:
     state: dict[int, dict] = {}
     for _, event_id, kind, value, _ in actions:
         s = state.setdefault(event_id, {"feedback": None, "reason": None, "restored": False, "follow": False,
-                                        "asks": 0, "opens": 0, "rating": None})
+                                        "asks": 0, "opens": 0, "rating": None, "shared": False})
         if kind in ("useful", "not_needed"):
             s["feedback"], s["reason"] = kind, value
         elif kind in ("clear", "restore"):
@@ -234,6 +253,8 @@ def evidence(config: Config, store, actions) -> list[tuple[str, str]]:
             s["opens"] += 1
         elif kind == "rating":
             s["rating"] = value == "1"
+        elif kind == "share":
+            s["shared"] = True
     briefs = store.briefs(state.keys())
     labels = build_sources(config.sources)
     lines = []
@@ -247,6 +268,8 @@ def evidence(config: Config, store, actions) -> list[tuple[str, str]]:
             tags.append("不需要" + (f"：{REASONS[s['reason']]}" if s["reason"] in REASONS else ""))
         elif s["restored"]:
             neutral.append("误点了不需要，已撤回")
+        if s["shared"]:
+            tags.append("你分享的")
         if s["follow"]:
             tags.append("追踪")
         if s["asks"]:
@@ -264,52 +287,45 @@ def evidence(config: Config, store, actions) -> list[tuple[str, str]]:
     return lines
 
 
-def source_of(signal, labels) -> tuple[str, str]:
-    """来源的显示名和匹配标识。标识是排序时能在 source / channel / author 里找到的原文：
-    Google News 的 channel 是我们的搜索词，真正的媒体在 author；显示名里没有 channel 的（Hacker News、arXiv）用来源编号。"""
-    if signal.source == "google_news" and signal.author:
-        return signal.author, signal.author
-    src = labels.get(signal.source)
-    label = src.label(signal.channel) if src else signal.source
-    return label, signal.channel if signal.channel and signal.channel in label else signal.source
-
-
-def from_dismissal(config: Config, store, llm, event_id: int, reason: str, now: datetime) -> dict:
-    """标“不需要”时明说了原因：不想看这个来源直接记下；不想看这类请模型判断“这类”是什么。撤回时由 retract() 删除。"""
+def from_reason(config: Config, store, llm, event_id: int, value: str, reason: str, now: datetime) -> dict:
+    """标“不需要 / 想看”时明说了原因，当场记下：不想看这个来源直接记；不想看这类、想看这类请模型判断“这类”是什么。
+    撤回或改了反馈时由 retract() 删除。"""
     empty = {"added": [], "updated": [], "removed": []}
     events = group_events(store.event_signals(event_id))
     if not events:
         return empty
-    event = events[0]
-    if reason == "source":
-        name, key = source_of(event.lead, build_sources(config.sources))
+    event, labels = events[0], build_sources(config.sources)
+    if value == "not_needed" and reason == "source":
+        name, key = source_of(event.lead, labels)
         ops = {"add": [{"kind": "avoid_source", "text": f"你不想看「{name}」的内容", "keywords": [key]}]}
     elif reason == "topic" and llm:
+        kind, system = ("avoid", AVOID_SYSTEM) if value == "not_needed" else ("interest", WANT_SYSTEM)
         brief = store.briefs([event_id]).get(event_id) or {}
-        avoid = "\n".join(m["text"] for m in store.memories() if m["kind"] == "avoid") or "（暂无）"
+        same = "\n".join(m["text"] for m in store.memories() if m["kind"] == kind) or "（暂无）"
         titles = "\n".join(f"- {s.title}" for s in event.signals[:6])
         try:
-            ops = llm.json(AVOID_SYSTEM, f"他是谁：\n{focus(config, store, now)}\n\n已有的“不想看”：\n{avoid}\n\n"
-                                         f"内容：{brief.get('headline') or event.lead.title}。{brief.get('summary', '')}\n"
-                                         f"报道标题：\n{titles}", max_tokens=400)
+            ops = llm.json(system, f"他是谁：\n{focus(config, store, now)}\n\n已有的“{KINDS[kind]}”：\n{same}\n\n"
+                                   f"内容：{brief.get('headline') or event.lead.title}。{brief.get('summary', '')}\n"
+                                   f"报道标题：\n{titles}", max_tokens=400)
         except Exception as e:
-            log.warning("dismissal to memory failed: %r", e)
+            log.warning("reason to memory failed: %r", e)
             return empty
-        ops = {"add": [a for a in ops.get("add") or [] if isinstance(a, dict) and a.get("kind") == "avoid"][:1]}
-        # 模型常把来源名也写进关键词，那样会把这个来源的内容全压下去
-        names = {n.lower() for s in event.signals for n in source_of(s, build_sources(config.sources))}
+        ops = {"add": [a for a in ops.get("add") or [] if isinstance(a, dict) and a.get("kind") == kind][:1]}
+        # 模型常把来源名也写进关键词，那样会把这个来源的内容全压下去（或全抬上来）
+        names = {n.lower() for s in event.signals for n in source_of(s, labels)}
         for a in ops["add"]:
             a["keywords"] = [k for k in a.get("keywords") or [] if str(k).lower() not in names]
     else:
         return empty
-    return apply_ops(store, ops, DISMISS_ORIGIN, now, event_id=event_id)
+    return apply_ops(store, ops, REASON_ORIGINS[value], now, event_id=event_id)
 
 
 def retract(store, event_id: int, now: datetime) -> dict:
-    """撤回“不需要”时，删掉当时因它的原因记下的记忆。"""
+    """撤回“不需要 / 想看”时，删掉当时因它的原因记下的记忆。"""
     removed = []
+    origins = set(REASON_ORIGINS.values())
     for m in store.memories():
-        if m["origin"] == DISMISS_ORIGIN and m["event_id"] == event_id and store.update_memory(m["id"], now, deleted=True):
+        if m["origin"] in origins and m["event_id"] == event_id and store.update_memory(m["id"], now, deleted=True):
             removed.append({"id": m["id"], "kind": m["kind"], "text": m["text"]})
     if removed:
         bump(store)

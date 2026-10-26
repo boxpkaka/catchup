@@ -2,6 +2,7 @@ package cloud.boxpkaka.infofeed;
 
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.os.Build;
@@ -167,6 +168,58 @@ public class MemoryActivity extends Activity {
             empty.setPadding(0, t.dp(32), 0, 0);
             body.addView(empty);
         }
+        JSONArray qs = r.optJSONArray("questions");
+        if (qs != null && qs.length() > 0) {
+            TextView label = t.text(this, "替你留意的问题", 13, t.sub, 700);
+            label.setPadding(0, t.dp(28), 0, t.dp(8));
+            body.addView(label);
+            for (int i = 0; i < qs.length(); i++) body.addView(question(qs.optJSONObject(i)));
+        }
+    }
+
+    /** 对话里暂时没有答案的问题：还在等的可以取消；有了答案的点开回到当时的对话。 */
+    private View question(JSONObject q) {
+        boolean answered = "answered".equals(q.optString("status"));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
+        row.setBackground(t.ripple(t.sheet, 16));
+        TextView text = t.text(this, q.optString("text"), 15, t.ink, 500);
+        text.setLineSpacing(t.dp(3), 1f);
+        row.addView(text);
+        if (answered) {
+            TextView answer = t.text(this, q.optString("answer"), 14, t.ink, 400);
+            answer.setAlpha(0.82f);
+            answer.setLineSpacing(t.dp(3), 1f);
+            answer.setPadding(0, t.dp(6), 0, 0);
+            row.addView(answer);
+        }
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        bottom.setPadding(0, t.dp(6), 0, 0);
+        bottom.addView(t.text(this, answered ? "有了答案，点开回到对话"
+                        : Theme.ago(Theme.millis(q.optString("created"))) + "问的，有答案时告诉你", 12, t.sub, 400),
+                weight());
+        long id = q.optLong("id");
+        if (answered) {
+            row.setOnClickListener(v -> startActivity(new Intent(this, ChatActivity.class)
+                    .putExtra(ChatActivity.EXTRA_THREAD, q.optLong("thread_id"))
+                    .putExtra(ChatActivity.EXTRA_TITLE, q.optString("text"))));
+        } else {
+            TextView drop = t.text(this, "不用了", 12, t.ink, 700);
+            drop.setPadding(t.dp(10), t.dp(4), t.dp(4), t.dp(4));
+            drop.setOnClickListener(v -> {
+                drop.setEnabled(false);
+                post("/v1/questions/" + id, "{\"drop\": true}", this::load);
+            });
+            bottom.addView(drop);
+        }
+        row.addView(bottom);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = t.dp(8);
+        row.setLayoutParams(lp);
+        return row;
     }
 
     /** 这一周的回顾：推送、反馈、对话、“要不是 Catchup 会错过”的比例。 */

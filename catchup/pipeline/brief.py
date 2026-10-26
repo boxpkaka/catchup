@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 from ..models import Event
-from ..sources import Source
+from ..sources import Source, source_of
 
 log = logging.getLogger(__name__)
 
@@ -102,5 +102,4 @@ def _clean(raw: dict) -> dict | None:
 
 
 def _label(signal, sources: dict[str, Source]) -> str:
-    src = sources.get(signal.source)
-    return src.label(signal.channel) if src else signal.source
+    return source_of(signal, sources)[0]

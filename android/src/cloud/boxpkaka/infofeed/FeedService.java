@@ -32,6 +32,7 @@ public class FeedService extends Service {
 
     private static final int FG_ID = 1;
     private static final String EVENT_LINK = "catchup://event/";
+    private static final String THREAD_LINK = "catchup://thread/";
     private static final long NOTIFY_MAX_AGE_MS = 3600_000; // 补发的旧消息只入列表，不弹通知
 
     private volatile boolean running;
@@ -196,6 +197,9 @@ public class FeedService extends Service {
             if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
                 open = new Intent(this, EventActivity.class)
                         .putExtra(EventActivity.EXTRA_ID, Long.parseLong(click.substring(EVENT_LINK.length())));
+            } else if (click.startsWith(THREAD_LINK)) { // 你问过的问题有答案了：回到原来的对话
+                open = new Intent(this, ChatActivity.class)
+                        .putExtra(ChatActivity.EXTRA_THREAD, Long.parseLong(click.substring(THREAD_LINK.length())));
             } else if (click.isEmpty() || "null".equals(click) || click.startsWith("catchup://")) {
                 open = new Intent(this, MainActivity.class);
             } else {

@@ -69,6 +69,14 @@ MIGRATIONS = [
     insert into actions (event_id, kind, at) select t.event_id, 'ask', m.created from messages m
         join threads t on t.id = m.thread_id where m.role = 'user' and t.event_id is not null order by m.id;
     """,
+    # 替你留意的问题：对话里暂时没有答案的问题，status 为 open / answered / dropped / expired，见 pipeline/answers.py
+    """
+    create table questions (
+        id integer primary key, thread_id integer not null, event_id integer, text text not null,
+        keywords text not null default '[]', created text not null, checked text, searched text,
+        status text not null default 'open', answer text, answer_url text, answered text,
+        notified integer not null default 0);
+    """,
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -121,6 +129,15 @@ class Store:
             f"insert or ignore into signals ({COLUMNS}) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows).rowcount
         self.con.commit()
         return new
+
+    def fetched_since(self, since: datetime) -> list[Signal]:
+        """since 之后才采集到的信号（不管发布时间），用来判断“上次之后有什么新报道”。"""
+        rows = self.con.execute(f"select {COLUMNS}, event_id from signals where fetched > ?", (to_iso(since),)).fetchall()
+        return [_signal(r) for r in rows]
+
+    def signal_event(self, url: str) -> int | None:
+        r = self.con.execute("select event_id from signals where url = ?", (url,)).fetchone()
+        return r[0] if r else None
 
     def recent(self, since: datetime, until: datetime) -> list[Signal]:
         rows = self.con.execute(f"select {COLUMNS}, event_id from signals where published >= ? and published <= ?",
@@ -378,6 +395,32 @@ class Store:
             "rated": q("select count(*) from ratings where at >= ?"),
             "misses": q("select count(*) from misses where at >= ?"),
         }
+
+    # ---------- 替你留意的问题 ----------
+
+    def add_question(self, thread_id: int, event_id: int | None, text: str, keywords: list[str], now: datetime) -> int:
+        cur = self.con.execute("insert into questions (thread_id, event_id, text, keywords, created) values (?, ?, ?, ?, ?)",
+                               (thread_id, event_id, text, json.dumps(keywords, ensure_ascii=False), to_iso(now)))
+        self.con.commit()
+        return cur.lastrowid
+
+    def questions(self, status: str | None = None) -> list[dict]:
+        keys = ("id", "thread_id", "event_id", "text", "keywords", "created", "checked", "searched", "status", "answer",
+                "answer_url", "answered", "notified")
+        rows = self.con.execute(f"select {', '.join(keys)} from questions" + (" where status = ?" if status else "")
+                                + " order by id desc", (status,) if status else ()).fetchall()
+        out = [dict(zip(keys, r)) for r in rows]
+        for q in out:
+            q["keywords"] = json.loads(q["keywords"] or "[]")
+        return out
+
+    def update_question(self, question_id: int, **fields) -> bool:
+        if "keywords" in fields:
+            fields["keywords"] = json.dumps(fields["keywords"], ensure_ascii=False)
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        cur = self.con.execute(f"update questions set {sets} where id = ?", (*fields.values(), question_id))
+        self.con.commit()
+        return cur.rowcount > 0
 
     # ---------- 设备 ----------
 

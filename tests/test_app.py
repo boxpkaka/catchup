@@ -157,7 +157,7 @@ class AppApiTest(unittest.TestCase):
             self.assertEqual((status, detail["signals"][0]["url"]), (200, "https://a/1"))
             self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "bad"})[0], 400)
             self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token,
-                                       {"value": "useful", "reason": "topic"})[0], 400)
+                                       {"value": "useful", "reason": "source"})[0], 400)
             self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "not_needed", "reason": "topic"})
             self.assertEqual(self.call("GET", "/v1/feed", token)[1]["events"], [])
             [hidden] = self.call("GET", "/v1/dismissed", token)[1]["events"]
@@ -395,6 +395,55 @@ class AppApiMoreTest(unittest.TestCase):
         self.call("POST", f"/v1/memories/{m['id']}", {"delete": True})
         self.assertEqual(self.call("GET", "/v1/memories")[1]["memories"], [])
         self.assertFalse(self.call("POST", "/v1/settings", {"personalize": False})[1]["personalize"])
+
+    def test_share_link_becomes_event_and_is_never_pushed_back(self):
+        from catchup.pipeline.update import ranked
+        dessa = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        page = {"title": "Qwen3-TTS 技术报告", "content": "导航\n\nQwen3-TTS 是一个支持流式合成的开源语音合成模型，首包延迟 97 毫秒，支持十种语言。"}
+        with mock.patch("catchup.share.tool", return_value=page):
+            status, r = self.call("POST", "/v1/shares", {"text": "看看这个 https://qwen.ai/tts-report。"})
+        [s] = self.store.event_signals(r["event_id"])
+        self.assertEqual((status, s.url, s.source, s.title), (200, "https://qwen.ai/tts-report", "shared", "Qwen3-TTS 技术报告"))
+        self.assertIn("流式合成", s.summary)
+        self.assertEqual(self.store.page(s.url)[0], page["content"])  # 原文已缓存，之后提问不用再读
+        self.assertIn(r["event_id"], self.store.briefs([r["event_id"]]))
+        self.assertEqual(self.call("POST", "/v1/shares", {"text": s.url})[1]["event_id"], r["event_id"])  # 再分享一次
+        self.assertEqual([a[2] for a in self.store.actions(NOW - timedelta(days=1))], ["share", "share"])
+        picked = push.select({"min_score": 0, "min_importance": 0}, self.store, ranked(config(), self.store, NOW)[1], NOW)
+        self.assertEqual([e.id for e in picked], [dessa])  # 自己分享的不会再推给自己
+        self.assertEqual(self.call("POST", "/v1/shares", {"text": "没有链接"})[0], 400)
+
+    def test_unanswered_question_is_watched_then_answered_in_thread(self):
+        from catchup import chat
+        from catchup.pipeline import answers
+        eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        llm = FakeLLM(memory={"add": [], "pending": {"text": "Dessa 什么时候开放权重？", "keywords": ["dessa", "weights"]}})
+        with mock.patch("catchup.chat.tool", return_value={"content": "原文"}):
+            out = list(chat.chat(config(), self.store, llm, {"event_id": eid, "message": "权重会开源吗？"}, NOW))
+        self.assertEqual([e["text"] for e in out if e["type"] == "watch"], ["Dessa 什么时候开放权重？"])
+        later = NOW + timedelta(hours=2)
+        self.store.add([sig("https://b/2", "Dessa weights now on Hugging Face")], now=later)
+        judge = mock.Mock()
+        judge.json.return_value = {"answered": True, "answer": "已在 Hugging Face 开放权重。", "source": 1}
+        with mock.patch("catchup.pipeline.answers.tool", return_value={"results": []}):
+            self.assertEqual(len(answers.run(self.store, judge, later)), 1)
+        thread = self.store.latest_thread(eid)
+        self.assertIn("现在有答案了", self.store.messages(thread["id"])[-1]["content"])  # 答案写回原来的对话
+        self.assertEqual(self.call("GET", "/v1/feed")[1]["answers"][0]["thread_id"], thread["id"])
+        with mock.patch("catchup.pipeline.push._send", return_value=True) as send:
+            self.assertEqual((push.deliver_answers({}, self.store, later), push.deliver_answers({}, self.store, later)),
+                             (1, 0))  # 只推一次
+        self.assertEqual(send.call_args[0][2], f"catchup://thread/{thread['id']}")
+        qid = self.store.add_question(thread["id"], eid, "价格多少？", ["price"], NOW)
+        self.call("POST", f"/v1/questions/{qid}", {"drop": True})
+        self.assertEqual([q["status"] for q in self.call("GET", "/v1/memories")[1]["questions"]], ["answered"])
+
+    def test_feed_says_what_was_skipped(self):
+        self.store.add([Signal(url="https://c/3", title="UK invests in biosecurity lab", source="news", heat=1.5,
+                               published=NOW - timedelta(hours=2))], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        [s] = self.call("GET", "/v1/feed")[1]["skipped"]  # 和你有关的 Dessa 不在里面
+        self.assertEqual((s["headline"], s["why"]), ("UK invests in biosecurity lab", "和你的关注无关"))
 
     def test_follow_rating_digest_and_detail(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]

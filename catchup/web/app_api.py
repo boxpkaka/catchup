@@ -13,20 +13,23 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from .. import chat, personal
+from .. import chat, personal, share
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
 from ..pipeline.brief import final_score
 from ..pipeline.events import group_events
 from ..pipeline.update import ranked
-from ..sources import Source, build_sources
+from ..sources import Source, build_sources, source_of
 from ..store import Store
 from ..util import parse_time, to_iso
 
 FEED_LIMIT = 80
 MAX_PENDING_DEVICES = 10
-FEEDBACK_VALUES = {"useful", "not_needed", None}
+# 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS）；在“替你略过的”里点“想看这类”是 useful + topic
+FEEDBACK_REASONS = {"not_needed": {None, *personal.REASONS}, "useful": {None, "topic"}, None: {None}}
+SKIP_LIMIT = 10
+ANSWER_DAYS = 3
 FOLLOW_DAYS = 30
 DISMISSED_DAYS = 30
 
@@ -80,6 +83,14 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         if any(changes.values()):
             personal.rebrief_async(config)
         return 200, changes
+    if method == "POST" and path == "/v1/shares":
+        event_id = share.share(config, store, from_config(config.llm), str(body.get("text") or "")[:4000],
+                               str(body.get("subject") or ""), now)
+        return (200, {"event_id": event_id}) if event_id else (400, {"error": "没有找到链接"})
+    if method == "POST" and (m := re.fullmatch(r"/v1/questions/(\d+)", path)):
+        if body.get("drop"):  # 不用再替我留意了
+            store.update_question(int(m.group(1)), status="dropped")
+        return 200, {"ok": True}
     if m := re.fullmatch(r"/v1/events/(\d+)(/\w+)?", path):
         return event_route(config, store, method, int(m.group(1)), m.group(2) or "", body, now)
     if m := re.fullmatch(r"/v1/threads/(\d+)", path):
@@ -100,18 +111,18 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
         return 404, {"error": "not found"}
     if action == "/feedback":
         value, reason = body.get("value"), body.get("reason")
-        if value not in FEEDBACK_VALUES or (reason is not None and (value != "not_needed"
-                                                                    or reason not in personal.REASONS)):
+        if value not in FEEDBACK_REASONS or reason not in FEEDBACK_REASONS[value]:
             return 400, {"error": "bad value"}
         previous = store.feedback().get(event_id)
         store.set_feedback(event_id, value, now, reason)
         if value or previous:  # 撤回“不需要”单独记一笔，每小时的反馈学习据此不再把它当证据
             store.add_action(event_id, value or ("restore" if previous == "not_needed" else "clear"), reason, now)
         changes = {"added": [], "updated": [], "removed": []}
-        if reason in ("topic", "source"):
-            changes = personal.from_dismissal(config, store, from_config(config.llm), event_id, reason, now)
-        elif previous == "not_needed" and value != "not_needed":
+        if previous and value != previous:  # 撤回或改了反馈：当时因原因记下的记忆一起删
             changes = personal.retract(store, event_id, now)
+        if reason in ("topic", "source"):
+            made = personal.from_reason(config, store, from_config(config.llm), event_id, value, reason, now)
+            changes = {**made, "removed": changes["removed"] + made["removed"]}
         if any(changes.values()):
             personal.rebrief_async(config)
         return 200, {"ok": True, "memory": changes}
@@ -164,12 +175,40 @@ def feed(config: Config, store: Store, now: datetime) -> dict:
     follows = {f["event_id"]: f for f in store.follows()}
     events = [e for e in events if feedback.get(e.id) != "not_needed"]
     events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
+    passed = skipped(events, briefs, feedback, sources)
     events = events[:FEED_LIMIT]
     created = store.event_created(e.id for e in events)
     out = [_event(e, briefs.get(e.id), feedback.get(e.id), e.id in pushed, created.get(e.id), sources,
                   e.id in follows) for e in events]
     return {"generated": to_iso(now), "events": out, "following": following(config, store, follows, now),
-            "personalize": personal.personalized(store)}
+            "answers": answers(store, now), "skipped": passed, "personalize": personal.personalized(store)}
+
+
+def skipped(events: list[Event], briefs: dict, feedback: dict, sources) -> list[dict]:
+    """热度高但和你无关、没放进“值得知道”的事件：首页说出替你略过了什么，你可以点开纠正。
+    热度按报道的不同媒体数算（同一家刷十条是垃圾内容，不算热），或者来源自己的热度。"""
+    out = []
+    for e in events:
+        b = briefs.get(e.id)
+        if feedback.get(e.id) or (b and b["importance"] >= 4):
+            continue
+        demoted = [r for r in e.reasons if r.endswith("已降低优先级")]
+        if e.topics and not demoted:  # 和你有关、只是不够重要的，不算替你略过
+            continue
+        outlets = len({source_of(s, sources)[0] for s in e.signals})
+        if outlets < 2 and sum(s.heat for s in e.signals) < 1:
+            continue
+        out.append({"id": e.id, "headline": b["headline"] if b else e.lead.title, "reports": len(e.signals),
+                    "outlets": outlets, "why": demoted[0].removesuffix("，已降低优先级") if demoted else "和你的关注无关"})
+    return sorted(out, key=lambda x: (-x["outlets"], -x["reports"]))[:SKIP_LIMIT]
+
+
+def answers(store: Store, now: datetime) -> list[dict]:
+    """最近几天有了答案的“替你留意的问题”，首页放在追踪中的最前面。"""
+    since = to_iso(now - timedelta(days=ANSWER_DAYS))
+    return [{"id": q["id"], "question": q["text"], "answer": q["answer"], "thread_id": q["thread_id"],
+             "event_id": q["event_id"], "answered": q["answered"]}
+            for q in store.questions("answered") if (q["answered"] or "") >= since]
 
 
 def following(config: Config, store: Store, follows: dict, now: datetime) -> list[dict]:
@@ -279,8 +318,13 @@ def memories(config: Config, store: Store, now: datetime) -> dict:
                     "event": briefs[m["event_id"]]["headline"] if m["event_id"] in briefs else None,
                     "days_left": max(0, (expires - now).days) if expires else None,
                     "expired": bool(expires and expires <= now)})
+    week_ago = to_iso(now - timedelta(days=7))
+    questions = [{"id": q["id"], "text": q["text"], "status": q["status"], "answer": q["answer"], "created": q["created"],
+                  "thread_id": q["thread_id"]}
+                 for q in store.questions() if q["status"] == "open"
+                 or (q["status"] == "answered" and (q["answered"] or "") >= week_ago)]
     return {"memories": out, "kinds": personal.KINDS, "personalize": personal.personalized(store),
-            "week": store.week_stats(now - timedelta(days=7))}
+            "week": store.week_stats(now - timedelta(days=7)), "questions": questions}
 
 
 def add_memory(config: Config, store: Store, body: dict, now: datetime) -> tuple[int, dict]:
@@ -319,7 +363,7 @@ def edit_memory(config: Config, store: Store, memory_id: int, body: dict, now: d
 
 
 def _label(signal, sources: dict[str, Source]) -> str:
-    return personal.source_of(signal, sources)[0]
+    return source_of(signal, sources)[0]
 
 
 def _bearer(headers) -> str:
