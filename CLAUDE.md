@@ -15,6 +15,6 @@
 - **App 版本**：`versionCode` 按构建时间自动递增；应用内更新比较的是 `versionName` 与服务器 `/app/version`（来自 `android/dist/version.json`）。App 不直连 GitHub（国内网络不稳定），GitHub Release 只做存档。发版用 `android/release.sh <版本号>`。
 - **App 埋点**：`Trace.log` 记到手机本地 `trace.log`，连上后上传到 hub `POST /log`，落在 `../infofeed/applogs/<机型>-<随机id>.log`。排查手机端问题先看这里。
 - **App 入口是 `https://43.139.27.91:8443`**：域名未备案，443 被腾讯云拦截。证书来自 Caddy 内部 CA（`caddy_data` 卷里的 root，有效期到 2036），App 内置该根证书做固定信任。重建 Caddy 数据卷会换 CA，已装的 App 将连不上，需要发新包并让用户用浏览器重装。
-- **记忆闭环**：记忆存在 `memories` 表，任何增删改都要调用 `personal.bump()`（简报靠 `memory_rev` 判断要不要按新记忆重写）。测试里涉及详情接口、对话和带原因的反馈时要 mock `catchup.chat.prefetch` 和 `catchup.personal.rebrief_async`，否则后台线程会访问真实网络和项目数据库；读原文（对话、分享）要 mock `catchup.reader.tool`，问题留意要 mock `catchup.pipeline.answers.tool`。
+- **记忆闭环**：记忆存在 `memories` 表，任何增删改都要调用 `personal.bump()`（简报靠 `memory_rev` 判断要不要按新记忆重写）。测试里涉及详情接口、对话和带原因的反馈时要 mock `catchup.chat.prefetch` 和 `catchup.personal.rebrief_async`，否则后台线程会访问真实网络和项目数据库；读原文（对话、分享、`read_wait` 大于 0 的写简报）要 mock `catchup.reader.tool`，问题留意要 mock `catchup.pipeline.answers.tool`。
 - **反馈学习**：用户在事件上的动作都追加到 `actions` 表（`feedback`、`follows`、`ratings` 只存当前状态）。每小时的归纳只能改 origin 为“你的反馈”的记忆，新增必须有两条以上行为支撑（代码里校验，不靠提示词）；“不需要 / 想看这类”带原因时由 `personal.from_reason` 当场记下（origin 见 `REASON_ORIGINS`，记 event_id），撤回或改反馈时 `personal.retract` 按 event_id 删除。
 - **来源显示名**统一用 `sources.source_of`：Google News 显示真正的媒体（author），分享进来的显示“你分享的”（source 为 `sources.SHARED`，这类事件不推送）。

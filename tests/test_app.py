@@ -45,7 +45,7 @@ class FakeLLM:
         if "补课简报" in system:
             return {"text": "你离开期间 Block 发布了 Dessa。"}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。", "why": "和你关注的 AI 语音直接相关",
-                "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"]}
+                "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"]}
 
     def stream(self, messages):
         self.prompts.append(messages[0]["content"])
@@ -93,6 +93,18 @@ class EventTest(unittest.TestCase):
         saved = self.store.briefs([events[0].id])[events[0].id]
         self.assertEqual((saved["importance"], len(saved["questions"])), (4, 2))
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW, memory_rev=1), 1)  # 记忆变了就重写
+
+    def test_briefs_are_rewritten_once_the_original_is_read(self):
+        assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice")), NOW)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        eid, llm = events[0].id, FakeLLM()
+        brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW)
+        self.assertIsNone(self.store.briefs([eid])[eid]["points"])  # 还没读到原文，先用报道摘要写
+        self.store.save_page("https://a/1", "Dessa 是只用语音对话训练的全双工模型。", NOW)
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 1)
+        self.assertIn("只用语音对话训练", llm.prompts[-1])
+        self.assertEqual(self.store.briefs([eid])[eid]["points"], ["全双工"])
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 0)
 
 
 class PushTest(unittest.TestCase):

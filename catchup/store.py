@@ -77,6 +77,8 @@ MIGRATIONS = [
         status text not null default 'open', answer text, answer_url text, answered text,
         notified integer not null default 0);
     """,
+    # 简报要点：读原文后写的 3～5 条要点（JSON 数组）；NULL 表示写简报时还没读到原文，读到后会重写
+    "alter table briefs add column points text;",
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -178,21 +180,24 @@ class Store:
     def briefs(self, ids: Iterable[int]) -> dict[int, dict]:
         ids = list(ids)
         rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance, "
-                                f"memory_rev, questions from briefs where event_id in ({','.join('?' * len(ids))})", ids)
+                                f"memory_rev, questions, points from briefs where event_id in ({','.join('?' * len(ids))})",
+                                ids)
         keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance", "memory_rev")
         out = {}
         for r in rows:
             out[r[0]] = dict(zip(keys, r[1:9]))
             out[r[0]]["questions"] = json.loads(r[9] or "[]")
+            out[r[0]]["points"] = None if r[10] is None else json.loads(r[10])
         return out
 
     def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict,
                    memory_rev: int = 0) -> None:
         self.con.execute("insert or replace into briefs (event_id, created, model, signal_count, headline, summary, "
-                         "why, importance, memory_rev, questions) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         "why, importance, memory_rev, questions, points) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (event_id, to_iso(now), model, signal_count, brief["headline"], brief["summary"],
                           brief["why"], brief["importance"], memory_rev,
-                          json.dumps(brief.get("questions", []), ensure_ascii=False)))
+                          json.dumps(brief.get("questions", []), ensure_ascii=False),
+                          None if brief.get("points") is None else json.dumps(brief["points"], ensure_ascii=False)))
         self.con.commit()
 
     def feedback(self) -> dict[int, str]:

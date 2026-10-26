@@ -166,16 +166,21 @@ def _start(url: str) -> Future:
         return _inflight[url]
 
 
-def _read(store, signals, now: datetime, timeout: float | None) -> dict[str, str]:
-    """取所选来源的原文：先查缓存，缺的并行抓取（已在抓的直接等它），最多等 timeout 秒。
-    抓完的写回缓存（数据库只在当前线程写），没等到的这次当作空，留给还在等它的线程写回。"""
-    urls = [s.url for s in _pick(signals)]
+def _read(store, signals, now: datetime, timeout: float | None) -> dict[str, str | None]:
+    """所选来源的原文，见 read_pages。"""
+    return read_pages(store, [s.url for s in _pick(signals)], now, timeout)
+
+
+def read_pages(store, urls: list[str], now: datetime, timeout: float | None) -> dict[str, str | None]:
+    """取一批链接的原文：先查缓存，缺的并行抓取（已在抓的直接等它），最多等 timeout 秒；timeout 为 0 时只查缓存。
+    抓完的写回缓存（数据库只在当前线程写）；读不到的是空串，没缓存也没等到的是 None，留给还在等它的线程写回。"""
     texts = {u: _cached(store, u, now) for u in urls}
+    if timeout == 0:
+        return texts
     futures = {u: _start(u) for u, t in texts.items() if t is None}
     if futures:
         wait(futures.values(), timeout=timeout)
     for url, future in futures.items():
-        texts[url] = ""
         if future.done():
             texts[url] = future.result()
             store.save_page(url, texts[url], now)

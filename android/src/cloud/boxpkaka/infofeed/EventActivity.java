@@ -194,6 +194,21 @@ public class EventActivity extends Activity {
             s.setPadding(0, t.dp(22), 0, 0);
             body.addView(s);
         }
+        JSONArray points = e.optJSONArray("points"); // 简报要点：原文里的具体内容，详情接口才有
+        for (int i = 0; points != null && i < points.length(); i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setPadding(0, t.dp(i == 0 ? 18 : 10), 0, 0);
+            View dot = new View(this);
+            dot.setBackground(t.round(t.sub, 99));
+            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(5), t.dp(5));
+            dl.topMargin = t.dp(10);
+            row.addView(dot, dl);
+            TextView p = t.text(this, points.optString(i), 15.5f, t.ink, 400);
+            p.setLineSpacing(t.dp(5), 1f);
+            p.setPadding(t.dp(12), 0, 0, 0);
+            row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            body.addView(row);
+        }
 
         String why = e.optString("why");
         JSONArray reasons = e.optJSONArray("reasons");
@@ -230,7 +245,7 @@ public class EventActivity extends Activity {
         }
 
         if (e.optBoolean("ai")) {
-            TextView ai = t.text(this, "标题和摘要由 AI 根据来源整理，请以原文为准", 12, t.sub, 400);
+            TextView ai = t.text(this, "标题、概要和要点由 AI 根据来源整理，请以原文为准", 12, t.sub, 400);
             ai.setPadding(0, t.dp(14), 0, 0);
             body.addView(ai);
         }
