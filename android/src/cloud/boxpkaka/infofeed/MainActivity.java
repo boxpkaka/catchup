@@ -6,6 +6,8 @@ import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -87,7 +89,8 @@ public class MainActivity extends Activity {
     private LinearLayout header;
     private TextView catchLine, catchSub, statusChip, digestText, skippedLine;
     private long digestFor = -1; // 已为哪个“上次离开时间”取过补课简报
-    private LinearLayout updateNotice, batteryNotice;
+    static volatile boolean visible; // 首页在前台：补到的旧推送不再弹通知，见 FeedService.notifyIfRecent
+    private LinearLayout updateNotice, batteryNotice, notifyNotice;
     private TextView updateText, updateAction;
     private View skeleton;
     private ValueAnimator skeletonPulse;
@@ -165,6 +168,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         Trace.log(this, "ui.resume", "service=" + FeedService.status);
+        visible = true;
         seenAtOpen = Store.seenAt(this);
         if (!receiving) {
             IntentFilter f = new IntentFilter(FeedService.ACTION_UPDATE);
@@ -176,6 +180,7 @@ public class MainActivity extends Activity {
         updateStatusChip();
         batteryNotice.setVisibility(getSystemService(PowerManager.class)
                 .isIgnoringBatteryOptimizations(getPackageName()) ? View.GONE : View.VISIBLE);
+        notifyNotice.setVisibility(notificationsBlocked() ? View.VISIBLE : View.GONE);
         render();
         if (System.currentTimeMillis() - lastFetch > REFETCH_MS) load();
         if (Updater.due(this)) checkUpdate(false);
@@ -185,6 +190,7 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         Trace.log(this, "ui.pause", "");
+        visible = false;
         if (receiving) {
             unregisterReceiver(receiver);
             receiving = false;
@@ -348,6 +354,22 @@ public class MainActivity extends Activity {
         batteryNotice.setOnClickListener(v -> startActivity(new Intent(
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))));
         header.addView(batteryNotice, noticeLp());
+
+        notifyNotice = notice(t.sheet);
+        LinearLayout nt = new LinearLayout(this);
+        nt.setOrientation(LinearLayout.VERTICAL);
+        nt.addView(t.text(this, "推送通知被关闭了", 14, t.ink, 600));
+        TextView ns = t.text(this, "打开“新消息”通知，值得知道的事才会弹出来", 12, t.sub, 400);
+        ns.setPadding(0, t.dp(4), 0, 0);
+        nt.addView(ns);
+        notifyNotice.addView(nt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        notifyNotice.addView(t.text(this, "去打开", 13, t.ink, 700));
+        notifyNotice.setOnClickListener(v -> startActivity(
+                new Intent(getSystemService(NotificationManager.class).areNotificationsEnabled()
+                        ? Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS : Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName())
+                        .putExtra(Settings.EXTRA_CHANNEL_ID, FeedService.CHANNEL_MESSAGES)));
+        header.addView(notifyNotice, noticeLp());
 
         catchLine = t.text(this, "", 30, t.ink, 900);
         catchLine.setLineSpacing(t.dp(4), 1f);
@@ -570,8 +592,17 @@ public class MainActivity extends Activity {
         return " " + (h / 24) + " 天";
     }
 
+    /** 离开期间出现的，或离开期间推送过的（推送时可能没弹出来，回到首页要能找到）。 */
     private boolean isNew(JSONObject e) {
-        return seenAtOpen > 0 && Theme.millis(e.optString("first_seen")) > seenAtOpen;
+        return seenAtOpen > 0 && Math.max(Theme.millis(e.optString("first_seen")),
+                Theme.millis(e.optString("pushed_at"))) > seenAtOpen;
+    }
+
+    /** 整个 App 的通知或“新消息”分类被关掉了；分类还没建（服务没启动过）时不算。 */
+    private boolean notificationsBlocked() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        NotificationChannel ch = nm.getNotificationChannel(FeedService.CHANNEL_MESSAGES);
+        return !nm.areNotificationsEnabled() || ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE;
     }
 
     private void stopSkeleton() {
@@ -848,7 +879,8 @@ public class MainActivity extends Activity {
         show(h.summary, e.optString("summary"));
         h.why.setText(e.optString("why"));
         h.whyRow.setVisibility(e.optString("why").isEmpty() ? View.GONE : View.VISIBLE);
-        h.meta.setText(e.optInt("source_count") + " 个来源，" + Theme.ago(Theme.millis(e.optString("time"))));
+        h.meta.setText(e.optInt("source_count") + " 个来源，" + Theme.ago(Theme.millis(e.optString("time")))
+                + (e.optBoolean("pushed") ? " · 已推送" : ""));
     }
 
     private void bindRow(Holder h, JSONObject e) {
@@ -858,7 +890,7 @@ public class MainActivity extends Activity {
         JSONArray src = e.optJSONArray("sources");
         String first = src != null && src.length() > 0 ? src.optString(0) : "";
         int n = e.optInt("source_count");
-        h.meta.setText(n > 1 ? first + " 等 " + n + " 个来源" : first);
+        h.meta.setText((n > 1 ? first + " 等 " + n + " 个来源" : first) + (e.optBoolean("pushed") ? " · 已推送" : ""));
     }
 
     private static String shortTime(long ms) {

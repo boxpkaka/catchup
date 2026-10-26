@@ -178,7 +178,7 @@ def feed(config: Config, store: Store, now: datetime) -> dict:
     passed = skipped(events, briefs, feedback, sources)
     events = events[:FEED_LIMIT]
     created = store.event_created(e.id for e in events)
-    out = [_event(e, briefs.get(e.id), feedback.get(e.id), e.id in pushed, created.get(e.id), sources,
+    out = [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources,
                   e.id in follows) for e in events]
     return {"generated": to_iso(now), "events": out, "following": following(config, store, follows, now),
             "answers": answers(store, now), "skipped": passed, "personalize": personal.personalized(store)}
@@ -236,7 +236,7 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     [event] = personal.build_ranker(config, store, now).rank(group_events(signals), now)
     brief = store.briefs([event_id]).get(event_id)
     following_ids = {f["event_id"] for f in store.follows()}
-    out = _event(event, brief, store.feedback().get(event_id), event_id in store.pushed(),
+    out = _event(event, brief, store.feedback().get(event_id), store.pushed().get(event_id),
                  store.event_created([event_id]).get(event_id), sources, event_id in following_ids)
     out["signals"] = [{"title": s.title, "url": s.url, "label": _label(s, sources), "time": to_iso(s.published),
                        "summary": s.summary[:240]} for s in reversed(signals)]
@@ -250,7 +250,7 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     return out
 
 
-def _event(e: Event, brief: dict | None, feedback: str | None, pushed: bool, created, sources,
+def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | None, created, sources,
            following: bool = False) -> dict:
     lead = e.lead
     return {
@@ -271,7 +271,8 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed: bool, cre
         "sources": list(dict.fromkeys(_label(s, sources) for s in e.signals))[:6],
         "source": _label(lead, sources),  # “不想看这个来源”指的就是它
         "feedback": feedback,
-        "pushed": pushed,
+        "pushed": pushed_at is not None,
+        "pushed_at": pushed_at,  # App 把离开期间推送过的事件也算作新的
         "following": following,
     }
 

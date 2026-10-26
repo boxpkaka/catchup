@@ -12,6 +12,7 @@ from catchup.pipeline.ranking import Ranker
 from catchup.sources import build_sources
 from catchup.store import Store
 from catchup.web import app_api
+from catchup.util import to_iso
 
 NOW = datetime(2026, 10, 24, 4, tzinfo=timezone.utc)  # 北京时间 12:00，不在免打扰时段
 INTERESTS = [{"name": "AI 语音", "weight": 3, "keywords": ["tts", "voice"]}]
@@ -123,7 +124,7 @@ class PushTest(unittest.TestCase):
                 mock.patch("catchup.http.post_json", side_effect=[{"id": 1}, OSError("down")]) as post:
             self.assertEqual(push.deliver(self.store, self.events[:2], NOW), 1)
         self.assertTrue(post.call_args_list[0].args[1]["click"].startswith("catchup://event/"))
-        self.assertEqual(self.store.pushed(), {self.events[0].id})
+        self.assertEqual(set(self.store.pushed()), {self.events[0].id})
 
 
 class AppApiTest(unittest.TestCase):
@@ -151,7 +152,9 @@ class AppApiTest(unittest.TestCase):
             dt.now.return_value = NOW
             status, feed = self.call("GET", "/v1/feed", token)
             [event] = feed["events"]
-            self.assertEqual((status, event["ai"], event["source_count"]), (200, False, 1))
+            self.assertEqual((status, event["ai"], event["source_count"], event["pushed_at"]), (200, False, 1, None))
+            self.store.record_push(event["id"], NOW)
+            self.assertEqual(self.call("GET", "/v1/feed", token)[1]["events"][0]["pushed_at"], to_iso(NOW))
             status, detail = self.call("GET", f"/v1/events/{event['id']}", token)
             self.assertEqual((status, detail["signals"][0]["url"]), (200, "https://a/1"))
             self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "bad"})[0], 400)
