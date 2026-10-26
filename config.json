@@ -330,7 +330,7 @@
   },
   "llm": {
     "model": "deepseek-flash",
-    "brief_top": 25,
+    "brief_top": 80,
     "merge_top": 40
   },
   "push": {

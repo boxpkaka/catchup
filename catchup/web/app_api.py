@@ -241,6 +241,7 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     out["signals"] = [{"title": s.title, "url": s.url, "label": _label(s, sources), "time": to_iso(s.published),
                        "summary": s.summary[:240]} for s in reversed(signals)]
     out["updates"] = store.event_updates([event_id]).get(event_id, [])
+    out["points"] = (brief.get("points") or []) if brief else []
     out["questions"] = brief.get("questions", []) if brief else []
     out["would_miss"] = store.rating(event_id)
     thread = store.latest_thread(event_id)

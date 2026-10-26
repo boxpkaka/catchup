@@ -738,7 +738,7 @@ public class MainActivity extends Activity {
         h.summary = t.text(this, "", 14.5f, t.ink, 400);
         h.summary.setAlpha(0.78f);
         h.summary.setLineSpacing(t.dp(4), 1f);
-        h.summary.setMaxLines(3);
+        h.summary.setMaxLines(4);
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
         h.summary.setPadding(0, t.dp(8), 0, 0);
         card.addView(h.summary);
@@ -793,6 +793,13 @@ public class MainActivity extends Activity {
         h.headline.setMaxLines(2);
         h.headline.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(h.headline);
+        h.summary = t.text(this, "", 13.5f, t.ink, 400); // 简报概要，不用点开也知道主要内容
+        h.summary.setAlpha(0.78f);
+        h.summary.setLineSpacing(t.dp(3), 1f);
+        h.summary.setMaxLines(3);
+        h.summary.setEllipsize(TextUtils.TruncateAt.END);
+        h.summary.setPadding(0, t.dp(4), 0, 0);
+        col.addView(h.summary);
         h.meta = t.text(this, "", 12, t.sub, 400);
         h.meta.setPadding(0, t.dp(6), 0, 0);
         h.meta.setSingleLine();
@@ -887,6 +894,7 @@ public class MainActivity extends Activity {
         h.time.setText(shortTime(Theme.millis(e.optString("time"))));
         h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
         h.headline.setText(e.optString("headline"));
+        show(h.summary, e.optString("summary"));
         JSONArray src = e.optJSONArray("sources");
         String first = src != null && src.length() > 0 ? src.optString(0) : "";
         int n = e.optInt("source_count");

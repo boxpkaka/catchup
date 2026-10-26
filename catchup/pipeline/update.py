@@ -30,7 +30,7 @@ def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = Non
     now = now or datetime.now(timezone.utc)
     _, events = ranked(config, store, now)
     return brief.write_briefs(store, events, personal.focus(config, store, now), llm, build_sources(config.sources),
-                              now, top or config.llm.get("brief_top", 25), personal.memory_rev(store))
+                              now, top or config.llm.get("brief_top", 25), personal.memory_rev(store), brief.READ_WAIT)
 
 
 def update(config: Config, store: Store, now: datetime | None = None, llm=None, deliver: bool = True) -> dict:
