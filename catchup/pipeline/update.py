@@ -44,7 +44,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     updates = []
     if llm:
         stats["merged"] = brief.merge_duplicates(store, events, llm, sources, config.llm.get("merge_top", 40))
-        learned = personal.learn_from_feedback(store, llm, now)
+        learned = personal.learn_from_feedback(config, store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
         stats["briefs"] = refresh_briefs(config, store, llm, now)
         updates = follow.run(store, llm, now)

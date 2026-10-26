@@ -46,10 +46,11 @@ def keyword_in(keyword: str, text: str) -> bool:
 
 class Ranker:
     def __init__(self, interests: list[Interest], avoid: list[Interest] | None = None,
-                 sources: list[Interest] | None = None, **options):
+                 sources: list[Interest] | None = None, avoid_sources: list[Interest] | None = None, **options):
         self.interests = interests
         self.avoid = avoid or []       # 不想看：命中即大幅降权
         self.sources = sources or []   # 偏好的来源：关键词匹配来源名和频道
+        self.avoid_sources = avoid_sources or []  # 不想看的来源：同样匹配来源名和频道，命中即大幅降权
         self.opt = {**DEFAULTS, **options}
 
     @classmethod
@@ -71,7 +72,7 @@ class Ranker:
                 reasons.append(f"和你说过的「{interest.said}」有关" if interest.said
                                else f"命中你关注的「{interest.name}」：{'、'.join(hits[:3])}")
 
-        origin = " ".join(f"{s.source} {s.channel}" for s in event.signals).lower()
+        origin = " ".join(f"{s.source} {s.channel} {s.author}" for s in event.signals).lower()
         for pref in self.sources:
             if pref.hits(origin):
                 score += opt["source_bonus"]
@@ -100,7 +101,12 @@ class Ranker:
         for a in self.avoid:
             if a.hits(text):
                 score *= opt["avoid_factor"]
-                reasons.append(f"你说过不想看「{a.said or a.name}」，已降低优先级")
+                reasons.append(f"{a.said}，已降低优先级" if a.said else f"你说过不想看「{a.name}」，已降低优先级")
+                break
+        for a in self.avoid_sources:
+            if a.hits(origin):
+                score *= opt["avoid_factor"]
+                reasons.append(f"{a.said}，已降低优先级" if a.said else f"来自你不想看的来源：{a.name}，已降低优先级")
                 break
 
         event.score, event.topics, event.reasons = round(score, 2), topics, reasons

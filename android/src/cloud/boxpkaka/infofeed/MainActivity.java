@@ -39,6 +39,7 @@ import android.view.WindowManager;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -66,7 +67,12 @@ public class MainActivity extends Activity {
     private static final int MAX_HIGHLIGHTS = 8;
     private static final int MAX_OTHERS = 40;
     private static final long REFETCH_MS = 30_000;
-    private static final long UNDO_MS = 4000;
+    private static final long UNDO_MS = 6000;
+    /** “不需要”的原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。 */
+    private static final String[][] REASONS = {
+            {"topic", "不想看这类", "正在记下…"},
+            {"source", "不想看这个来源", "正在记下…"},
+            {"known", "已经知道了", "好，这不影响同类内容"}};
     private static final int REQ_EVENT = 2;
 
     private Theme t;
@@ -86,6 +92,8 @@ public class MainActivity extends Activity {
     private ValueAnimator skeletonPulse;
     private LinearLayout stateView;
     private LinearLayout undoBar;
+    private TextView undoLabel, undoButton;
+    private final List<TextView> reasonChips = new ArrayList<>();
 
     private final List<Row> rows = new ArrayList<>();
     private final FeedAdapter adapter = new FeedAdapter();
@@ -94,7 +102,9 @@ public class MainActivity extends Activity {
     private boolean loading, receiving;
     private final Set<Long> hidden = new HashSet<>();
     private long pendingDismiss = -1;
-    private final Runnable commitDismiss = this::commitDismiss;
+    private long answeredFor = -1; // 撤销条正在等哪件事的“记住了”回应
+    private final Runnable commitDismiss = () -> commitDismiss(null);
+    private final Runnable hideUndoLater = this::hideUndo;
     private Updater.Release release;
 
     private static final class Row {
@@ -179,7 +189,7 @@ public class MainActivity extends Activity {
             receiving = false;
         }
         if (feed != null) Store.setSeenAt(this, System.currentTimeMillis()); // 看过的事件下次不再算“新的”
-        commitDismiss();
+        commitDismiss(null);
     }
 
     // ---------- 布局 ----------
@@ -252,17 +262,38 @@ public class MainActivity extends Activity {
         root.addView(stateView, match());
 
         undoBar = new LinearLayout(this);
-        undoBar.setGravity(Gravity.CENTER_VERTICAL);
-        undoBar.setPadding(t.dp(18), t.dp(14), t.dp(10), t.dp(14));
-        undoBar.setBackground(t.round(t.ink, 16));
+        undoBar.setOrientation(LinearLayout.VERTICAL);
+        undoBar.setPadding(t.dp(18), t.dp(8), t.dp(10), t.dp(14));
+        undoBar.setBackground(t.round(t.ink, 18));
         undoBar.setElevation(t.dp(6));
-        undoBar.addView(t.text(this, "已标记为不需要", 14, t.bg, 500),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView undo = t.text(this, "撤销", 14, t.bg, 800);
-        undo.setPadding(t.dp(14), t.dp(6), t.dp(14), t.dp(6));
-        undo.setBackground(t.ripple(Color.TRANSPARENT, 12));
-        undo.setOnClickListener(v -> undoDismiss());
-        undoBar.addView(undo);
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        undoLabel = t.text(this, "", 14, t.bg, 500);
+        head.addView(undoLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        undoButton = t.text(this, "撤销", 14, t.bg, 800);
+        undoButton.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        undoButton.setBackground(t.ripple(Color.TRANSPARENT, 12));
+        undoButton.setOnClickListener(v -> undoDismiss());
+        head.addView(undoButton);
+        undoBar.addView(head);
+        LinearLayout chips = new LinearLayout(this);
+        for (String[] reason : REASONS) {
+            TextView chip = t.text(this, reason[1], 13, t.bg, 600);
+            chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+            chip.setOnClickListener(v -> pickReason(chip, reason));
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            cl.rightMargin = t.dp(8);
+            chips.addView(chip, cl);
+            reasonChips.add(chip);
+        }
+        HorizontalScrollView chipScroll = new HorizontalScrollView(this);
+        chipScroll.setHorizontalScrollBarEnabled(false);
+        chipScroll.addView(chips);
+        LinearLayout.LayoutParams csl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        csl.topMargin = t.dp(2);
+        undoBar.addView(chipScroll, csl);
         undoBar.setVisibility(View.GONE);
         FrameLayout.LayoutParams ub = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -840,11 +871,14 @@ public class MainActivity extends Activity {
 
     private void dismiss(long id) {
         if (id < 0) return;
-        commitDismiss(); // 上一条还在撤销期内的，先提交
+        JSONObject e = findEvent(id); // 先取，render() 之后列表里就没有它了
+        commitDismiss(null); // 上一条还在撤销期内的，先提交
         pendingDismiss = id;
         hidden.add(pendingDismiss);
         render();
         Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
+        main.removeCallbacks(hideUndoLater);
+        resetUndo(e == null ? "" : e.optString("source"));
         undoBar.animate().cancel();
         undoBar.setTranslationY(t.dp(24));
         undoBar.setAlpha(0f);
@@ -862,16 +896,73 @@ public class MainActivity extends Activity {
         render();
     }
 
-    private void commitDismiss() {
+    private JSONObject findEvent(long id) {
+        for (Row r : rows) {
+            if (r.e != null && r.e.optLong("id") == id) return r.e;
+        }
+        return null;
+    }
+
+    /** source 是这件事的主要来源名，“不想看这个来源”按钮直接写出来，免得不知道屏蔽的是谁。 */
+    private void resetUndo(String source) {
+        undoLabel.setText("已移走，为什么不需要？");
+        undoButton.setVisibility(View.VISIBLE);
+        answeredFor = -1;
+        for (int i = 0; i < REASONS.length; i++) {
+            reasonChips.get(i).setText("source".equals(REASONS[i][0]) && !source.isEmpty()
+                    ? "不想看「" + source + "」" : REASONS[i][1]);
+        }
+        for (TextView chip : reasonChips) {
+            chip.setEnabled(true);
+            chip.setAlpha(1f);
+            chip.setTextColor(t.bg);
+            chip.setBackground(t.ripple((t.bg & 0x00FFFFFF) | 0x26000000, 99));
+        }
+    }
+
+    /** 选了原因就立即提交，撤销条留一下显示回应再收起。 */
+    private void pickReason(TextView picked, String[] reason) {
+        if (pendingDismiss < 0) return;
+        for (TextView chip : reasonChips) {
+            chip.setEnabled(false);
+            if (chip != picked) chip.setAlpha(0.35f);
+        }
+        picked.setTextColor(t.ink);
+        picked.setBackground(t.round(t.bg, 99));
+        picked.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
+        undoLabel.setText(reason[2]);
+        undoButton.setVisibility(View.INVISIBLE);
+        Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + reason[0]);
+        boolean remembers = !"known".equals(reason[0]);
+        answeredFor = remembers ? pendingDismiss : -1;
+        commitDismiss(reason[0]);
+        main.postDelayed(hideUndoLater, remembers ? 6000 : 1400); // 等不到服务器回应也会收起
+    }
+
+    /** 服务器按原因记下了记忆：在撤销条上说出记住了什么，和对话里的“记住了”一致。 */
+    private void showRemembered(long id, JSONObject response) {
+        if (isDestroyed() || id != answeredFor || undoBar.getVisibility() != View.VISIBLE) return;
+        JSONObject memory = response == null ? null : response.optJSONObject("memory");
+        JSONArray added = memory == null ? null : memory.optJSONArray("added");
+        undoLabel.setText(added != null && added.length() > 0
+                ? "记住了：" + added.optJSONObject(0).optString("text") : "好，已记下");
+        main.removeCallbacks(hideUndoLater);
+        main.postDelayed(hideUndoLater, 2400);
+    }
+
+    /** 把撤销期内的“不需要”提交给服务器；reason 为空表示没选原因（超时或离开页面），此时直接收起撤销条。 */
+    private void commitDismiss(String reason) {
         main.removeCallbacks(commitDismiss);
         long id = pendingDismiss;
         if (id < 0) return;
         pendingDismiss = -1;
-        hideUndo();
+        if (reason == null) hideUndo();
         Context app = getApplicationContext();
         new Thread(() -> {
             try {
-                Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", "not_needed"));
+                JSONObject r = Api.post(app, "/v1/events/" + id + "/feedback",
+                        new JSONObject().put("value", "not_needed").putOpt("reason", reason));
+                if (reason != null) runOnUiThread(() -> showRemembered(id, r));
             } catch (Exception err) {
                 Trace.log(app, "feedback.fail", "id=" + id + " " + err);
             }
@@ -969,7 +1060,9 @@ public class MainActivity extends Activity {
         headline.setMaxLines(2);
         headline.setEllipsize(TextUtils.TruncateAt.END);
         text.addView(headline);
-        TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at"))), 12, t.sub, 400);
+        String reason = e.optString("reason");
+        TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at")))
+                + (reason.isEmpty() ? "" : " · " + reason), 12, t.sub, 400);
         when.setPadding(0, t.dp(5), 0, 0);
         text.addView(when);
         row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));

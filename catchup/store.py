@@ -57,6 +57,18 @@ MIGRATIONS = [
     alter table briefs add column memory_rev integer not null default 0;
     alter table briefs add column questions text;
     """,
+    # 行为日志：反馈、撤回、追踪、提问、看原文、评分，按时间顺序供反馈学习归纳；feedback 等表只存当前状态
+    """
+    create table actions (id integer primary key, event_id integer not null, kind text not null, value text,
+        at text not null);
+    create index actions_at on actions (at);
+    alter table feedback add column reason text;
+    insert into actions (event_id, kind, at) select event_id, value, at from feedback order by at;
+    insert into actions (event_id, kind, value, at) select event_id, 'rating', would_miss, at from ratings order by at;
+    insert into actions (event_id, kind, at) select event_id, 'follow', created from follows where active = 1;
+    insert into actions (event_id, kind, at) select t.event_id, 'ask', m.created from messages m
+        join threads t on t.id = m.thread_id where m.role = 'user' and t.event_id is not null order by m.id;
+    """,
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -169,11 +181,12 @@ class Store:
     def feedback(self) -> dict[int, str]:
         return dict(self.con.execute("select event_id, value from feedback"))
 
-    def set_feedback(self, event_id: int, value: str | None, now: datetime) -> None:
+    def set_feedback(self, event_id: int, value: str | None, now: datetime, reason: str | None = None) -> None:
         if value is None:
             self.con.execute("delete from feedback where event_id = ?", (event_id,))
         else:
-            self.con.execute("insert or replace into feedback values (?, ?, ?)", (event_id, value, to_iso(now)))
+            self.con.execute("insert or replace into feedback values (?, ?, ?, ?)",
+                             (event_id, value, to_iso(now), reason))
         self.con.commit()
 
     def pushed(self) -> set[int]:
@@ -191,8 +204,19 @@ class Store:
         rows = self.con.execute(f"select url from signals where url in ({','.join('?' * len(urls))})", urls)
         return {r[0] for r in rows}
 
-    def feedback_since(self, since: str) -> list[tuple[int, str, str]]:
-        return self.con.execute("select event_id, value, at from feedback where at > ? order by at", (since,)).fetchall()
+    def feedback_since(self, since: str) -> list[tuple[int, str, str, str | None]]:
+        return self.con.execute("select event_id, value, at, reason from feedback where at > ? order by at",
+                                (since,)).fetchall()
+
+    def add_action(self, event_id: int, kind: str, value: str | None, now: datetime) -> None:
+        self.con.execute("insert into actions (event_id, kind, value, at) values (?, ?, ?, ?)",
+                         (event_id, kind, value, to_iso(now)))
+        self.con.commit()
+
+    def actions(self, since: datetime) -> list[tuple[int, int, str, str | None, str]]:
+        """(id, event_id, kind, value, at)，按发生顺序。"""
+        return self.con.execute("select id, event_id, kind, value, at from actions where at >= ? order by id",
+                                (to_iso(since),)).fetchall()
 
     def set_rating(self, event_id: int, would_miss: bool, now: datetime) -> None:
         self.con.execute("insert or replace into ratings values (?, ?, ?)", (event_id, int(would_miss), to_iso(now)))

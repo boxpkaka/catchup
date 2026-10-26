@@ -156,11 +156,24 @@ class AppApiTest(unittest.TestCase):
             status, detail = self.call("GET", f"/v1/events/{event['id']}", token)
             self.assertEqual((status, detail["signals"][0]["url"]), (200, "https://a/1"))
             self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "bad"})[0], 400)
-            self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "not_needed"})
+            self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token,
+                                       {"value": "useful", "reason": "topic"})[0], 400)
+            self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "not_needed", "reason": "topic"})
             self.assertEqual(self.call("GET", "/v1/feed", token)[1]["events"], [])
             [hidden] = self.call("GET", "/v1/dismissed", token)[1]["events"]
-            self.assertEqual(hidden["id"], event["id"])
+            self.assertEqual((hidden["id"], hidden["reason"]), (event["id"], "不想看这类"))
             self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": None})  # 恢复
+            self.assertEqual([a[2:4] for a in self.store.actions(NOW - timedelta(days=1))],
+                             [("not_needed", "topic"), ("restore", None)])
+            # 不想看这个来源：当场记下，撤回时一起删
+            with mock.patch("catchup.personal.rebrief_async") as rebrief:
+                _, r = self.call("POST", f"/v1/events/{event['id']}/feedback", token,
+                                 {"value": "not_needed", "reason": "source"})
+                self.assertEqual(r["memory"]["added"][0]["text"], f"你不想看「{event['source']}」的内容")
+                self.assertEqual(self.store.memories()[0]["kind"], "avoid_source")
+                _, r = self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": None})
+                self.assertEqual((len(r["memory"]["removed"]), self.store.memories()), (1, []))
+                self.assertEqual(rebrief.call_count, 2)
             self.assertEqual(len(self.call("GET", "/v1/feed", token)[1]["events"]), 1)
             self.assertEqual(self.call("GET", "/v1/dismissed", token)[1]["events"], [])
             self.assertEqual(self.call("GET", "/v1/events/999", token)[0], 404)
@@ -231,6 +244,47 @@ class PersonalTest(unittest.TestCase):
         plain = personal.build_ranker(cfg, self.store, NOW).rank(
             group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)
         self.assertFalse(any("你说过" in r for e in plain for r in e.reasons))
+
+
+    def test_learning_uses_actions_and_only_touches_its_own_memories(self):
+        from catchup import personal
+        self.store.add([sig("https://a/1", "Moshi 2 full-duplex release"), sig("https://b/2", "Crypto coin launch"),
+                        sig("https://c/3", "FunASR 2.0 released"), sig("https://d/4", "Qwen3-TTS open weights")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        ids = {e.lead.url: e.id for e in group_events(self.store.recent(NOW - timedelta(days=3), NOW))}
+        a, b, c, d = (ids[u] for u in ("https://a/1", "https://b/2", "https://c/3", "https://d/4"))
+        for event_id, kind, value in [(b, "not_needed", "topic"), (c, "not_needed", None), (c, "restore", None),
+                                      (d, "not_needed", "known"), (a, "follow", None), (a, "ask", None)]:
+            self.store.add_action(event_id, kind, value, NOW)
+        add = lambda kind, text, origin: personal.apply_ops(self.store, {"add": [
+            {"kind": kind, "text": text, "keywords": ["x"]}]}, origin, NOW)["added"][0]["id"]
+        said, learned = add("interest", "你关注全双工", "对话"), add("avoid", "你不想看 FunASR", personal.FEEDBACK_ORIGIN)
+        llm = mock.Mock()
+        llm.json.return_value = {"add": [
+            {"kind": "avoid", "text": "你不想看加密货币", "keywords": ["crypto"], "evidence": [1, 4]},
+            {"kind": "interest", "text": "你关注 Moshi", "keywords": ["moshi"], "evidence": [4]},   # 单条行为，不下结论
+            {"kind": "interest", "text": "你关注 FunASR", "keywords": ["funasr"], "evidence": [2, 3]}],  # 都不算证据
+            "update": [{"id": said, "text": "改掉"}], "remove": [said, learned]}
+        changes = personal.learn_from_feedback(config(), self.store, llm, NOW)
+        prompt = llm.json.call_args[0][1]
+        for tag in ("1. [不需要：不想看这类]", "2. [误点了不需要，已撤回]", "3. [不需要：已经知道了]", "4. [追踪，提问 1 次]"):
+            self.assertIn(tag, prompt)
+        self.assertEqual([m["text"] for m in changes["added"]], ["你不想看加密货币"])
+        self.assertEqual(([m["id"] for m in changes["removed"]], changes["updated"]), ([learned], []))  # 对话里说的不动
+        personal.learn_from_feedback(config(), self.store, llm, NOW)
+        self.assertEqual(llm.json.call_count, 1)  # 没有新行为不再归纳
+
+    def test_avoid_source_matches_source_name_only(self):
+        from catchup.pipeline.ranking import Interest
+        self.store.add([Signal(url="https://r/1", title="New TTS model", source="reddit", channel="LocalLLaMA",
+                               published=NOW - timedelta(hours=1))], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        [event] = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        mute = [Interest("x", 1, ["localllama"], said="你不想看「LocalLLaMA」的内容")]
+        self.assertFalse(any("不想看" in r for r in Ranker([Interest("AI 语音", 3, ["tts"])], avoid=mute)
+                             .score(event, NOW).reasons))  # “不想看”的话题不匹配来源名
+        self.assertIn("你不想看「LocalLLaMA」的内容，已降低优先级",
+                      Ranker([Interest("AI 语音", 3, ["tts"])], avoid_sources=mute).score(event, NOW).reasons)
 
 
 class ChatTest(unittest.TestCase):

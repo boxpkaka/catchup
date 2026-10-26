@@ -450,23 +450,28 @@ public class EventActivity extends Activity {
     }
 
     private void send(String value) {
+        post("/feedback", "value", value == null ? JSONObject.NULL : value);
+        Trace.log(this, "ui.feedback", "id=" + id + " value=" + value);
+    }
+
+    /** 后台把这件事上的一个动作（反馈、看原文）报给服务器，失败只记日志。 */
+    private void post(String action, String key, Object value) {
         android.content.Context app = getApplicationContext();
         long eventId = id;
         new Thread(() -> {
             try {
-                Api.post(app, "/v1/events/" + eventId + "/feedback",
-                        new JSONObject().put("value", value == null ? JSONObject.NULL : value));
+                Api.post(app, "/v1/events/" + eventId + action, new JSONObject().put(key, value));
             } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + eventId + " " + err);
+                Trace.log(app, action.substring(1) + ".fail", "id=" + eventId + " " + err);
             }
-        }, "feedback").start();
-        Trace.log(this, "ui.feedback", "id=" + id + " value=" + value);
+        }, action.substring(1)).start();
     }
 
     private void openUrl(String url) {
         if (url == null || url.isEmpty()) return;
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+            post("/opened", "url", url); // 看原文是反馈学习里的兴趣信号
         } catch (Exception e) {
             toast("没有可以打开链接的应用");
         }

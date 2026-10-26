@@ -90,6 +90,8 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         system = ASK_SYSTEM.format(focus=focus, events="\n".join(
             f"[E{e['id']}] {e['headline']}：{e['summary']}（{e['time'][:10]}）" for e in candidates) or "（暂无）")
     store.add_message(thread["id"], "user", message, now)
+    if event_id is not None:
+        store.add_action(event_id, "ask", None, now)
 
     messages = [{"role": "system", "content": system}]
     messages += [{"role": m["role"], "content": m["content"]} for m in history]

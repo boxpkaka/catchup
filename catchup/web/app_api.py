@@ -99,16 +99,34 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
     if method != "POST":
         return 404, {"error": "not found"}
     if action == "/feedback":
-        value = body.get("value")
-        if value not in FEEDBACK_VALUES:
+        value, reason = body.get("value"), body.get("reason")
+        if value not in FEEDBACK_VALUES or (reason is not None and (value != "not_needed"
+                                                                    or reason not in personal.REASONS)):
             return 400, {"error": "bad value"}
-        store.set_feedback(event_id, value, now)
-        return 200, {"ok": True}
+        previous = store.feedback().get(event_id)
+        store.set_feedback(event_id, value, now, reason)
+        if value or previous:  # 撤回“不需要”单独记一笔，每小时的反馈学习据此不再把它当证据
+            store.add_action(event_id, value or ("restore" if previous == "not_needed" else "clear"), reason, now)
+        changes = {"added": [], "updated": [], "removed": []}
+        if reason in ("topic", "source"):
+            changes = personal.from_dismissal(config, store, from_config(config.llm), event_id, reason, now)
+        elif previous == "not_needed" and value != "not_needed":
+            changes = personal.retract(store, event_id, now)
+        if any(changes.values()):
+            personal.rebrief_async(config)
+        return 200, {"ok": True, "memory": changes}
     if action == "/follow":
-        store.set_follow(event_id, bool(body.get("on")), len(store.event_signals(event_id)), now)
-        return 200, {"following": bool(body.get("on"))}
+        on = bool(body.get("on"))
+        store.set_follow(event_id, on, len(store.event_signals(event_id)), now)
+        store.add_action(event_id, "follow" if on else "unfollow", None, now)
+        return 200, {"following": on}
     if action == "/rating":
-        store.set_rating(event_id, bool(body.get("would_miss")), now)
+        would_miss = bool(body.get("would_miss"))
+        store.set_rating(event_id, would_miss, now)
+        store.add_action(event_id, "rating", "1" if would_miss else "0", now)
+        return 200, {"ok": True}
+    if action == "/opened":  # 在详情页点开了原文
+        store.add_action(event_id, "open_source", None, now)
         return 200, {"ok": True}
     return 404, {"error": "not found"}
 
@@ -127,15 +145,15 @@ def register(store: Store, name: str, now: datetime) -> tuple[int, dict]:
 
 def dismissed(store: Store, now: datetime) -> list[dict]:
     """最近标记为不需要的事件，新标记的在前；App 里可以恢复（反馈改回空）。"""
-    rows = [(i, at) for i, value, at in store.feedback_since(to_iso(now - timedelta(days=DISMISSED_DAYS)))
-            if value == "not_needed"][::-1][:50]
-    briefs = store.briefs(i for i, _ in rows)
+    rows = [(i, at, reason) for i, value, at, reason in store.feedback_since(
+        to_iso(now - timedelta(days=DISMISSED_DAYS))) if value == "not_needed"][::-1][:50]
+    briefs = store.briefs(i for i, _, _ in rows)
     out = []
-    for i, at in rows:
+    for i, at, reason in rows:
         signals = [] if i in briefs else store.event_signals(i)
         headline = briefs[i]["headline"] if i in briefs else (signals[0].title if signals else "")
         if headline:
-            out.append({"id": i, "headline": headline, "at": at})
+            out.append({"id": i, "headline": headline, "at": at, "reason": personal.REASONS.get(reason, "")})
     return out
 
 
@@ -212,6 +230,7 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed: bool, cre
         "first_seen": to_iso(created),
         "source_count": len(e.signals),
         "sources": list(dict.fromkeys(_label(s, sources) for s in e.signals))[:6],
+        "source": _label(lead, sources),  # “不想看这个来源”指的就是它
         "feedback": feedback,
         "pushed": pushed,
         "following": following,
@@ -300,8 +319,7 @@ def edit_memory(config: Config, store: Store, memory_id: int, body: dict, now: d
 
 
 def _label(signal, sources: dict[str, Source]) -> str:
-    src = sources.get(signal.source)
-    return src.label(signal.channel) if src else signal.source
+    return personal.source_of(signal, sources)[0]
 
 
 def _bearer(headers) -> str:

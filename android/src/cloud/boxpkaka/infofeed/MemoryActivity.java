@@ -48,6 +48,7 @@ public class MemoryActivity extends Activity {
         kinds.put("interest", "长期关注");
         kinds.put("avoid", "不想看");
         kinds.put("source", "偏好的来源");
+        kinds.put("avoid_source", "不想看的来源");
         kinds.put("style", "希望怎么写");
         setContentView(build());
         load();
