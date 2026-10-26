@@ -375,32 +375,11 @@ class Store:
             out.setdefault(r[0], []).append({"at": r[1], "text": r[2]})
         return out
 
-    # ---------- 补课简报、回顾 ----------
-
-    def digest(self, key: str) -> str | None:
-        r = self.con.execute("select text from digests where key = ?", (key,)).fetchone()
-        return r[0] if r else None
-
-    def save_digest(self, key: str, text: str, now: datetime) -> None:
-        self.con.execute("insert or replace into digests values (?, ?, ?)", (key, to_iso(now), text))
-        self.con.commit()
+    # ---------- 漏报 ----------
 
     def add_miss(self, text: str, now: datetime) -> None:
         self.con.execute("insert into misses (text, at) values (?, ?)", (text, to_iso(now)))
         self.con.commit()
-
-    def week_stats(self, since: datetime) -> dict:
-        q = lambda sql: self.con.execute(sql, (to_iso(since),)).fetchone()[0]
-        return {
-            "pushed": q("select count(*) from pushes where at >= ?"),
-            "useful": q("select count(*) from feedback where value = 'useful' and at >= ?"),
-            "not_needed": q("select count(*) from feedback where value = 'not_needed' and at >= ?"),
-            "chats": q("select count(*) from messages where role = 'user' and created >= ?"),
-            "memories": q("select count(*) from memories where deleted = 0 and created >= ?"),
-            "would_miss": q("select count(*) from ratings where would_miss = 1 and at >= ?"),
-            "rated": q("select count(*) from ratings where at >= ?"),
-            "misses": q("select count(*) from misses where at >= ?"),
-        }
 
     # ---------- 替你留意的问题 ----------
 

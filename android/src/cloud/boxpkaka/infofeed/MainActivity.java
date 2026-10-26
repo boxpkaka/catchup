@@ -56,7 +56,6 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -74,7 +73,7 @@ public class MainActivity extends Activity {
     private static final String[][] REASONS = {
             {"topic", "不想看这类", "正在记下…"},
             {"source", "不想看这个来源", "正在记下…"},
-            {"known", "已经知道了", "好，这不影响同类内容"}};
+            {"known", "已经知道了", "已记下"}};
     private static final int REQ_EVENT = 2;
     private static final String ANSWER = "answer"; // 追踪中的行里，“你问过的问题有答案了”用这个 label 区分
 
@@ -87,8 +86,7 @@ public class MainActivity extends Activity {
     private ListView list;
     private PullLayout pull;
     private LinearLayout header;
-    private TextView catchLine, catchSub, statusChip, digestText, skippedLine;
-    private long digestFor = -1; // 已为哪个“上次离开时间”取过补课简报
+    private TextView statusChip, skippedLine;
     static volatile boolean visible; // 首页在前台：补到的旧推送不再弹通知，见 FeedService.notifyIfRecent
     private LinearLayout updateNotice, batteryNotice, notifyNotice;
     private TextView updateText, updateAction;
@@ -371,20 +369,6 @@ public class MainActivity extends Activity {
                         .putExtra(Settings.EXTRA_CHANNEL_ID, FeedService.CHANNEL_MESSAGES)));
         header.addView(notifyNotice, noticeLp());
 
-        catchLine = t.text(this, "", 30, t.ink, 900);
-        catchLine.setLineSpacing(t.dp(4), 1f);
-        catchLine.setLetterSpacing(-0.02f);
-        catchLine.setPadding(0, t.dp(14), 0, 0);
-        header.addView(catchLine);
-        digestText = t.text(this, "", 15, t.ink, 400);
-        digestText.setAlpha(0.86f);
-        digestText.setLineSpacing(t.dp(6), 1f);
-        digestText.setPadding(0, t.dp(14), 0, 0);
-        digestText.setVisibility(View.GONE);
-        header.addView(digestText);
-        catchSub = t.text(this, "", 13, t.sub, 400);
-        catchSub.setPadding(0, t.dp(12), 0, t.dp(10));
-        header.addView(catchSub);
         skippedLine = t.text(this, "", 13, t.ink, 600);
         skippedLine.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
         skippedLine.setBackground(t.ripple(t.chip, 99));
@@ -392,6 +376,7 @@ public class MainActivity extends Activity {
         skippedLine.setVisibility(View.GONE);
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
+        sl.topMargin = t.dp(8);
         sl.bottomMargin = t.dp(10);
         header.addView(skippedLine, sl);
         return header;
@@ -515,29 +500,20 @@ public class MainActivity extends Activity {
         stateView.setVisibility(View.GONE);
         JSONArray all = feed.optJSONArray("events");
         List<JSONObject> highlights = new ArrayList<>(), others = new ArrayList<>();
-        Set<String> sources = new LinkedHashSet<>();
-        int newHighlights = 0;
         for (int i = 0; all != null && i < all.length(); i++) {
             JSONObject e = all.optJSONObject(i);
             if (e == null || hidden.contains(e.optLong("id"))) continue;
-            JSONArray src = e.optJSONArray("sources");
-            for (int j = 0; src != null && j < src.length(); j++) sources.add(src.optString(j));
             if (e.optBoolean("highlight") && highlights.size() < MAX_HIGHLIGHTS) {
                 highlights.add(e);
-                if (isNew(e)) newHighlights++;
             } else if (others.size() < MAX_OTHERS) {
                 others.add(e);
             }
         }
         others.sort((a, b) -> Long.compare(Theme.millis(b.optString("time")), Theme.millis(a.optString("time"))));
 
-        catchLine.setText(catchUpLine(highlights.size(), newHighlights));
-        int total = all == null ? 0 : all.length();
-        catchSub.setText("过去三天整理了 " + total + " 件事，来自 " + sources.size() + " 个来源");
         JSONArray skipped = feed.optJSONArray("skipped");
-        int skippedCount = skipped == null ? 0 : skipped.length();
-        skippedLine.setText("替你略过 " + skippedCount + " 件热门但和你无关的事 ›");
-        skippedLine.setVisibility(skippedCount > 0 ? View.VISIBLE : View.GONE);
+        skippedLine.setText("未追踪信息 ›");
+        skippedLine.setVisibility(skipped != null && skipped.length() > 0 ? View.VISIBLE : View.GONE);
 
         rows.clear();
         JSONArray follows = feed.optJSONArray("following"), answers = feed.optJSONArray("answers");
@@ -550,46 +526,6 @@ public class MainActivity extends Activity {
         if (!others.isEmpty()) rows.add(new Row(0, "其他动态", null));
         for (JSONObject e : others) rows.add(new Row(2, null, e));
         adapter.notifyDataSetChanged();
-        if (newHighlights > 0 && digestFor != seenAtOpen) loadDigest(seenAtOpen);
-        else if (newHighlights == 0) digestText.setVisibility(View.GONE);
-    }
-
-    /** 离开期间的补课简报：AI 把这段时间的重要事件写成一段话，放在首页大字下面。 */
-    private void loadDigest(long since) {
-        digestFor = since;
-        new Thread(() -> {
-            String text = "";
-            try {
-                text = Api.get(this, "/v1/digest?since=" + since).optString("text");
-            } catch (Exception e) {
-                Trace.log(this, "digest.fail", e.toString());
-            }
-            String got = text;
-            runOnUiThread(() -> {
-                if (isDestroyed() || got.isEmpty()) return;
-                digestText.setText(got);
-                digestText.setAlpha(0f);
-                digestText.setVisibility(View.VISIBLE);
-                digestText.animate().alpha(0.86f).setDuration(240).start();
-            });
-        }, "digest").start();
-    }
-
-    /** 首页最大的那句话：产品名字的由来。 */
-    private String catchUpLine(int highlights, int fresh) {
-        if (seenAtOpen == 0) {
-            return highlights > 0 ? "为你整理了 " + highlights + " 件\n值得知道的事。" : "正在替你\n留意 AI 世界。";
-        }
-        if (fresh > 0) return "离开" + away(System.currentTimeMillis() - seenAtOpen) + "，\n有 " + fresh + " 件值得知道。";
-        if (highlights > 0) return "值得知道的 " + highlights + " 件，\n你都看过了。";
-        return "暂时没有\n值得打扰你的事。";
-    }
-
-    private static String away(long ms) {
-        long h = ms / 3600_000;
-        if (h < 1) return "不到 1 小时";
-        if (h < 24) return " " + h + " 小时";
-        return " " + (h / 24) + " 天";
     }
 
     /** 离开期间出现的，或离开期间推送过的（推送时可能没弹出来，回到首页要能找到）。 */
@@ -836,7 +772,7 @@ public class MainActivity extends Activity {
     private void bindFollow(Holder h, JSONObject f) {
         h.headline.setText(f.optString("headline"));
         String update = f.optString("update");
-        show(h.summary, update.isEmpty() ? "还没有新进展，有实质变化时会告诉你" : update);
+        show(h.summary, update);
         int n = f.optInt("update_count");
         h.meta.setText((n > 0 ? n + " 条进展，" : "") + "最近 " + Theme.ago(Theme.millis(f.optString("updated"))));
         h.dot.setVisibility(n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen
@@ -1004,7 +940,7 @@ public class MainActivity extends Activity {
         JSONObject memory = response == null ? null : response.optJSONObject("memory");
         JSONArray added = memory == null ? null : memory.optJSONArray("added");
         undoLabel.setText(added != null && added.length() > 0
-                ? "记住了：" + added.optJSONObject(0).optString("text") : "好，已记下");
+                ? "记住了：" + added.optJSONObject(0).optString("text") : "已记下");
         main.removeCallbacks(hideUndoLater);
         main.postDelayed(hideUndoLater, 2400);
     }
@@ -1117,15 +1053,14 @@ public class MainActivity extends Activity {
         return t.sheet(this, content);
     }
 
-    /** 替你略过的：热度高但和你无关的事。点开看详情；点“想看这类”当场记成一条长期关注，以后同类的会排到前面。 */
+    /** 未追踪信息：热度高但和你无关的事。点开看详情；点“想看这类”当场记成一条长期关注，以后同类的会排到前面。 */
     private void showSkipped() {
         JSONArray list = feed == null ? null : feed.optJSONArray("skipped");
         if (list == null || list.length() == 0) return;
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
         for (int i = 0; i < list.length(); i++) items.addView(skippedRow(list.optJSONObject(i)));
-        listSheet("替你略过的", "这几件热度不低，但和你的关注无关，所以没放进“值得知道”，也不会推送。"
-                + "觉得该看的，点“想看这类”。", items).show();
+        listSheet("未追踪信息", "这些不会推送。觉得该看的，点“想看这类”。", items).show();
         Trace.log(this, "ui.skipped", "n=" + list.length());
     }
 

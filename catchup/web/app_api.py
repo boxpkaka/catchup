@@ -33,10 +33,6 @@ ANSWER_DAYS = 3
 FOLLOW_DAYS = 30
 DISMISSED_DAYS = 30
 
-DIGEST_SYSTEM = """用户离开了一段时间，下面是这期间出现的值得他知道的事件。写一段补课简报：2～4 句、不超过 140 个字，
-先说最重要的，只讲发生了什么和关键内容；口吻像替他盯着信息的助理；不要列表、不要寒暄。
-输出 JSON：{"text": "..."}"""
-
 
 def handle(config: Config, store: Store, method: str, path: str, headers, body: dict | None,
            query: dict | None = None) -> tuple[int, object]:
@@ -57,8 +53,6 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         return 200, feed(config, store, now)
     if method == "GET" and path == "/v1/dismissed":
         return 200, {"events": dismissed(store, now)}
-    if method == "GET" and path == "/v1/digest":
-        return 200, digest(config, store, int((query or {}).get("since", "0") or 0), now)
     if method == "POST" and path == "/v1/chat":
         llm = from_config(config.llm)
         if llm is None:
@@ -278,35 +272,6 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
     }
 
 
-# ---------- 补课简报 ----------
-
-def digest(config: Config, store: Store, since_ms: int, now: datetime) -> dict:
-    """离开期间（since 之后出现）的重要事件，写成一段话；同一批事件只写一次。"""
-    if since_ms <= 0:
-        return {"text": "", "count": 0}
-    since = datetime.fromtimestamp(since_ms / 1000, timezone.utc)
-    data = feed(config, store, now)
-    fresh = [e for e in data["events"] if e["highlight"] and (parse_time(e["first_seen"]) or now) > since]
-    if not fresh:
-        return {"text": "", "count": 0}
-    key = ",".join(str(e["id"]) for e in fresh[:8])
-    text = store.digest(key)
-    if text is None:
-        llm = from_config(config.llm)
-        if llm is None:
-            return {"text": "", "count": len(fresh)}
-        hours = max(1, int((now - since).total_seconds() // 3600))
-        lines = "\n".join(f"- {e['headline']}：{e['summary']}" for e in fresh[:8])
-        try:
-            text = str(llm.json(DIGEST_SYSTEM, f"用户是谁：\n{personal.focus(config, store, now)}\n\n"
-                                               f"离开约 {hours} 小时，期间的事件：\n{lines}", max_tokens=400)
-                       .get("text") or "").strip()[:300]
-        except Exception:
-            return {"text": "", "count": len(fresh)}
-        store.save_digest(key, text, now)
-    return {"text": text, "count": len(fresh)}
-
-
 # ---------- 记忆 ----------
 
 def memories(config: Config, store: Store, now: datetime) -> dict:
@@ -326,7 +291,7 @@ def memories(config: Config, store: Store, now: datetime) -> dict:
                  for q in store.questions() if q["status"] == "open"
                  or (q["status"] == "answered" and (q["answered"] or "") >= week_ago)]
     return {"memories": out, "kinds": personal.KINDS, "personalize": personal.personalized(store),
-            "week": store.week_stats(now - timedelta(days=7)), "questions": questions}
+            "questions": questions}
 
 
 def add_memory(config: Config, store: Store, body: dict, now: datetime) -> tuple[int, dict]:
