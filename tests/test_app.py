@@ -158,6 +158,11 @@ class AppApiTest(unittest.TestCase):
             self.assertEqual(self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "bad"})[0], 400)
             self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": "not_needed"})
             self.assertEqual(self.call("GET", "/v1/feed", token)[1]["events"], [])
+            [hidden] = self.call("GET", "/v1/dismissed", token)[1]["events"]
+            self.assertEqual(hidden["id"], event["id"])
+            self.call("POST", f"/v1/events/{event['id']}/feedback", token, {"value": None})  # 恢复
+            self.assertEqual(len(self.call("GET", "/v1/feed", token)[1]["events"]), 1)
+            self.assertEqual(self.call("GET", "/v1/dismissed", token)[1]["events"], [])
             self.assertEqual(self.call("GET", "/v1/events/999", token)[0], 404)
 
 
@@ -260,6 +265,15 @@ class ChatTest(unittest.TestCase):
         out, _ = self.run_chat(FakeLLM(), {"thread_id": thread["id"], "message": "那延迟呢？"})
         self.assertNotIn("status", [e["type"] for e in out])
         self.assertEqual(len(self.store.messages(thread["id"])), 4)
+
+    def test_failed_fetch_retried_later(self):
+        from catchup import chat
+        signals = self.store.event_signals(self.eid)
+        with mock.patch("catchup.chat.tool", side_effect=OSError("504")) as tool:
+            self.assertEqual(chat._read(self.store, signals, NOW, timeout=5), {"https://a/1": ""})
+            chat._read(self.store, signals, NOW + timedelta(hours=1), timeout=5)
+            self.assertEqual(tool.call_count, 1)  # 刚失败过，先用摘要，不重抓
+            self.assertTrue(chat.needs_reading(self.store, signals, NOW + chat.FAIL_RETRY))
 
     def test_global_ask_cites_events(self):
         out, _ = self.run_chat(FakeLLM(reply=f"Block 发布了 Dessa [E{self.eid}]。"), {"message": "最近有什么语音模型？"})

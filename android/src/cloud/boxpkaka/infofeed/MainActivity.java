@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
     private static final int MAX_OTHERS = 40;
     private static final long REFETCH_MS = 30_000;
     private static final long UNDO_MS = 4000;
+    private static final int REQ_EVENT = 2;
 
     private Theme t;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -138,6 +139,15 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         onInstallResult(intent);
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        // 在详情页点了“不需要”：回到首页后和左滑一样移除并给出撤销
+        if (request == REQ_EVENT && result == RESULT_OK && data != null) {
+            dismiss(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
+        }
     }
 
     @Override
@@ -590,7 +600,7 @@ public class MainActivity extends Activity {
             if (r.type == 1) bindCard(h, r.e);
             else bindRow(h, r.e);
             h.front.setOnClickListener(v -> open(r.e));
-            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e)));
+            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
             return convert;
         }
     }
@@ -760,7 +770,7 @@ public class MainActivity extends Activity {
                 ? View.VISIBLE : View.INVISIBLE);
         long id = f.optLong("id");
         h.front.setOnClickListener(v -> {
-            startActivity(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+            startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         });
     }
@@ -824,13 +834,14 @@ public class MainActivity extends Activity {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
                 .putExtra(EventActivity.EXTRA_JSON, e.toString());
-        startActivity(i);
+        startActivityForResult(i, REQ_EVENT);
         overridePendingTransition(R.anim.enter_up, R.anim.hold);
     }
 
-    private void dismiss(JSONObject e) {
+    private void dismiss(long id) {
+        if (id < 0) return;
         commitDismiss(); // 上一条还在撤销期内的，先提交
-        pendingDismiss = e.optLong("id");
+        pendingDismiss = id;
         hidden.add(pendingDismiss);
         render();
         Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
@@ -884,6 +895,10 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, MemoryActivity.class));
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         }));
+        sheet.addView(menuRow("不需要的内容", "可以恢复", () -> {
+            d.dismiss();
+            showDismissed();
+        }));
         sheet.addView(menuRow("检查更新", "当前 " + Updater.currentVersion(this), () -> {
             d.dismiss();
             checkUpdate(true);
@@ -897,6 +912,107 @@ public class MainActivity extends Activity {
             startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
         }));
         d.show();
+    }
+
+    /** 标记过不需要的事件，点“恢复”后重新出现在首页。 */
+    private void showDismissed() {
+        new Thread(() -> {
+            JSONArray list = null;
+            try {
+                list = Api.get(this, "/v1/dismissed").optJSONArray("events");
+            } catch (Exception e) {
+                Trace.log(this, "dismissed.fail", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            JSONArray got = list;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (got == null) {
+                    toast("没有连上服务器，稍后再试");
+                    return;
+                }
+                LinearLayout content = new LinearLayout(this);
+                content.setOrientation(LinearLayout.VERTICAL);
+                TextView title = t.text(this, "不需要的内容", 20, t.ink, 800);
+                title.setPadding(t.dp(24), t.dp(8), t.dp(24), t.dp(4));
+                content.addView(title);
+                TextView sub = t.text(this, got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
+                        : "恢复后会重新出现在首页", 13, t.sub, 400);
+                sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(12));
+                content.addView(sub);
+                LinearLayout items = new LinearLayout(this);
+                items.setOrientation(LinearLayout.VERTICAL);
+                for (int i = 0; i < got.length(); i++) items.addView(dismissedRow(got.optJSONObject(i)));
+                int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
+                ScrollView scroll = new ScrollView(this) {
+                    @Override
+                    protected void onMeasure(int w, int h) { // 条目多时面板最高占屏幕 3/5，其余滚动
+                        super.onMeasure(w, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST));
+                    }
+                };
+                scroll.setVerticalScrollBarEnabled(false);
+                scroll.addView(items);
+                content.addView(scroll);
+                Dialog d = t.sheet(this, content);
+                d.show();
+            });
+        }, "dismissed").start();
+    }
+
+    private View dismissedRow(JSONObject e) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(t.dp(24), t.dp(12), t.dp(16), t.dp(12));
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView headline = t.text(this, e.optString("headline"), 15, t.ink, 500);
+        headline.setLineSpacing(t.dp(3), 1f);
+        headline.setMaxLines(2);
+        headline.setEllipsize(TextUtils.TruncateAt.END);
+        text.addView(headline);
+        TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at"))), 12, t.sub, 400);
+        when.setPadding(0, t.dp(5), 0, 0);
+        text.addView(when);
+        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView restore = t.pill(this, "恢复", false);
+        restore.setTextSize(13);
+        restore.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        rl.leftMargin = t.dp(12);
+        row.addView(restore, rl);
+        long id = e.optLong("id");
+        restore.setOnClickListener(v -> {
+            restore.setEnabled(false);
+            restore.setText("恢复中");
+            Context app = getApplicationContext();
+            new Thread(() -> {
+                boolean ok = true;
+                try {
+                    Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", JSONObject.NULL));
+                } catch (Exception err) {
+                    ok = false;
+                    Trace.log(app, "feedback.fail", "id=" + id + " restore " + err);
+                }
+                boolean done = ok;
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    if (!done) {
+                        restore.setEnabled(true);
+                        restore.setText("恢复");
+                        toast("恢复失败，请重试");
+                        return;
+                    }
+                    restore.setText("已恢复");
+                    restore.setTextColor(t.sub);
+                    restore.setBackground(null);
+                    hidden.remove(id);
+                    lastFetch = 0;
+                    load();
+                });
+            }, "restore").start();
+            Trace.log(this, "ui.restore", "id=" + id);
+        });
+        return row;
     }
 
     private View menuRow(String label, String detail, Runnable action) {

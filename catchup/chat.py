@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 
 from . import personal
@@ -22,6 +22,7 @@ from .config import Config
 from .pipeline.events import group_events
 from .sources import build_sources
 from .sources.deepseek import tool, unescape_md
+from .util import parse_time
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,13 @@ HISTORY = 12
 SOURCE_CHARS = 3500
 MAX_SOURCES = 3
 ASK_DAYS = 14
+CHAT_WAIT = 10  # 对话里最多等原文这么多秒，没读到的来源先用摘要回答
+FAIL_RETRY = timedelta(hours=6)  # 抓取失败的链接隔这么久再重试
+
+# 正在抓取的原文，同一进程里的预读和对话共用，避免同一个链接抓两遍；结果由等到它的线程写回缓存
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fetch")
+_lock = threading.Lock()
+_inflight: dict[str, Future] = {}
 
 EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正在看一件 AI 领域的事，下面给出这件事的简报和来源原文（编号 [1]、[2]…）。
 回答要求：中文，直接、具体，先给结论；基于来源回答，用到来源的句子末尾标注 [编号]；来源里没有的信息要说明“来源里没有提到”，
@@ -73,7 +81,7 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         brief = store.briefs([event_id]).get(event_id) or {}
         signals = store.event_signals(event_id)
         headline = brief.get("headline") or (signals[0].title if signals else "")
-        if needs_reading(store, signals):
+        if needs_reading(store, signals, now):
             yield {"type": "status", "text": f"正在阅读 {len(_pick(signals))} 篇原文"}
         system = EVENT_SYSTEM.format(focus=focus, headline=headline, summary=brief.get("summary", ""),
                                      sources=_sources(config, store, signals, now))
@@ -135,16 +143,40 @@ def _fetch(url: str) -> str:
         return ""
 
 
-def _read(store, signals, now: datetime) -> dict[str, str]:
-    """取所选来源的原文：先查缓存，缺的并行抓取再写回缓存（数据库只在当前线程写）。"""
+def _cached(store, url: str, now: datetime) -> str | None:
+    """缓存的原文；最近抓取失败过的返回空串（先不重抓），没缓存或失败已久返回 None。"""
+    page = store.page(url)
+    if page is None:
+        return None
+    content, fetched = page
+    if content or now - parse_time(fetched) < FAIL_RETRY:
+        return content or ""
+    return None
+
+
+def _start(url: str) -> Future:
+    with _lock:
+        if url not in _inflight:
+            _inflight[url] = _pool.submit(_fetch, url)
+        return _inflight[url]
+
+
+def _read(store, signals, now: datetime, timeout: float | None) -> dict[str, str]:
+    """取所选来源的原文：先查缓存，缺的并行抓取（已在抓的直接等它），最多等 timeout 秒。
+    抓完的写回缓存（数据库只在当前线程写），没等到的这次当作空，留给还在等它的线程写回。"""
     urls = [s.url for s in _pick(signals)]
-    texts = {u: store.page(u) for u in urls}
-    missing = [u for u, t in texts.items() if t is None]
-    if missing:
-        with ThreadPoolExecutor(max_workers=len(missing)) as pool:
-            for url, text in zip(missing, pool.map(_fetch, missing)):
-                texts[url] = text
-                store.save_page(url, text, now)
+    texts = {u: _cached(store, u, now) for u in urls}
+    futures = {u: _start(u) for u, t in texts.items() if t is None}
+    if futures:
+        wait(futures.values(), timeout=timeout)
+    for url, future in futures.items():
+        texts[url] = ""
+        if future.done():
+            texts[url] = future.result()
+            store.save_page(url, texts[url], now)
+            with _lock:
+                if _inflight.get(url) is future:
+                    del _inflight[url]
     return texts
 
 
@@ -154,7 +186,7 @@ def prefetch(config: Config, event_id: int) -> None:
         from .store import Store
         store = Store(config.db_path)
         try:
-            _read(store, store.event_signals(event_id), datetime.now(timezone.utc))
+            _read(store, store.event_signals(event_id), datetime.now(timezone.utc), timeout=None)
         except Exception as e:
             log.info("prefetch %d failed: %r", event_id, e)
         finally:
@@ -163,15 +195,15 @@ def prefetch(config: Config, event_id: int) -> None:
     threading.Thread(target=run, name=f"prefetch-{event_id}", daemon=True).start()
 
 
-def needs_reading(store, signals) -> bool:
-    return any(store.page(s.url) is None for s in _pick(signals))
+def needs_reading(store, signals, now: datetime) -> bool:
+    return any(_cached(store, s.url, now) is None for s in _pick(signals))
 
 
 def _sources(config: Config, store, signals, now: datetime) -> str:
     """来源原文，每个来源截取前 SOURCE_CHARS 字；抓不到就用摘要。原文缓存在 pages 表。"""
     labels = build_sources(config.sources)
     picked = _pick(signals)
-    texts = _read(store, signals, now)
+    texts = _read(store, signals, now, timeout=CHAT_WAIT)
     parts = []
     for i, s in enumerate(picked, 1):
         text = texts.get(s.url) or ""

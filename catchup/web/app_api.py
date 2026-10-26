@@ -28,6 +28,7 @@ FEED_LIMIT = 80
 MAX_PENDING_DEVICES = 10
 FEEDBACK_VALUES = {"useful", "not_needed", None}
 FOLLOW_DAYS = 30
+DISMISSED_DAYS = 30
 
 DIGEST_SYSTEM = """用户离开了一段时间，下面是这期间出现的值得他知道的事件。写一段补课简报：2～4 句、不超过 140 个字，
 先说最重要的；直接用“你”称呼他，口吻像替他盯着信息的助理；结合他的情况点明和他的关系；不要列表、不要寒暄。
@@ -51,6 +52,8 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
 
     if method == "GET" and path == "/v1/feed":
         return 200, feed(config, store, now)
+    if method == "GET" and path == "/v1/dismissed":
+        return 200, {"events": dismissed(store, now)}
     if method == "GET" and path == "/v1/digest":
         return 200, digest(config, store, int((query or {}).get("since", "0") or 0), now)
     if method == "POST" and path == "/v1/chat":
@@ -122,6 +125,20 @@ def register(store: Store, name: str, now: datetime) -> tuple[int, dict]:
 
 # ---------- 事件流与详情 ----------
 
+def dismissed(store: Store, now: datetime) -> list[dict]:
+    """最近标记为不需要的事件，新标记的在前；App 里可以恢复（反馈改回空）。"""
+    rows = [(i, at) for i, value, at in store.feedback_since(to_iso(now - timedelta(days=DISMISSED_DAYS)))
+            if value == "not_needed"][::-1][:50]
+    briefs = store.briefs(i for i, _ in rows)
+    out = []
+    for i, at in rows:
+        signals = [] if i in briefs else store.event_signals(i)
+        headline = briefs[i]["headline"] if i in briefs else (signals[0].title if signals else "")
+        if headline:
+            out.append({"id": i, "headline": headline, "at": at})
+    return out
+
+
 def feed(config: Config, store: Store, now: datetime) -> dict:
     sources = build_sources(config.sources)
     _, events = ranked(config, store, now)
@@ -171,7 +188,7 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     out["would_miss"] = store.rating(event_id)
     thread = store.latest_thread(event_id)
     out["thread"] = {"id": thread["id"], "count": len(store.messages(thread["id"]))} if thread else None
-    if chat.needs_reading(store, signals):
+    if chat.needs_reading(store, signals, now):
         chat.prefetch(config, event_id)
     return out
 

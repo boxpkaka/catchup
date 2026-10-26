@@ -286,9 +286,10 @@ class Store:
                                 f"where t.event_id in ({','.join('?' * len(ids))}) group by t.event_id", ids)
         return dict(rows)
 
-    def page(self, url: str) -> str | None:
-        r = self.con.execute("select content from pages where url = ?", (url,)).fetchone()
-        return r[0] if r else None
+    def page(self, url: str) -> tuple[str, str] | None:
+        """缓存的原文和抓取时间；抓取失败时 content 是空串。"""
+        r = self.con.execute("select content, fetched from pages where url = ?", (url,)).fetchone()
+        return (r[0] or "", r[1]) if r else None
 
     def save_page(self, url: str, content: str, now: datetime) -> None:
         self.con.execute("insert or replace into pages values (?, ?, ?)", (url, to_iso(now), content))

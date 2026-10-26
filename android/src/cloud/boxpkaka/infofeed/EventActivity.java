@@ -28,6 +28,7 @@ import org.json.JSONObject;
 public class EventActivity extends Activity {
     static final String EXTRA_ID = "id";
     static final String EXTRA_JSON = "json";
+    static final String EXTRA_DISMISSED = "dismissed";
 
     private Theme t;
     private long id;
@@ -438,8 +439,13 @@ public class EventActivity extends Activity {
     }
 
     private void notNeeded() {
-        send("not_needed");
-        toast("已标记为不需要");
+        if (getCallingActivity() != null) {
+            // 从首页打开的：交回首页移除，首页会给出撤销
+            setResult(RESULT_OK, new Intent().putExtra(EXTRA_DISMISSED, id));
+        } else {
+            send("not_needed");
+            toast("已标记为不需要，可在菜单“不需要的内容”里恢复");
+        }
         finish();
     }
 
