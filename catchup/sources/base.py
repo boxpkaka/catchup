@@ -33,6 +33,7 @@ class Source:
         self.title = options.get("title", name)
         self.tier = options.get("tier", self.default_tier)
         self.kind = options.get("kind", self.default_kind)
+        self.interval = options.get("interval", 60)  # 采样间隔（分钟），见 collector.due
 
     def fetch(self) -> Iterable[Signal]:
         raise NotImplementedError

@@ -8,6 +8,7 @@
 - **时间统一存 UTC ISO 字符串**（`util.to_iso`），`Store.recent` 依赖字符串比较。
 - **网络**：交互 shell 的 `.bashrc` 会加载代理，cron 不会。各来源都已确认可以直连；手动测试时用 `env -u http_proxy -u https_proxy -u all_proxy ...` 模拟 cron 环境。Reddit 走代理反而更容易被 429。
 - **Reddit 公开 RSS 限流严**：版块间隔默认 60 秒，一次完整采集约 4 分钟。
+- **采集频率**：cron 每 10 分钟跑一次 `collect`，各来源按自己的 `interval` 判断是否到期（`collector.due`），`--only` 不看间隔；上一轮没跑完时靠 `data/collect.lock` 跳过。`update` 每轮都跑，新加按时间触发或按次计费的逻辑要自己限频（参考 `follow.SEARCH_EVERY`、只发一次的早报 `push.morning`）。
 - `.env` 含 `GITHUB_TOKEN`，不要读出内容或写进日志。
 - 推送服务仍在 `../infofeed`（`feed.py` / `hub.py`），本项目采集、预览，并维护安卓 App（`android/`，从 `../infofeed/android` 迁入）。
 - **App 签名**：`android/release.keystore` 和 `.env` 的 `APK_KEYSTORE_PASS` 不入库、不要读出。包名 `cloud.boxpkaka.infofeed` 和签名都不能改，否则已装的 App 无法覆盖升级。

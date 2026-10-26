@@ -3,12 +3,14 @@
 - Google News：RSS 里给的是 Google 的跳转页，先向 Google 换出原文地址再读。
 - Reddit 帖子：JSON 接口对服务器 IP 返回 403，帖子的 RSS（/comments/<id>/.rss）可以直接读，含正文和评论。
 - Hugging Face 模型页：直接读模型卡 README.md。
+- X 帖子：用官方嵌入接口 oEmbed 取正文，免费、不需要 Key，但长帖会被截断。
 OpenAI 官网、YouTube、头条 DeepSeek 也读不了，暂时只用摘要。
 """
 from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 
 from . import http
 from .sources.deepseek import tool, unescape_md
@@ -19,6 +21,7 @@ GOOGLE_NEWS = re.compile(r"https://news\.google\.com/(?:rss/)?articles/([\w-]+)"
 REDDIT = re.compile(r"https://(?:www\.|old\.)?reddit\.com/r/(\w+)/comments/(\w+)")
 HF_MODEL = re.compile(r"https://huggingface\.co/([\w.-]+/[\w.-]+)/?$")
 HF_PAGES = {"papers", "blog", "datasets", "spaces", "docs", "collections", "posts", "organizations", "learn"}
+X_POST = re.compile(r"https://(?:www\.|mobile\.)?(?:x|twitter)\.com/\w+/status/\d+")
 MAX_COMMENTS = 20
 
 
@@ -33,6 +36,9 @@ def read(url: str) -> tuple[str, str]:
     m = HF_MODEL.match(url)
     if m and m.group(1).split("/")[0] not in HF_PAGES:
         return m.group(1), _model_card(m.group(1))
+    m = X_POST.match(url)
+    if m:
+        return _x_post(m.group(0))
     r = tool("fetch", {"url": url})
     return str(r.get("title") or ""), unescape_md(r.get("content") or "")
 
@@ -62,6 +68,13 @@ def _reddit(sub: str, post: str) -> tuple[str, str]:
     body = re.sub(r"\s*submitted by /u/\S+ \[link\] \[comments\]$", "", clean_text(first["summary"], 20000))
     lines = [f"- {c['author'].removeprefix('/u/')}：{clean_text(c['summary'], 1000)}" for c in comments]
     return first["title"], (body + ("\n\n评论：\n" + "\n".join(lines) if lines else "")).strip()
+
+
+def _x_post(url: str) -> tuple[str, str]:
+    """oEmbed 返回嵌入用的 <blockquote>，正文是其中的 <p>，后面是作者和日期。"""
+    data = http.get_json(f"https://publish.x.com/oembed?omit_script=1&url={urllib.parse.quote(url, safe='')}")
+    text = re.search(r"<p[^>]*>(.*?)</p>", data["html"], re.S)
+    return data.get("author_name", ""), clean_text(text.group(1) if text else data["html"], 20000)
 
 
 def _model_card(repo: str) -> str:

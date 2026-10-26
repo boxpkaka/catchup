@@ -43,7 +43,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     _, events = ranked(config, store, now)
     updates = []
     if llm:
-        stats["merged"] = brief.merge_duplicates(store, events, llm, sources, config.llm.get("merge_top", 40))
+        if stats["new_events"]:  # 每 10 分钟一轮，没有新事件时前排事件上一轮已经查过重复
+            stats["merged"] = brief.merge_duplicates(store, events, llm, sources, config.llm.get("merge_top", 40))
         learned = personal.learn_from_feedback(config, store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
         stats["briefs"] = refresh_briefs(config, store, llm, now)

@@ -1,7 +1,8 @@
-"""RSS / Atom 类来源：通用 feed、YouTube 频道、Google News 搜索、Reddit 版块。"""
+"""RSS / Atom 类来源：通用 feed、YouTube 频道、Google News 搜索、Reddit 版块、Techmeme。"""
 from __future__ import annotations
 
 import logging
+import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -102,3 +103,24 @@ class Reddit(FeedSource):
 
     def feeds(self):
         return [(sub, f"https://www.reddit.com/r/{sub}/new/.rss") for sub in self.options["subreddits"]]
+
+
+@register
+class Techmeme(Source):
+    """Techmeme 编辑精选的科技头条，几分钟内更新。条目链接是 Techmeme 自己的页面，原文链接是摘要里第一个外链，
+    换成原文才能和其他来源按 URL 合并；标题末尾的“(作者/媒体)”去掉，媒体记为 author。"""
+    type = "techmeme"
+    default_kind = "新闻"
+    label_format = "Techmeme"
+    FEED = "https://www.techmeme.com/feed.xml"
+
+    def fetch(self):
+        signals = []
+        for e in parse_feed(http.get(self.FEED)):
+            link = re.search(r'href="(https?://(?!www\.techmeme\.com/)[^"]+)"', e["summary"], re.I)
+            m = re.fullmatch(r"(.+?)\s*\(([^()]*)\)", e["title"])
+            title, byline = (m.group(1), m.group(2)) if m else (e["title"], "")
+            signals.append(self.signal(link.group(1) if link else e["url"], title, e["summary"],
+                                       author=byline.split("/")[-1].strip(), published=e["published"],
+                                       extra={"techmeme": e["url"]}))
+        return signals

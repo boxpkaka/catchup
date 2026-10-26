@@ -104,15 +104,17 @@ class PushTest(unittest.TestCase):
         brief.write_briefs(self.store, self.events, "关注语音", FakeLLM(), {}, NOW)
 
     def test_caps_quiet_hours_and_feedback(self):
-        opts = {"min_score": 0, "per_run": 2, "per_day": 3}
+        opts = {"min_score": 0, "per_hour": 2, "per_day": 3}
         self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 2)
         self.assertEqual(push.select(opts, self.store, self.events, NOW.replace(hour=16)), [])  # 北京时间 0 点
-        for e in self.events[:3]:
-            self.store.record_push(e.id, NOW)
-        self.assertEqual(push.select(opts, self.store, self.events, NOW), [])  # 24 小时上限
+        for e in self.events[:2]:
+            self.store.record_push(e.id, NOW - timedelta(minutes=30))
+        self.assertEqual(push.select(opts, self.store, self.events, NOW), [])  # 一小时内已推 2 条
+        later = NOW + timedelta(minutes=31)
+        self.assertEqual(len(push.select(opts, self.store, self.events, later)), 1)  # 24 小时上限只剩 1 条
         self.store.con.execute("delete from pushes")
         self.store.set_feedback(self.events[0].id, "not_needed", NOW)
-        picked = push.select({**opts, "per_run": 9, "per_day": 9}, self.store, self.events, NOW)
+        picked = push.select({**opts, "per_hour": 9, "per_day": 9}, self.store, self.events, NOW)
         self.assertNotIn(self.events[0].id, [e.id for e in picked])
 
     def test_low_importance_is_not_pushed(self):
@@ -342,8 +344,10 @@ class ChatTest(unittest.TestCase):
             updates = follow.run(self.store, FakeLLM(progress="Block 开源了 Dessa 权重"), NOW)
         self.assertEqual(updates[0]["text"], "Block 开源了 Dessa 权重")
         self.assertEqual(len(self.store.event_signals(self.eid)), 2)  # 搜到的报道并入了这个事件
-        with mock.patch("catchup.pipeline.follow.tool", return_value=found):
+        with mock.patch("catchup.pipeline.follow.tool", return_value=found) as tool:
             self.assertEqual(follow.run(self.store, FakeLLM(progress="x"), NOW), [])  # 没有新报道就不再判断
+            follow.run(self.store, FakeLLM(progress="x"), NOW + follow.SEARCH_EVERY)
+        self.assertEqual(tool.call_count, 1)  # 刚搜过的一小时内不再搜
 
 
 class MorningDigestTest(unittest.TestCase):
@@ -355,12 +359,13 @@ class MorningDigestTest(unittest.TestCase):
         brief.write_briefs(store, events, "", FakeLLM(), {}, NOW)
         at8 = NOW.replace(hour=0, minute=37)  # 北京时间 8:37
         picked = push.select({"min_score": 0}, store, events, at8)
-        self.assertEqual(len(picked), 3)  # 早上不受每轮 2 条的限制
+        self.assertEqual(len(picked), 3)  # 早上不受每小时 2 条的限制
         with mock.patch.dict("os.environ", {"FEED_URL": "u", "FEED_TOKEN": "t"}), \
                 mock.patch("catchup.http.post_json") as post:
             self.assertEqual(push.deliver(store, picked, at8, {}), 3)
         post.assert_called_once()
         self.assertEqual(post.call_args.args[1]["click"], "catchup://home")
+        self.assertFalse(push.morning({}, store, at8 + timedelta(minutes=10)))  # 这一小时后面几轮不再发早报
 
 
 class AppApiMoreTest(unittest.TestCase):

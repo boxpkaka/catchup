@@ -1,8 +1,11 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from catchup.collector import due
 from catchup.sources import build_sources
 from catchup.sources.feeds import parse_feed
+from catchup.store import Store
 
 RSS = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
 <item><title>Hello &amp; world</title><link> https://example.com/a </link>
@@ -62,6 +65,93 @@ class FeedSourceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown type"):
             build_sources({"x": {"type": "nope"}})
 
+    def test_due_by_interval(self):
+        store, now = Store(":memory:"), datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
+        sources = build_sources({"fast": {"type": "feed", "feeds": [], "interval": 10},
+                                 "slow": {"type": "feed", "feeds": [], "interval": 360},
+                                 "never": {"type": "feed", "feeds": []}})
+        store.record_run("fast", now - timedelta(minutes=7), 1, 0)  # 上一轮晚开始了几分钟，也算到期
+        store.record_run("slow", now - timedelta(hours=2), 0, 0, "boom")  # 失败了也等满间隔再试
+        self.assertEqual(set(due(sources, store, now)), {"fast", "never"})
+        store.record_run("fast", now - timedelta(minutes=4), 1, 0)
+        self.assertEqual(set(due(sources, store, now)), {"never"})
+
+
+AINEWS = b"""<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+<item><title>[AINews] Kimi</title><link>https://latent.space/p/ainews-kimi/</link><content:encoded><![CDATA[
+<h1>AI Twitter Recap</h1><ul><li><p><b>The model:</b> 2.8T MoE.
+<a href="https://twitter.com/Kimi_Moonshot/status/2113680701770068067?utm_source=latent.space">@Kimi_Moonshot</a></p>
+<ul><li><p>nested, cites nothing</p></li></ul></li></ul>
+<div><p><b>Top tweets (by engagement)</b></p></div><ul>
+<li><p><a href="https://x.com/Kimi_Moonshot/status/2113680701770068067?utm_source=latent.space">30.4K \xe2\x80\x94 Kimi: K3.1 Pro</a></p></li>
+<li><p><a href="https://x.com/NSACyber/status/2112903220209098897">NSA: patch PHP</a> \xe2\x80\x94 <b>80,000</b></p></li>
+<li><p><a href="https://x.com/claudeai/status/2107894039626277339">Introducing Claude Haiku 5.5 (~44K)</a></p></li>
+<li><p>no link here</p></li></ul>
+<h1>AI Reddit Recap</h1><ul><li>reddit</li></ul>]]></content:encoded></item>
+<item><title>[AINews] quiet</title><link>https://latent.space/p/ainews-quiet/</link>
+<content:encoded><![CDATA[<h1>AI Twitter Recap</h1>]]></content:encoded></item>
+</channel></rss>"""
+
+
+class AINewsTest(unittest.TestCase):
+    def test_top_tweets_become_signals(self):
+        src = build_sources({"ainews": {"type": "ainews"}})["ainews"]
+        with mock.patch("catchup.http.get", return_value=AINEWS):
+            kimi, nsa, haiku = src.fetch()  # 没有热帖一节的期次跳过，没有链接的条目跳过
+        self.assertEqual((kimi.url, kimi.title, kimi.channel), (
+            "https://x.com/Kimi_Moonshot/status/2113680701770068067", "Kimi: K3.1 Pro", "Kimi_Moonshot"))
+        self.assertEqual(kimi.summary, "The model: 2.8T MoE. @Kimi_Moonshot")  # 正文里的详述，不含嵌套子项
+        self.assertEqual(kimi.published.isoformat(), "2026-10-23T17:15:24+00:00")  # 来自帖子 id
+        self.assertEqual(kimi.extra, {"likes": 30400, "issue": "https://latent.space/p/ainews-kimi/"})
+        self.assertEqual((nsa.title, nsa.heat, nsa.summary), ("NSA: patch PHP", 8.0, ""))
+        self.assertEqual((haiku.title, haiku.heat), ("Introducing Claude Haiku 5.5", 4.4))
+        self.assertEqual(src.label(nsa.channel), "X · @NSACyber")
+
+
+TECHMEME = b"""<?xml version="1.0"?><rss version="2.0"><channel>
+<item><title>Amazon Bee review: a $75 AI wearable (M.G. Siegler/Spyglass)</title>
+<link>https://www.techmeme.com/261026/p2#a261026p2</link>
+<description><![CDATA[<A HREF="https://spyglass.org/amazon-bee/"><IMG SRC="http://www.techmeme.com/261026/i2.jpg"></A>
+<P><A HREF="https://www.techmeme.com/261026/p2#a261026p2" TITLE="Techmeme permalink"></A> M.G. Siegler: review</P>]]></description>
+<pubDate>Mon, 26 Oct 2026 01:05:01 -0400</pubDate></item></channel></rss>"""
+
+
+class RealtimeSourcesTest(unittest.TestCase):
+    def test_techmeme_uses_original_link_and_media(self):
+        src = build_sources({"techmeme": {"type": "techmeme"}})["techmeme"]
+        with mock.patch("catchup.http.get", return_value=TECHMEME):
+            [s] = src.fetch()
+        self.assertEqual((s.url, s.title, s.author), (
+            "https://spyglass.org/amazon-bee/", "Amazon Bee review: a $75 AI wearable", "Spyglass"))
+        self.assertEqual(s.extra["techmeme"], "https://www.techmeme.com/261026/p2#a261026p2")
+
+    def test_openrouter_newest_models_with_price(self):
+        src = build_sources({"or": {"type": "openrouter", "limit": 1}})["or"]
+        data = {"data": [
+            {"id": "old/model", "name": "Old", "created": 1700000000},
+            {"id": "moonshotai/kimi-k3.1-pro", "name": "MoonshotAI: Kimi K3.1 Pro", "created": 1792778188,
+             "description": "Flagship.", "context_length": 1048576,
+             "pricing": {"prompt": "0.000002", "completion": "0.00001"}}]}
+        with mock.patch("catchup.http.get_json", return_value=data):
+            [s] = src.fetch()
+        self.assertEqual((s.url, s.channel, s.tier), ("https://openrouter.ai/moonshotai/kimi-k3.1-pro", "moonshotai", "primary"))
+        self.assertEqual(s.summary, "每百万 token：输入 $2，输出 $10。Flagship.")
+        self.assertEqual(s.published.isoformat(), "2026-10-23T17:56:28+00:00")
+
+    def test_hf_new_models_per_author_and_partial_failure(self):
+        src = build_sources({"hf": {"type": "hf_new", "authors": ["deepseek-ai", "bad"]}})["hf"]
+
+        def fake_get_json(url, headers=None):
+            if "author=bad" in url:
+                raise OSError("boom")
+            return [{"id": "deepseek-ai/DeepSeek-V4.1-Flash-1017", "createdAt": "2026-10-17T02:40:00.000Z"}]
+
+        with mock.patch("catchup.http.get_json", fake_get_json), \
+                self.assertLogs("catchup.sources.huggingface", "WARNING"):
+            [s] = src.fetch()
+        self.assertEqual((s.url, s.channel), ("https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai"))
+        self.assertEqual(s.published.isoformat(), "2026-10-17T02:40:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -106,3 +196,14 @@ class ReaderTest(unittest.TestCase):
         with mock.patch("catchup.reader.tool", return_value={"content": "x"}) as tool:
             reader.read("https://huggingface.co/papers/2610.31066")  # 论文页不是模型
         tool.assert_called_once()
+
+    def test_x_post_read_via_oembed(self):
+        from catchup import reader
+        embed = {"author_name": "Artificial Analysis", "html": '<blockquote class="twitter-tweet"><p lang="en">'
+                 'Kimi K3.1 Pro scores 55 &amp; ranks 4th<a href="https://t.co/x">pic.twitter.com/x</a></p>'
+                 '&mdash; Artificial Analysis (@ArtificialAnlys) <a href="https://x.com/a">October 23, 2026</a></blockquote>'}
+        with mock.patch("catchup.reader.http.get_json", return_value=embed) as get:
+            self.assertEqual(reader.read("https://twitter.com/ArtificialAnlys/status/2113688083145314416?s=46"),
+                             ("Artificial Analysis", "Kimi K3.1 Pro scores 55 & ranks 4th pic.twitter.com/x"))
+        get.assert_called_once_with("https://publish.x.com/oembed?omit_script=1"
+                                    "&url=https%3A%2F%2Ftwitter.com%2FArtificialAnlys%2Fstatus%2F2113688083145314416")
