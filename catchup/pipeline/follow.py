@@ -15,6 +15,7 @@ from ..util import clean_text, parse_time, to_iso
 log = logging.getLogger(__name__)
 
 SEARCH_DAYS = 30
+SEARCH_EVERY = timedelta(hours=1)  # 采集每 10 分钟一轮，主动搜索（按次计费）不用跟着这么频繁
 MAX_FOLLOWS = 10
 
 UPDATE_SYSTEM = """用户在追踪一件 AI 领域的事。下面给出这件事的简报和新出现的报道。
@@ -31,7 +32,9 @@ def run(store, llm, now: datetime, search: bool = True) -> list[dict]:
         brief = store.briefs([eid]).get(eid)
         if brief is None:
             continue
-        if search and now - (parse_time(f["created"]) or now) <= timedelta(days=SEARCH_DAYS):
+        searched = parse_time(f["searched"])
+        if search and now - (parse_time(f["created"]) or now) <= timedelta(days=SEARCH_DAYS) \
+                and (searched is None or now - searched >= SEARCH_EVERY):
             added = _search(store, eid, brief["headline"], now)
             if added:
                 log.info("follow %d: %d new reports from search", eid, added)

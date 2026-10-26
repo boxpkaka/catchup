@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 
-from .collector import collect
+from .collector import collect, due
 from .config import load_config, load_env
 from .sources import REGISTRY, build_sources
 from .store import Store
@@ -17,8 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_collect = sub.add_parser("collect", help="运行一次采集，写入数据库")
-    p_collect.add_argument("--only", nargs="+", metavar="SOURCE", help="只运行指定的来源实例")
+    p_collect = sub.add_parser("collect", help="采集到了采样间隔的来源，写入数据库")
+    p_collect.add_argument("--only", nargs="+", metavar="SOURCE", help="只运行指定的来源实例，不看采样间隔")
     p_collect.add_argument("--no-update", action="store_true", help="只采集，不做事件、简报和推送")
     p_update = sub.add_parser("update", help="不采集，只做事件归并、简报和推送")
     p_update.add_argument("--no-push", action="store_true", help="不推送到手机")
@@ -38,12 +40,21 @@ def main(argv: list[str] | None = None) -> int:
     sources = build_sources(config.sources)
 
     if args.command == "collect":
+        store = Store(config.db_path)
+        # cron 每 10 分钟一轮，上一轮（比如 Reddit 限流、写简报）没跑完时这一轮直接跳过，避免重复处理和重复推送
+        lock = open(config.db_path.parent / "collect.lock", "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logging.getLogger(__name__).warning("previous collect still running, skipped")
+            return 0
         if args.only:
             unknown = set(args.only) - set(sources)
             if unknown:
                 parser.error(f"unknown source(s): {', '.join(sorted(unknown))}")
             sources = {k: v for k, v in sources.items() if k in args.only}
-        store = Store(config.db_path)
+        else:
+            sources = due(sources, store, datetime.now(timezone.utc))
         ok = collect(sources, store)
         if not args.no_update:
             from .pipeline.update import update
@@ -73,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sources":
         for name, src in sources.items():
-            print(f"{name:<16} type={src.type:<16} tier={src.tier:<9} kind={src.kind}")
+            print(f"{name:<16} type={src.type:<16} tier={src.tier:<9} every={src.interval:<4} kind={src.kind}")
         print(f"\navailable types: {', '.join(sorted(REGISTRY))}")
         return 0
     return 2

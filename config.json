@@ -81,6 +81,7 @@
     "github_releases": {
       "type": "github_releases",
       "title": "GitHub Release",
+      "interval": 30,
       "repos": [
         "vllm-project/vllm",
         "sgl-project/sglang",
@@ -100,6 +101,7 @@
     "github_new": {
       "type": "github_search",
       "title": "GitHub 新仓库",
+      "interval": 180,
       "queries": [
         "llm",
         "agent",
@@ -114,6 +116,7 @@
     "hf_models": {
       "type": "hf_models",
       "title": "HF 模型",
+      "interval": 120,
       "pipeline_tags": [
         "text-generation",
         "any-to-any",
@@ -124,23 +127,51 @@
       ],
       "limit": 20
     },
+    "hf_new": {
+      "type": "hf_new",
+      "title": "HF 新模型",
+      "interval": 10,
+      "authors": [
+        "deepseek-ai",
+        "Qwen",
+        "moonshotai",
+        "zai-org",
+        "MiniMaxAI",
+        "mistralai",
+        "openai",
+        "google"
+      ]
+    },
+    "openrouter": {
+      "type": "openrouter",
+      "title": "OpenRouter 新模型",
+      "interval": 10
+    },
     "hf_papers": {
       "type": "hf_papers",
       "title": "HF Papers",
+      "interval": 120,
       "limit": 50
     },
     "arxiv": {
       "type": "arxiv",
       "title": "arXiv",
+      "interval": 360,
       "queries": [
         "cat:cs.SD OR cat:eess.AS",
         "cat:cs.CL"
       ],
       "max_results": 100
     },
+    "ainews": {
+      "type": "ainews",
+      "title": "AINews X 热帖",
+      "interval": 180
+    },
     "hackernews": {
       "type": "hackernews",
       "title": "Hacker News",
+      "interval": 20,
       "queries": [
         "LLM",
         "OpenAI",
@@ -160,6 +191,7 @@
     "official_blogs": {
       "type": "feed",
       "title": "官方博客",
+      "interval": 10,
       "tier": "official",
       "feeds": [
         {
@@ -191,6 +223,7 @@
     "cn_media": {
       "type": "feed",
       "title": "中文科技媒体",
+      "interval": 30,
       "kind": "新闻",
       "feeds": [
         {
@@ -202,6 +235,7 @@
     "google_news": {
       "type": "google_news",
       "title": "Google News",
+      "interval": 30,
       "queries": [
         {
           "name": "AI",
@@ -220,9 +254,15 @@
         }
       ]
     },
+    "techmeme": {
+      "type": "techmeme",
+      "title": "Techmeme",
+      "interval": 10
+    },
     "youtube": {
       "type": "youtube",
       "title": "YouTube",
+      "interval": 60,
       "channels": {
         "Andrej Karpathy": "UCXUPKJO5MZQN11PqgIvyuvQ",
         "Two Minute Papers": "UCbfYPyITQ-7l4upoX8nvctg",
@@ -244,6 +284,7 @@
     "reddit": {
       "type": "reddit",
       "title": "Reddit",
+      "interval": 60,
       "subreddits": [
         "LocalLLaMA",
         "MachineLearning",
@@ -254,6 +295,7 @@
     "deepseek_search": {
       "type": "deepseek_search",
       "title": "DeepSeek 搜索",
+      "interval": 120,
       "lookback_days": 1,
       "min_score": 1.0,
       "queries": [
@@ -277,6 +319,7 @@
     "page_watch": {
       "type": "page_watch",
       "title": "页面监控",
+      "interval": 60,
       "pages": [
         {
           "name": "DeepSeek 更新日志",
@@ -293,7 +336,7 @@
   "push": {
     "min_importance": 4,
     "min_score": 1.5,
-    "per_run": 2,
+    "per_hour": 2,
     "per_day": 6,
     "quiet_hours": [
       23,

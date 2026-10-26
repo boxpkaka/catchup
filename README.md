@@ -8,10 +8,10 @@
 
 | 阶段 | 状态 |
 |---|---|
-| 信号采集（GitHub / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit / DeepSeek 搜索 / 页面监控） | ✅ 每小时运行 |
+| 信号采集（GitHub / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit / AINews 的 X 热帖 / DeepSeek 搜索 / 页面监控；新模型上架看 OpenRouter 和 HF 各家机构，科技快讯看 Techmeme） | ✅ 每 10 分钟检查，各来源按自己的采样间隔（10 分钟～6 小时）采集 |
 | 事件合并：规则聚类 + DeepSeek 合并同一件事，事件持久化有固定 id | ✅ |
 | 排序：规则分（兴趣、来源、多源、热度）× 模型给的重要性；每个事件有 AI 简报（发生了什么 / 与你有关） | ✅ |
-| 推送：只推重要且未推过的事件，每次最多 2 条、24 小时最多 6 条、23:00～8:00 不推 | ✅ 经 `../infofeed` 的 hub 送达 |
+| 推送：只推重要且未推过的事件，每小时最多 2 条、24 小时最多 6 条、23:00～8:00 不推 | ✅ 经 `../infofeed` 的 hub 送达 |
 | 安卓 App：首页补课句 + 事件卡、详情页、左滑“不需要”、下拉刷新、设备自动绑定 | ✅ |
 | 对话：事件下提问（先读原文、标注出处、流式输出），或直接问自己的事件库 | ✅ |
 | 记忆：对话、反馈、漏报沉淀为六类记忆（正在做 / 长期关注 / 不想看 / 偏好来源 / 不想看的来源 / 写法），可查看编辑删除，可整体关闭 | ✅ |
@@ -21,7 +21,8 @@
 | 替你留意的问题：对话里暂时没答案的问题，之后有报道回答了就写回原对话并推送 | ✅ |
 | 分享到 Catchup：系统分享或复制链接，读原文、归入事件、写简报，不会再推回给你 | ✅ |
 | 替你略过的：首页说出热度高但和你无关的事，可以点“想看这类”纠正 | ✅ |
-| 新来源：X / 小红书 / 播客 | ⏳ |
+| X：不用付费 API，从 AINews 日报取每天按互动量排的热帖，帖子原文用官方 oEmbed 读 | ✅ |
+| 新来源：小红书 / 播客 | ⏳ |
 
 ## 使用
 
@@ -29,8 +30,8 @@
 
 ```bash
 python3 -m catchup sources            # 列出已配置的来源和可用类型
-python3 -m catchup collect            # 采集一次，之后自动做事件归并、简报和推送（--no-update 只采集）
-python3 -m catchup collect --only youtube reddit
+python3 -m catchup collect            # 采集到了采样间隔的来源，之后自动做事件归并、简报和推送（--no-update 只采集）
+python3 -m catchup collect --only youtube reddit   # 只采指定来源，不看采样间隔
 python3 -m catchup update --no-push   # 不采集，只重新归并事件、写简报（不推送）
 python3 -m catchup serve              # 预览页 http://127.0.0.1:2591，以及 App 接口 /v1
 python3 -m catchup devices            # 查看 App 设备；devices approve <id> 批准新设备
@@ -44,7 +45,7 @@ python3 -m unittest                   # 测试
 定时任务：
 
 ```
-37 * * * * cd /home/boxp/workspace/catchup && /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
+*/10 * * * * cd /home/boxp/workspace/catchup && /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
 ```
 
 预览页只监听本机，远程查看用 SSH 端口转发：`ssh -L 2591:127.0.0.1:2591 <server>`。
@@ -103,6 +104,7 @@ data/catchup.db      数据库（不入库）
 | `title` | 页面上的来源名 |
 | `tier` | `official`（官方一级源）/ `primary`（一手技术源）/ `signal`（弱信号），影响排序 |
 | `kind` | 内容类别，如 代码、模型、论文、社区、视频、新闻 |
+| `interval` | 采样间隔（分钟，默认 60）。cron 每 10 分钟一轮，所以取 10 的倍数；距上次采集满间隔才采 |
 | `enabled` | 设为 `false` 可临时停用 |
 
 `interests` 是兴趣画像（名称、权重、关键词），`ranking` 是排序参数（时间窗、半衰期、各等级权重等，默认值见 `pipeline/ranking.py` 的 `DEFAULTS`）。

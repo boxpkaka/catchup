@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 DEFAULTS = {
     "min_importance": 4,     # 模型给的重要性至少到“值得当天知道”
     "min_score": 1.5,        # 规则分（兴趣 + 来源 + 多源 + 热度，含时间衰减）
-    "per_run": 2,
+    "per_hour": 2,           # 滚动 1 小时；采集每 10 分钟一轮，按轮限制会让一小时里连推好几条
     "per_day": 6,            # 滚动 24 小时
     "quiet_hours": [23, 8],  # 本地时间 23:00～8:00 不推
     "utc_offset": 8,
@@ -34,18 +34,23 @@ def quiet(options: dict, now: datetime) -> bool:
     return (start <= hour or hour < end) if start > end else (start <= hour < end)
 
 
-def morning(options: dict, now: datetime) -> bool:
-    """免打扰结束后的第一个小时：夜里攒下的事件合成一条早报推送。"""
+def morning(options: dict, store, now: datetime) -> bool:
+    """免打扰结束后的第一个小时、且这一小时里还没推过：夜里攒下的事件合成一条早报推送。
+    采集每 10 分钟一轮，这一小时里会跑好几轮，早报只发一次。utc_offset 是整小时，UTC 的整点就是本地的整点。"""
     opt = {**DEFAULTS, **options}
-    return (now + timedelta(hours=opt["utc_offset"])).hour == opt["quiet_hours"][1]
+    return ((now + timedelta(hours=opt["utc_offset"])).hour == opt["quiet_hours"][1]
+            and not store.pushes_since(now.replace(minute=0, second=0, microsecond=0)))
 
 
 def select(options: dict, store, events: list[Event], now: datetime) -> list[Event]:
     opt = {**DEFAULTS, **options}
     if quiet(opt, now):
         return []
-    per_run = opt["per_day"] if morning(opt, now) else opt["per_run"]
-    room = min(per_run, opt["per_day"] - store.pushes_since(now - timedelta(hours=24)))
+    if morning(opt, store, now):
+        room = opt["per_day"]
+    else:
+        room = opt["per_hour"] - store.pushes_since(now - timedelta(hours=1))
+    room = min(room, opt["per_day"] - store.pushes_since(now - timedelta(hours=24)))
     if room <= 0:
         return []
     pushed, feedback = store.pushed(), store.feedback()
@@ -77,7 +82,7 @@ def _send(title: str, message: str, click: str) -> bool:
 def deliver(store, events: list[Event], now: datetime, options: dict | None = None) -> int:
     """逐条发到 hub，成功的才记为已推送。早上第一轮且攒了两件以上时合成一条早报，点开进首页。"""
     briefs = store.briefs(e.id for e in events)
-    if len(events) >= 2 and morning(options or {}, now):
+    if len(events) >= 2 and morning(options or {}, store, now):
         lines = "\n".join(f"· {briefs[e.id]['headline']}" for e in events)
         if not _send(f"夜里有 {len(events)} 件值得知道", lines, "catchup://home"):
             return 0
