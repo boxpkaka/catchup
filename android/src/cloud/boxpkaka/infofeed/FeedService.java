@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -28,12 +29,15 @@ import java.util.List;
 public class FeedService extends Service {
     static final String ACTION_UPDATE = "cloud.boxpkaka.infofeed.UPDATE";   // 连接状态变化
     static final String ACTION_PUSHED = "cloud.boxpkaka.infofeed.PUSHED";   // 收到新推送，首页应刷新事件流
+    static final String CHANNEL_MESSAGES = "messages";
     static volatile String status = "未启动";
+    static volatile boolean active; // 连接线程在跑；进程被系统杀掉后重新为 false，见 Watchdog
 
     private static final int FG_ID = 1;
     private static final String EVENT_LINK = "catchup://event/";
     private static final String THREAD_LINK = "catchup://thread/";
-    private static final long NOTIFY_MAX_AGE_MS = 3600_000; // 补发的旧消息只入列表，不弹通知
+    // App 被系统关掉期间漏掉的推送，重连补到时这个时间内的照样弹通知；更早的只在首页标出
+    private static final long NOTIFY_MAX_AGE_MS = 12 * 3600_000;
 
     private volatile boolean running;
     private volatile HttpURLConnection conn;
@@ -48,7 +52,7 @@ public class FeedService extends Service {
     public void onCreate() {
         nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("status", "连接状态", NotificationManager.IMPORTANCE_MIN));
-        nm.createNotificationChannel(new NotificationChannel("messages", "新消息", NotificationManager.IMPORTANCE_HIGH));
+        nm.createNotificationChannel(new NotificationChannel(CHANNEL_MESSAGES, "新消息", NotificationManager.IMPORTANCE_HIGH));
     }
 
     @Override
@@ -59,10 +63,14 @@ public class FeedService extends Service {
         } else {
             startForeground(FG_ID, n);
         }
+        Watchdog.schedule(this);
         if (worker == null || !worker.isAlive()) { // 已在运行时什么都不做，不要打断现有连接
             Trace.log(this, "service.start", "v" + Updater.currentVersion(this) + " sdk=" + Build.VERSION.SDK_INT
-                    + " model=" + Build.MODEL + " net=" + Trace.network(this));
+                    + " model=" + Build.MODEL + " net=" + Trace.network(this) + " notify=" + notifyState()
+                    + " battery=" + (getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(getPackageName())
+                    ? "unrestricted" : "optimized"));
             running = true;
+            active = true;
             worker = new Thread(this::loop, "feed-stream");
             worker.start();
         }
@@ -73,6 +81,7 @@ public class FeedService extends Service {
     public void onDestroy() {
         Trace.log(this, "service.stop", "");
         running = false;
+        active = false;
         reconnectNow();
         setStatus("已停止");
     }
@@ -125,7 +134,7 @@ public class FeedService extends Service {
                     } else if (line.isEmpty() && data.length() > 0) {
                         JSONObject m = new JSONObject(data.toString());
                         Store.setLastId(this, m.optLong("id"));
-                        notifyIfRecent(m);
+                        notifyIfRecent(m, false);
                         sendBroadcast(new Intent(ACTION_PUSHED).setPackage(getPackageName()));
                         Trace.log(this, "stream.message", "id=" + m.optLong("id"));
                         events++;
@@ -179,7 +188,7 @@ public class FeedService extends Service {
             List<JSONObject> ms = new ArrayList<>();
             for (int i = 0; i < rows.length(); i++) ms.add(rows.getJSONObject(i));
             if (ms.isEmpty()) return;
-            for (JSONObject m : ms) notifyIfRecent(m);
+            for (JSONObject m : ms) notifyIfRecent(m, true);
             Store.setLastId(this, ms.get(ms.size() - 1).optLong("id"));
             Trace.log(this, "catchup", "n=" + ms.size() + " last=" + Store.lastId(this));
             sendBroadcast(new Intent(ACTION_PUSHED).setPackage(getPackageName()));
@@ -188,9 +197,10 @@ public class FeedService extends Service {
         }
     }
 
-    private void notifyIfRecent(JSONObject m) throws Exception {
+    /** caughtUp：重连时补到的消息。正开着首页时不弹，首页会把离开期间推送过的事件标成新的。 */
+    private void notifyIfRecent(JSONObject m, boolean caughtUp) throws Exception {
         long when = (long) (m.optDouble("time", 0) * 1000);
-        if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS) {
+        if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS && !(caughtUp && MainActivity.visible)) {
             String body = m.optString("message");
             String click = m.optString("click");
             Intent open;
@@ -209,7 +219,8 @@ public class FeedService extends Service {
             int id = (int) (m.getLong("id") % 100000) + 1000;
             PendingIntent pi = PendingIntent.getActivity(this, id, open,
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-            nm.notify(id, new Notification.Builder(this, "messages")
+            Trace.log(this, "notify", "id=" + m.optLong("id") + " " + notifyState());
+            nm.notify(id, new Notification.Builder(this, CHANNEL_MESSAGES)
                     .setSmallIcon(R.drawable.ic_notify)
                     .setColor(0xFF1A1A1D)
                     .setContentTitle(m.optString("title"))
@@ -221,6 +232,12 @@ public class FeedService extends Service {
                     .setShowWhen(true)
                     .build());
         }
+    }
+
+    /** 通知是否会被系统直接丢掉：整个 App 的通知开关和“新消息”分类的重要程度（0 为已关闭），写进埋点便于排查。 */
+    private String notifyState() {
+        NotificationChannel ch = nm.getNotificationChannel(CHANNEL_MESSAGES);
+        return "enabled=" + nm.areNotificationsEnabled() + " importance=" + (ch == null ? "-" : ch.getImportance());
     }
 
     private void setStatus(String s) {

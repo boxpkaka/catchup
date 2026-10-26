@@ -45,6 +45,9 @@
                 android:value="与自建服务器保持长连接，实时接收推送消息" />
         </service>
 
+        <service android:name=".Watchdog" android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

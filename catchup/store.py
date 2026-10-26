@@ -206,8 +206,9 @@ class Store:
                              (event_id, value, to_iso(now), reason))
         self.con.commit()
 
-    def pushed(self) -> set[int]:
-        return {r[0] for r in self.con.execute("select event_id from pushes")}
+    def pushed(self) -> dict[int, str]:
+        """推送过的事件 → 推送时间。"""
+        return dict(self.con.execute("select event_id, at from pushes"))
 
     def pushes_since(self, since: datetime) -> int:
         return self.con.execute("select count(*) from pushes where at >= ?", (to_iso(since),)).fetchone()[0]
