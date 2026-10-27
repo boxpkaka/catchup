@@ -95,7 +95,7 @@ public class EventActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView back = t.backButton(this);
-        back.setElevation(t.dp(2));
+        t.lift(back, 4);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(48), t.dp(48));
         bl.setMargins(t.dp(12), t.dp(10), 0, 0);
         root.addView(back, bl);
@@ -103,7 +103,7 @@ public class EventActivity extends Activity {
         follow = t.text(this, "", 14, t.ink, 800);
         follow.setGravity(Gravity.CENTER);
         follow.setPadding(t.dp(20), 0, t.dp(20), 0);
-        follow.setElevation(t.dp(2));
+        t.lift(follow, 4);
         t.press(follow, t.sheet, 99);
         follow.setOnClickListener(v -> toggleFollow());
         FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(48),
@@ -117,7 +117,7 @@ public class EventActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
         bar.setBackground(t.round(t.inv, 99));
-        bar.setElevation(t.dp(6));
+        t.lift(bar, 8);
         useful = action("有用", v -> toggleUseful());
         bar.addView(useful, weight());
         LinearLayout.LayoutParams gap = weight();
@@ -127,7 +127,7 @@ public class EventActivity extends Activity {
         TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
         ask.setGravity(Gravity.CENTER);
         t.press(ask, t.lime, Theme.R_L);
-        ask.setElevation(t.dp(6));
+        t.lift(ask, 8);
         ask.setOnClickListener(v -> openChat(null));
         LinearLayout.LayoutParams askLp = new LinearLayout.LayoutParams(t.dp(104), t.dp(64));
         askLp.leftMargin = t.dp(10);

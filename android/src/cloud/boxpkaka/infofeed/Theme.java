@@ -212,6 +212,16 @@ final class Theme {
         return a;
     }
 
+    /**
+     * 浮在内容上面的按钮和工具栏的阴影。系统阴影有两层：四周均匀的一圈环境阴影边缘整齐，看起来像描边，去掉；
+     * 只留屏幕上方光源投下来的那层，下沿重、上沿轻，边缘是虚的。颜色带一点钴蓝，比纯黑柔和。
+     */
+    void lift(View v, float elevationDp) {
+        v.setElevation(dp(elevationDp));
+        v.setOutlineAmbientShadowColor(Color.TRANSPARENT);
+        v.setOutlineSpotShadowColor(night ? Color.BLACK : 0xFF1B1E3D);
+    }
+
     /** 左上角圆形返回按钮。 */
     TextView backButton(Activity a) {
         TextView back = text(a, "←", 20, ink, 700);

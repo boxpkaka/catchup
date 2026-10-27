@@ -84,13 +84,13 @@ public class MemoryActivity extends Activity {
         TextView add = t.text(this, "添加一条", 14, t.onInv, 700);
         add.setGravity(Gravity.CENTER);
         t.press(add, t.inv, 99);
-        add.setElevation(t.dp(6));
+        t.lift(add, 8);
         add.setOnClickListener(v -> editor(null));
         actions.addView(add, new LinearLayout.LayoutParams(0, t.dp(60), 1));
         TextView miss = t.text(this, "报告漏报", 15, t.onLime, 800);
         miss.setGravity(Gravity.CENTER);
         t.press(miss, t.lime, Theme.R_L);
-        miss.setElevation(t.dp(6));
+        t.lift(miss, 8);
         miss.setOnClickListener(v -> reportMiss());
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(120), t.dp(64));
         ml.leftMargin = t.dp(10);
