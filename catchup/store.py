@@ -79,6 +79,8 @@ MIGRATIONS = [
     """,
     # 简报要点：读原文后写的 3～5 条要点（JSON 数组）；NULL 表示写简报时还没读到原文，读到后会重写
     "alter table briefs add column points text;",
+    # 英文原文的中文译文：来源标题、没写简报的事件摘要，见 pipeline/translate.py
+    "create table translations (text text primary key, zh text not null);",
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -340,6 +342,17 @@ class Store:
 
     def save_page(self, url: str, content: str, now: datetime) -> None:
         self.con.execute("insert or replace into pages values (?, ?, ?)", (url, to_iso(now), content))
+        self.con.commit()
+
+    # ---------- 译文 ----------
+
+    def translations(self, texts: Iterable[str]) -> dict[str, str]:
+        texts = list(texts)
+        return dict(self.con.execute(f"select text, zh from translations where text in ({','.join('?' * len(texts))})",
+                                     texts).fetchall())
+
+    def save_translations(self, pairs: dict[str, str]) -> None:
+        self.con.executemany("insert or replace into translations values (?, ?)", pairs.items())
         self.con.commit()
 
     # ---------- 追踪 ----------

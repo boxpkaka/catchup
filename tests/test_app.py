@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -6,7 +7,7 @@ from unittest import mock
 
 from catchup.config import Config
 from catchup.models import Signal
-from catchup.pipeline import brief, push
+from catchup.pipeline import brief, push, translate
 from catchup.pipeline.events import assign_events, group_events
 from catchup.pipeline.ranking import Ranker
 from catchup.sources import build_sources
@@ -42,6 +43,8 @@ class FakeLLM:
             return self.memory
         if "实质进展" in system:
             return {"substantive": self.progress is not None, "update": self.progress or ""}
+        if system.startswith("把输入"):
+            return {"items": ["译：" + t for t in json.loads(user)]}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
                 "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"]}
 
@@ -461,6 +464,15 @@ class AppApiMoreTest(unittest.TestCase):
         assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
         [s] = self.call("GET", "/v1/feed")[1]["skipped"]  # 和你有关的 Dessa 不在里面
         self.assertEqual((s["headline"], s["why"]), ("UK invests in biosecurity lab", "和你的关注无关"))
+        # 翻译之后，没写简报的标题和详情里的来源标题都显示中文；已经翻过的不再翻
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        self.assertEqual(translate.run(self.store, FakeLLM(), events), 2)
+        self.assertEqual(translate.run(self.store, FakeLLM(), events), 0)
+        [s] = self.call("GET", "/v1/feed")[1]["skipped"]
+        self.assertEqual(s["headline"], "译：UK invests in biosecurity lab")
+        detail = self.call("GET", f"/v1/events/{s['id']}")[1]
+        self.assertEqual((detail["headline"], detail["signals"][0]["title"]),
+                         ("译：UK invests in biosecurity lab", "译：UK invests in biosecurity lab"))
 
     def test_follow_rating_and_detail(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
