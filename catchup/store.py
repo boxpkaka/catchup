@@ -347,6 +347,17 @@ class Store:
         return [{"id": r[0], "role": r[1], "content": r[2], "created": r[3], "meta": json.loads(r[4] or "{}")}
                 for r in rows]
 
+    def asked_since(self, event_id: int | None, since: datetime) -> list[dict]:
+        """某件事下（event_id 为空时是随便问）最近问过的问题和紧接着的回答，新的在前；没拿到回答的不算。"""
+        rows = self.con.execute(
+            "select q.thread_id, q.content, a.content, a.created, a.meta from messages q "
+            "join threads t on t.id = q.thread_id "
+            "join messages a on a.id = (select min(id) from messages where thread_id = q.thread_id and id > q.id) "
+            "where q.role = 'user' and a.role = 'assistant' and a.content != '' and t.event_id is ? and q.created >= ? "
+            "order by q.id desc", (event_id, to_iso(since))).fetchall()
+        return [{"thread_id": r[0], "question": r[1], "content": r[2], "created": r[3], "meta": json.loads(r[4] or "{}")}
+                for r in rows]
+
     def thread_counts(self, event_ids: Iterable[int]) -> dict[int, int]:
         ids = list(event_ids)
         rows = self.con.execute("select t.event_id, count(m.id) from threads t join messages m on m.thread_id = t.id "
