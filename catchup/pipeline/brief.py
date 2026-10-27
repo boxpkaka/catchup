@@ -39,6 +39,17 @@ def final_score(event: Event, brief: dict | None) -> float:
     return round(event.score * weight, 2)
 
 
+def hot(event: Event, sources: dict[str, Source]) -> bool:
+    """正热门：多家媒体在报（同一家刷十条不算），或来源自己的热度高。"""
+    return len({source_of(s, sources)[0] for s in event.signals}) >= 2 or sum(s.heat for s in event.signals) >= 1
+
+
+def candidates(events: list[Event], top: int, sources: dict[str, Source]) -> list[Event]:
+    """要让模型看的事件：排名前 top 的，加上排在后面但正热门的。热门新闻不论和读者的关注有没有关，
+    都先判断重要性、查重，够格就推；不感兴趣的由读者划掉。"""
+    return events[:top] + [e for e in events[top:] if hot(e, sources)]
+
+
 def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source], top: int = 40) -> int:
     """在排名前 top 的事件里让模型找出同一件事，并入编号最小的事件。返回被并掉的事件数。"""
     pool = {e.id: e for e in events[:top]}

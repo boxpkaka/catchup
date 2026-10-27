@@ -17,8 +17,8 @@ from .. import chat, personal, share
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
-from ..pipeline import translate
-from ..pipeline.brief import final_score
+from ..pipeline import push, translate
+from ..pipeline.brief import final_score, hot
 from ..pipeline.events import group_events
 from ..pipeline.update import ranked
 from ..sources import Source, build_sources, source_of
@@ -173,8 +173,9 @@ def feed(config: Config, store: Store, now: datetime) -> dict:
     events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
     zh = _zh(store, [t for e in events if e.id not in briefs
                      for t in (e.lead.title, e.lead.summary[:translate.SUMMARY_CHARS])])
-    passed = skipped(events, briefs, feedback, sources, zh)
-    events = events[:FEED_LIMIT]
+    passed = skipped(events, briefs, feedback, sources, zh,
+                     config.push.get("min_importance", push.DEFAULTS["min_importance"]))
+    events = [e for i, e in enumerate(events) if i < FEED_LIMIT or e.id in pushed]  # 推送过的一定在首页，方便划掉
     created = store.event_created(e.id for e in events)
     out = [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, zh,
                   e.id in follows) for e in events]
@@ -182,20 +183,20 @@ def feed(config: Config, store: Store, now: datetime) -> dict:
             "answers": answers(store, now), "skipped": passed, "personalize": personal.personalized(store)}
 
 
-def skipped(events: list[Event], briefs: dict, feedback: dict, sources, zh) -> list[dict]:
-    """热度高但和你无关、没放进“值得知道”的事件：首页说出替你略过了什么，你可以点开纠正。
-    热度按报道的不同媒体数算（同一家刷十条是垃圾内容，不算热），或者来源自己的热度。"""
+def skipped(events: list[Event], briefs: dict, feedback: dict, sources, zh, min_importance: int) -> list[dict]:
+    """热度高但和你无关、重要性也不够推送的事件（首页的“未追踪信息”），你可以点开纠正。
+    热度见 brief.hot。"""
     out = []
     for e in events:
         b = briefs.get(e.id)
-        if feedback.get(e.id) or (b and b["importance"] >= 4):
+        if feedback.get(e.id) or (b and b["importance"] >= min_importance):
             continue
         demoted = [r for r in e.reasons if r.endswith("已降低优先级")]
         if e.topics and not demoted:  # 和你有关、只是不够重要的，不算替你略过
             continue
-        outlets = len({source_of(s, sources)[0] for s in e.signals})
-        if outlets < 2 and sum(s.heat for s in e.signals) < 1:
+        if not hot(e, sources):
             continue
+        outlets = len({source_of(s, sources)[0] for s in e.signals})
         out.append({"id": e.id, "headline": b["headline"] if b else zh(e.lead.title), "reports": len(e.signals),
                     "outlets": outlets, "why": demoted[0].removesuffix("，已降低优先级") if demoted else "和你的关注无关"})
     return sorted(out, key=lambda x: (-x["outlets"], -x["reports"]))[:SKIP_LIMIT]
