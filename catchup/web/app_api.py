@@ -17,6 +17,7 @@ from .. import chat, personal, share
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
+from ..pipeline import translate
 from ..pipeline.brief import final_score
 from ..pipeline.events import group_events
 from ..pipeline.update import ranked
@@ -153,10 +154,11 @@ def dismissed(store: Store, now: datetime) -> list[dict]:
     rows = [(i, at, reason) for i, value, at, reason in store.feedback_since(
         to_iso(now - timedelta(days=DISMISSED_DAYS))) if value == "not_needed"][::-1][:50]
     briefs = store.briefs(i for i, _, _ in rows)
+    signals = {i: store.event_signals(i) for i, _, _ in rows if i not in briefs}
+    zh = _zh(store, [s[0].title for s in signals.values() if s])
     out = []
     for i, at, reason in rows:
-        signals = [] if i in briefs else store.event_signals(i)
-        headline = briefs[i]["headline"] if i in briefs else (signals[0].title if signals else "")
+        headline = briefs[i]["headline"] if i in briefs else (zh(signals[i][0].title) if signals[i] else "")
         if headline:
             out.append({"id": i, "headline": headline, "at": at, "reason": personal.REASONS.get(reason, "")})
     return out
@@ -169,16 +171,18 @@ def feed(config: Config, store: Store, now: datetime) -> dict:
     follows = {f["event_id"]: f for f in store.follows()}
     events = [e for e in events if feedback.get(e.id) != "not_needed"]
     events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
-    passed = skipped(events, briefs, feedback, sources)
+    zh = _zh(store, [t for e in events if e.id not in briefs
+                     for t in (e.lead.title, e.lead.summary[:translate.SUMMARY_CHARS])])
+    passed = skipped(events, briefs, feedback, sources, zh)
     events = events[:FEED_LIMIT]
     created = store.event_created(e.id for e in events)
-    out = [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources,
+    out = [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, zh,
                   e.id in follows) for e in events]
     return {"generated": to_iso(now), "events": out, "following": following(config, store, follows, now),
             "answers": answers(store, now), "skipped": passed, "personalize": personal.personalized(store)}
 
 
-def skipped(events: list[Event], briefs: dict, feedback: dict, sources) -> list[dict]:
+def skipped(events: list[Event], briefs: dict, feedback: dict, sources, zh) -> list[dict]:
     """热度高但和你无关、没放进“值得知道”的事件：首页说出替你略过了什么，你可以点开纠正。
     热度按报道的不同媒体数算（同一家刷十条是垃圾内容，不算热），或者来源自己的热度。"""
     out = []
@@ -192,7 +196,7 @@ def skipped(events: list[Event], briefs: dict, feedback: dict, sources) -> list[
         outlets = len({source_of(s, sources)[0] for s in e.signals})
         if outlets < 2 and sum(s.heat for s in e.signals) < 1:
             continue
-        out.append({"id": e.id, "headline": b["headline"] if b else e.lead.title, "reports": len(e.signals),
+        out.append({"id": e.id, "headline": b["headline"] if b else zh(e.lead.title), "reports": len(e.signals),
                     "outlets": outlets, "why": demoted[0].removesuffix("，已降低优先级") if demoted else "和你的关注无关"})
     return sorted(out, key=lambda x: (-x["outlets"], -x["reports"]))[:SKIP_LIMIT]
 
@@ -230,9 +234,10 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     [event] = personal.build_ranker(config, store, now).rank(group_events(signals), now)
     brief = store.briefs([event_id]).get(event_id)
     following_ids = {f["event_id"] for f in store.follows()}
+    zh = _zh(store, [s.title for s in signals] + [event.lead.summary[:translate.SUMMARY_CHARS]])
     out = _event(event, brief, store.feedback().get(event_id), store.pushed().get(event_id),
-                 store.event_created([event_id]).get(event_id), sources, event_id in following_ids)
-    out["signals"] = [{"title": s.title, "url": s.url, "label": _label(s, sources), "time": to_iso(s.published),
+                 store.event_created([event_id]).get(event_id), sources, zh, event_id in following_ids)
+    out["signals"] = [{"title": zh(s.title), "url": s.url, "label": _label(s, sources), "time": to_iso(s.published),
                        "summary": s.summary[:240]} for s in reversed(signals)]
     out["updates"] = store.event_updates([event_id]).get(event_id, [])
     out["points"] = (brief.get("points") or []) if brief else []
@@ -245,13 +250,13 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     return out
 
 
-def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | None, created, sources,
+def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | None, created, sources, zh,
            following: bool = False) -> dict:
     lead = e.lead
     return {
         "id": e.id,
-        "headline": brief["headline"] if brief else lead.title,
-        "summary": brief["summary"] if brief else lead.summary[:160],
+        "headline": brief["headline"] if brief else zh(lead.title),
+        "summary": brief["summary"] if brief else zh(lead.summary[:translate.SUMMARY_CHARS]),
         "why": brief["why"] if brief else "",
         "importance": brief["importance"] if brief else None,
         "ai": brief is not None,
@@ -270,6 +275,12 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
         "pushed_at": pushed_at,  # App 把离开期间推送过的事件也算作新的
         "following": following,
     }
+
+
+def _zh(store: Store, texts: list[str]):
+    """把英文原文换成译文（见 pipeline/translate.py）的函数，还没翻到的原样返回。"""
+    done = store.translations(texts)
+    return lambda text: done.get(text, text)
 
 
 # ---------- 记忆 ----------

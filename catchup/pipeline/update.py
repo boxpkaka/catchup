@@ -13,7 +13,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import answers, brief, follow, push
+from . import answers, brief, follow, push, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0, "translated": 0}
     _, events = ranked(config, store, now)
     updates = []
     if llm:
@@ -56,5 +56,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["pushed"] = push.deliver(store, push.select(config.push, store, events, now), now, config.push)
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)
+    if llm:  # 放在推送之后，翻译慢不耽误推送
+        stats["translated"] = translate.run(store, llm, events)
     log.info("update: %s", stats)
     return stats
