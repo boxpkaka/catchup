@@ -26,7 +26,8 @@ from ..store import Store
 from ..util import parse_time, to_iso
 
 MAX_PENDING_DEVICES = 10
-# 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS）；在“替你略过的”里点“想看这类”是 useful + topic
+# 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS），不想看这类时带上从 /reasons 里选的那一类；
+# 在“未追踪信息”里点“想看这类”是 useful + topic
 FEEDBACK_REASONS = {"not_needed": {None, *personal.REASONS}, "useful": {None, "topic"}, None: {None}}
 SKIP_LIMIT = 10
 ANSWER_DAYS = 3
@@ -101,6 +102,8 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
     if method == "GET" and action == "":
         detail = event_detail(config, store, event_id, now)
         return (200, detail) if detail else (404, {"error": "not found"})
+    if method == "GET" and action == "/reasons":  # 点“不需要”时让用户选的几类内容
+        return 200, {"options": personal.avoid_options(config, store, from_config(config.llm), event_id, now)}
     if method == "GET" and action == "/thread":
         thread = store.latest_thread(event_id)
         return 200, {"thread": thread, "messages": store.messages(thread["id"]) if thread else []}
@@ -118,7 +121,8 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
         if previous and value != previous:  # 撤回或改了反馈：当时因原因记下的记忆一起删
             changes = personal.retract(store, event_id, now)
         if reason in ("topic", "source"):
-            made = personal.from_reason(config, store, from_config(config.llm), event_id, value, reason, now)
+            made = personal.from_reason(config, store, from_config(config.llm), event_id, value, reason, now,
+                                        _picked(body.get("topic")))
             changes = {**made, "removed": changes["removed"] + made["removed"]}
         if any(changes.values()):
             personal.rebrief_async(config)
@@ -150,6 +154,14 @@ def register(store: Store, name: str, now: datetime) -> tuple[int, dict]:
 
 
 # ---------- 事件流与详情 ----------
+
+def _picked(topic) -> dict | None:
+    """App 传回的、用户选中的那一类：{text, keywords}。"""
+    if not isinstance(topic, dict) or not str(topic.get("text") or "").strip():
+        return None
+    keywords = [str(k)[:40] for k in topic.get("keywords") or [] if str(k).strip()][:8]
+    return {"text": str(topic["text"]).strip()[:12], "keywords": keywords} if keywords else None
+
 
 def dismissed(store: Store, now: datetime) -> list[dict]:
     """最近标记为不需要的事件，新标记的在前；App 里可以恢复（反馈改回空）。"""

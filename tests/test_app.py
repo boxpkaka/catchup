@@ -42,6 +42,8 @@ class FakeLLM:
                     "sections": [{"name": "AI 语音", "items": [{"event": f"E{first}", "text": "只用语音训练"}]}]}
         if "分组" in system:
             return {"groups": self.groups}
+        if system.startswith("用户把下面这条内容标为“不需要”"):  # 让用户选的几类；来源名不该出现在关键词里
+            return {"options": [{"text": "语音模型", "keywords": ["voice model", "News"]}, {"text": "", "keywords": ["x"]}]}
         if system.startswith("为下面这条"):
             return {"keywords": ["funasr", "asr"]}
         if system.startswith("你在维护"):
@@ -519,6 +521,23 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual(ids(), [dessa["id"]])  # 判定为边缘信息的不显示
         self.store.record_push(uk.id, NOW)
         self.assertEqual(ids(), [dessa["id"], uk.id])  # 推送过的一定在信息流里，方便划掉
+
+    def test_dismiss_reason_is_picked_not_guessed(self):
+        from catchup import personal
+        eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        [option] = self.call("GET", f"/v1/events/{eid}/reasons")[1]["options"]
+        self.assertEqual(option, {"text": "语音模型", "keywords": ["voice model"]})
+        r = self.call("POST", f"/v1/events/{eid}/feedback", {"value": "not_needed", "reason": "topic", "topic": option})[1]
+        self.assertEqual([(m["text"], m["keywords"]) for m in self.store.memories()],
+                         [("你不想看语音模型相关的内容", ["voice model"])])  # 原样记下用户选的那一类
+        self.assertEqual(r["memory"]["added"][0]["text"], "你不想看语音模型相关的内容")
+        self.call("POST", f"/v1/events/{eid}/feedback", {"value": None})  # 撤回时一起删
+        self.assertEqual(self.store.memories(), [])
+        # 其他原因：先存档，不当场记；留给反馈归纳和别的“不需要”一起找共同点
+        r = self.call("POST", f"/v1/events/{eid}/feedback", {"value": "not_needed", "reason": "other"})[1]
+        self.assertEqual((r["memory"]["added"], self.store.memories()), ([], []))
+        lines = personal.evidence(config(), self.store, self.store.actions(NOW - timedelta(days=1)))
+        self.assertTrue(lines[0][0].startswith("[不需要：其他原因]"))
 
     def test_follow_rating_and_detail(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]

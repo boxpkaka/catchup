@@ -63,12 +63,15 @@ public class MainActivity extends Activity {
     static final String EXTRA_REPORT = "report"; // 如 weekly/2026-10-19，见 FeedService
     private static final long REFETCH_MS = 30_000;
     private static final long OLDER_RETRY_MS = 10_000;
-    private static final long UNDO_MS = 6000;
-    /** “不需要”的原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。 */
+    private static final long UNDO_MS = 10_000;
+    /**
+     * “不需要”的固定原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。
+     * 上面一行“不想看这类”的几个候选从服务器取（/reasons），选中哪类就记哪类；“其他”先存档，攒几条再一起判断。
+     */
     private static final String[][] REASONS = {
-            {"topic", "不想看这类", "正在记下…"},
             {"source", "不想看这个来源", "正在记下…"},
-            {"known", "已经知道了", "已记下"}};
+            {"known", "已经知道了", "已记下"},
+            {"other", "其他", "已存档，攒几条再一起判断"}};
     private static final int REQ_EVENT = 2;
     private static final String ANSWER = "answer"; // 追踪中的行里，“你问过的问题有答案了”用这个 label 区分
 
@@ -91,7 +94,10 @@ public class MainActivity extends Activity {
     private LinearLayout undoBar;
     private TextView undoLabel, undoButton;
     private Shapes.Wave undoCountdown;
-    private final List<TextView> reasonChips = new ArrayList<>();
+    private final List<TextView> reasonChips = new ArrayList<>(); // 固定原因
+    private final List<TextView> topicChips = new ArrayList<>(); // “不想看这类”的候选，每次移走时重新取
+    private HorizontalScrollView topicScroll;
+    private LinearLayout topicRow;
 
     private final List<Row> rows = new ArrayList<>();
     private final FeedAdapter adapter = new FeedAdapter();
@@ -313,6 +319,15 @@ public class MainActivity extends Activity {
             chips.addView(chip, cl);
             reasonChips.add(chip);
         }
+        topicRow = new LinearLayout(this);
+        topicRow.setGravity(Gravity.CENTER_VERTICAL);
+        topicScroll = new HorizontalScrollView(this);
+        topicScroll.setHorizontalScrollBarEnabled(false);
+        topicScroll.addView(topicRow);
+        LinearLayout.LayoutParams tsl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        tsl.topMargin = t.dp(6);
+        undoBar.addView(topicScroll, tsl);
         HorizontalScrollView chipScroll = new HorizontalScrollView(this);
         chipScroll.setHorizontalScrollBarEnabled(false);
         chipScroll.addView(chips);
@@ -1029,6 +1044,7 @@ public class MainActivity extends Activity {
         Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
         main.removeCallbacks(hideUndoLater);
         resetUndo(e == null ? "" : e.optString("source"));
+        loadTopics(pendingDismiss);
         // 撤销条从底下用弹簧升起，波浪线开始倒数，走完就提交
         undoBar.animate().cancel();
         undoBar.setTranslationY(t.dp(160));
@@ -1065,9 +1081,18 @@ public class MainActivity extends Activity {
             reasonChips.get(i).setText("source".equals(REASONS[i][0]) && !source.isEmpty()
                     ? "不想看「" + source + "」" : REASONS[i][1]);
         }
-        for (int i = 0; i < reasonChips.size(); i++) {
-            TextView chip = reasonChips.get(i);
-            float l = i == 0 ? 99 : Theme.R_XS, r = i == reasonChips.size() - 1 ? 99 : Theme.R_XS;
+        styleChips(reasonChips);
+        topicChips.clear();
+        topicRow.removeAllViews();
+        topicRow.addView(t.text(this, "不想看这类  正在想…", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600));
+        topicScroll.setVisibility(View.VISIBLE);
+    }
+
+    /** 一行原因按钮排成分段胶囊：头尾大圆角，中间小圆角。 */
+    private void styleChips(List<TextView> row) {
+        for (int i = 0; i < row.size(); i++) {
+            TextView chip = row.get(i);
+            float l = i == 0 ? 99 : Theme.R_XS, r = i == row.size() - 1 ? 99 : Theme.R_XS;
             chip.setEnabled(true);
             chip.setAlpha(1f);
             chip.setTextColor(t.onInv);
@@ -1075,25 +1100,73 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 选了原因就立即提交，撤销条留一下显示回应再收起。 */
+    /** 取这件事可能不想看的几类内容，放在撤销条上面一行；取不到就只留固定原因。 */
+    private void loadTopics(long id) {
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            JSONArray options = null;
+            try {
+                options = Api.get(app, "/v1/events/" + id + "/reasons").optJSONArray("options");
+            } catch (Exception err) {
+                Trace.log(app, "reasons.fail", "id=" + id + " " + err);
+            }
+            JSONArray got = options;
+            runOnUiThread(() -> {
+                if (isDestroyed() || pendingDismiss != id || answeredFor >= 0) return; // 已经选了或者换了一条
+                topicRow.removeAllViews();
+                topicChips.clear();
+                if (got == null || got.length() == 0) {
+                    topicScroll.setVisibility(View.GONE);
+                    return;
+                }
+                TextView label = t.text(this, "不想看这类", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600);
+                label.setPadding(0, 0, t.dp(8), 0);
+                topicRow.addView(label);
+                for (int i = 0; i < got.length(); i++) {
+                    JSONObject option = got.optJSONObject(i);
+                    TextView chip = t.text(this, option.optString("text"), 13, t.onInv, 700);
+                    chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+                    chip.setOnClickListener(v -> pickTopic(chip, option));
+                    topicRow.addView(chip, gapLp(3));
+                    topicChips.add(chip);
+                }
+                styleChips(topicChips);
+            });
+        }, "reasons").start();
+    }
+
+    /** 选了固定原因就立即提交，撤销条留一下显示回应再收起。 */
     private void pickReason(TextView picked, String[] reason) {
         if (pendingDismiss < 0) return;
-        for (TextView chip : reasonChips) {
+        boolean remembers = "source".equals(reason[0]); // 已经知道了、其他：不当场记
+        picked(picked, reason[2], reason[0], remembers);
+        commitDismiss(reason[0], null);
+    }
+
+    /** 选了“不想看这类”的某一类：原样记下这一类。 */
+    private void pickTopic(TextView picked, JSONObject option) {
+        if (pendingDismiss < 0) return;
+        picked(picked, "正在记下…", "topic " + option.optString("text"), true);
+        commitDismiss("topic", option);
+    }
+
+    private void picked(TextView picked, String response, String trace, boolean remembers) {
+        List<TextView> all = new ArrayList<>(reasonChips);
+        all.addAll(topicChips);
+        for (TextView chip : all) {
             chip.setEnabled(false);
             if (chip != picked) chip.setAlpha(0.35f);
         }
         picked.setTextColor(t.inv);
         picked.setBackground(t.round(t.onInv, 99));
         picked.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
-        undoLabel.setText(reason[2]);
+        undoLabel.setText(response);
         undoButton.setVisibility(View.INVISIBLE);
         undoCountdown.stop();
         undoCountdown.setVisibility(View.GONE);
-        Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + reason[0]);
-        boolean remembers = !"known".equals(reason[0]);
+        Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + trace);
         answeredFor = remembers ? pendingDismiss : -1;
-        commitDismiss(reason[0]);
-        main.postDelayed(hideUndoLater, remembers ? 6000 : 1400); // 等不到服务器回应也会收起
+        main.postDelayed(hideUndoLater, remembers ? 6000 : 1800); // 等不到服务器回应也会收起
     }
 
     /** 服务器按原因记下了记忆：在撤销条上说出记住了什么，和对话里的“记住了”一致。 */
@@ -1107,8 +1180,15 @@ public class MainActivity extends Activity {
         main.postDelayed(hideUndoLater, 2400);
     }
 
-    /** 把撤销期内的“不需要”提交给服务器；reason 为空表示没选原因（超时或离开页面），此时直接收起撤销条。 */
     private void commitDismiss(String reason) {
+        commitDismiss(reason, null);
+    }
+
+    /**
+     * 把撤销期内的“不需要”提交给服务器；reason 为空表示没选原因（超时或离开页面），此时直接收起撤销条。
+     * topic 是选中的那一类 {text, keywords}，原样传回服务器记下。
+     */
+    private void commitDismiss(String reason, JSONObject topic) {
         main.removeCallbacks(commitDismiss);
         long id = pendingDismiss;
         if (id < 0) return;
@@ -1118,7 +1198,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject r = Api.post(app, "/v1/events/" + id + "/feedback",
-                        new JSONObject().put("value", "not_needed").putOpt("reason", reason));
+                        new JSONObject().put("value", "not_needed").putOpt("reason", reason).putOpt("topic", topic));
                 if (reason != null) runOnUiThread(() -> showRemembered(id, r));
             } catch (Exception err) {
                 Trace.log(app, "feedback.fail", "id=" + id + " " + err);

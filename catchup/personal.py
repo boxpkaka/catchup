@@ -28,7 +28,8 @@ KINDS = {
 }
 TASK_DAYS = 21          # “正在做”的事默认三周后过期，过期后不再参与排序
 WEIGHTS = {"task": 3.0, "interest": 2.0}
-REASONS = {"topic": "不想看这类", "source": "不想看这个来源", "known": "已经知道了"}  # “不需要”的原因
+# “不需要”的原因；“其他”不当场记，和没选原因的一样留给 learn_from_feedback 攒几条一起找共同点
+REASONS = {"topic": "不想看这类", "source": "不想看这个来源", "known": "已经知道了", "other": "其他原因"}
 FEEDBACK_ORIGIN = "你的反馈"          # 每小时从行为规律里归纳的
 # 标“不需要 / 想看”时明说了原因，当场记下（记 event_id），撤回时一起删
 REASON_ORIGINS = {"not_needed": "你标记的不需要", "useful": "你标记的想看"}
@@ -51,6 +52,7 @@ source=更信任或更想看的来源；avoid_source=明确不想看的来源（
 FEEDBACK_SYSTEM = """下面是一位 AI 从业者最近 30 天对一些事件的行为，以及他已有的记忆。据此维护“由反馈归纳的记忆”。
 信号强弱：你分享的、追踪、在事件下提问、会错过、有用是较强的正面信号；看原文是中等正面信号；不会错过是较弱的负面信号。
 带原因的“不需要：不想看这类 / 不想看这个来源”已经单独记下了，只作为规律的一部分；
+“不需要：其他原因”和没写原因的“不需要”是他没说为什么，正要靠你把这几件放在一起找共同点：几件明显是同一类时归纳成 avoid，看不出就先不动；
 “不需要：已经知道了”只说明内容重复，不代表不感兴趣，不要当作负面信号；“误点了不需要，已撤回”不是证据，忽略。
 只有呈现出明确规律时（例如几件同类事件都追踪或提问过、都标了不需要）才归纳，单条不下结论。
 不想看某类内容时 kind 用 avoid，keywords 只写内容关键词，不要写来源名；
@@ -72,12 +74,13 @@ keywords 写这一类内容常见的词，英文用不会有歧义的短语，�
 已有记忆里有同样意思的就输出空数组。
 输出 JSON：{"add": [{"kind": "interest", "text": "第二人称、不超过 30 字", "keywords": ["3～8 个中英文关键词"]}]}"""
 
-AVOID_SYSTEM = """用户把下面这条内容标为“不想看这类”。判断“这类”具体指什么，写成一条“不想看”的记忆。
+AVOID_OPTIONS_SYSTEM = """用户把下面这条内容标为“不需要”。列出他最可能不想看的 3 类内容，从具体到宽泛排（例如“智能眼镜评测”“消费电子硬件”“硬件产品”），
+由他自己选一个，所以每一类都要说得清楚、互不重复。
 要具体，不要误伤他关注的方向：例如他关注 TTS 语音合成，而这条讲的是股票代码 TTS，就写“股票行情和估值”，不要写“TTS”。
-keywords 写这一类内容常见的通用词（如 股价、估值、市值、stock price、market cap），英文用不会有歧义的短语，
-不要单独写 stock、shares 这种还有别的意思的词；不要写这条内容里的专有名词（公司名、人名、产品名、股票代码），
-不写来源名，也不写他关注方向本身的词。已有记忆里有同样意思的“不想看”就输出空数组。
-输出 JSON：{"add": [{"kind": "avoid", "text": "第二人称、不超过 30 字", "keywords": ["3～8 个中英文关键词"]}]}"""
+text 是不超过 10 个字的名词短语；keywords 写这一类内容常见的通用词（如 股价、估值、市值、stock price、market cap），
+英文用不会有歧义的短语，不要单独写 stock、shares 这种还有别的意思的词；不要写这条内容里的专有名词（公司名、人名、产品名、股票代码），
+不写来源名，也不写他关注方向本身的词。他已经不想看的类别不要再列。
+输出 JSON：{"options": [{"text": "...", "keywords": ["3～8 个中英文关键词"]}]}"""
 
 KEYWORDS_SYSTEM = """为下面这条个人记忆生成 3～8 个用于匹配新闻标题的关键词，中英文都给，专有名词保持原样。
 输出 JSON：{"keywords": [...]}。"""
@@ -287,36 +290,64 @@ def evidence(config: Config, store, actions) -> list[tuple[str, str]]:
     return lines
 
 
-def from_reason(config: Config, store, llm, event_id: int, value: str, reason: str, now: datetime) -> dict:
-    """标“不需要 / 想看”时明说了原因，当场记下：不想看这个来源直接记；不想看这类、想看这类请模型判断“这类”是什么。
-    撤回或改了反馈时由 retract() 删除。"""
+def avoid_options(config: Config, store, llm, event_id: int, now: datetime) -> list[dict]:
+    """点了“不需要”时列出几类可能不想看的内容 [{text, keywords}]，由用户自己选，选中的原样记下（见 from_reason）。"""
+    events = group_events(store.event_signals(event_id))
+    if not events or llm is None:
+        return []
+    event, labels = events[0], build_sources(config.sources)
+    brief = store.briefs([event_id]).get(event_id) or {}
+    avoided = "\n".join(m["text"] for m in store.memories() if m["kind"] == "avoid") or "（暂无）"
+    titles = "\n".join(f"- {s.title}" for s in event.signals[:6])
+    try:
+        raw = llm.json(AVOID_OPTIONS_SYSTEM, f"他是谁：\n{focus(config, store, now)}\n\n已经不想看的：\n{avoided}\n\n"
+                                             f"内容：{brief.get('headline') or event.lead.title}。{brief.get('summary', '')}\n"
+                                             f"报道标题：\n{titles}", max_tokens=400)
+    except Exception as e:
+        log.warning("avoid options failed: %r", e)
+        return []
+    names = {n.lower() for s in event.signals for n in source_of(s, labels)}
+    options = []
+    for o in raw.get("options") or []:
+        text = str(o.get("text") or "").strip()[:12] if isinstance(o, dict) else ""
+        keywords = [str(k)[:40] for k in o.get("keywords") or [] if str(k).lower() not in names][:8] if text else []
+        if text and keywords:
+            options.append({"text": text, "keywords": keywords})
+    return options[:3]
+
+
+def from_reason(config: Config, store, llm, event_id: int, value: str, reason: str, now: datetime,
+                picked: dict | None = None) -> dict:
+    """标“不需要 / 想看”时明说了原因，当场记下：不想看这个来源直接记；不想看这类记用户从 avoid_options 里选的那一类；
+    想看这类请模型判断“这类”是什么。撤回或改了反馈时由 retract() 删除。"""
     empty = {"added": [], "updated": [], "removed": []}
     events = group_events(store.event_signals(event_id))
     if not events:
         return empty
     event, labels = events[0], build_sources(config.sources)
+    names = {n.lower() for s in event.signals for n in source_of(s, labels)}
     if value == "not_needed" and reason == "source":
         name, key = source_of(event.lead, labels)
         ops = {"add": [{"kind": "avoid_source", "text": f"你不想看「{name}」的内容", "keywords": [key]}]}
-    elif reason == "topic" and llm:
-        kind, system = ("avoid", AVOID_SYSTEM) if value == "not_needed" else ("interest", WANT_SYSTEM)
+    elif value == "not_needed" and reason == "topic" and picked:
+        ops = {"add": [{"kind": "avoid", "text": f"你不想看{picked['text']}相关的内容", "keywords": picked["keywords"]}]}
+    elif value == "useful" and reason == "topic" and llm:
         brief = store.briefs([event_id]).get(event_id) or {}
-        same = "\n".join(m["text"] for m in store.memories() if m["kind"] == kind) or "（暂无）"
+        same = "\n".join(m["text"] for m in store.memories() if m["kind"] == "interest") or "（暂无）"
         titles = "\n".join(f"- {s.title}" for s in event.signals[:6])
         try:
-            ops = llm.json(system, f"他是谁：\n{focus(config, store, now)}\n\n已有的“{KINDS[kind]}”：\n{same}\n\n"
-                                   f"内容：{brief.get('headline') or event.lead.title}。{brief.get('summary', '')}\n"
-                                   f"报道标题：\n{titles}", max_tokens=400)
+            ops = llm.json(WANT_SYSTEM, f"他是谁：\n{focus(config, store, now)}\n\n已有的“{KINDS['interest']}”：\n{same}\n\n"
+                                        f"内容：{brief.get('headline') or event.lead.title}。{brief.get('summary', '')}\n"
+                                        f"报道标题：\n{titles}", max_tokens=400)
         except Exception as e:
             log.warning("reason to memory failed: %r", e)
             return empty
-        ops = {"add": [a for a in ops.get("add") or [] if isinstance(a, dict) and a.get("kind") == kind][:1]}
-        # 模型常把来源名也写进关键词，那样会把这个来源的内容全压下去（或全抬上来）
-        names = {n.lower() for s in event.signals for n in source_of(s, labels)}
-        for a in ops["add"]:
-            a["keywords"] = [k for k in a.get("keywords") or [] if str(k).lower() not in names]
+        ops = {"add": [a for a in ops.get("add") or [] if isinstance(a, dict) and a.get("kind") == "interest"][:1]}
     else:
         return empty
+    for a in ops["add"]:  # 模型常把来源名也写进关键词，那样会把这个来源的内容全压下去（或全抬上来）
+        if a["kind"] != "avoid_source":
+            a["keywords"] = [k for k in a.get("keywords") or [] if str(k).lower() not in names]
     return apply_ops(store, ops, REASON_ORIGINS[value], now, event_id=event_id)
 
 
