@@ -1,5 +1,8 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.ObjectAnimator;
+import android.animation.PropertyValuesHolder;
+import android.animation.StateListAnimator;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
@@ -7,6 +10,9 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.fonts.Font;
+import android.graphics.fonts.FontFamily;
+import android.graphics.fonts.FontStyle;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -19,33 +25,80 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+
+import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.time.OffsetDateTime;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /**
- * 视觉规范：配色沿用图标（宣纸、素笺、墨、石墨、朱砂），朱砂只用于强调（新的、最新进展、警示）；
- * 层次靠字重而不是颜色：900 字标、700 标题、500 辅助信息、400 正文。
+ * 视觉规范（律动）：钴蓝是主色，酸橙只给“问一问”和发送；事件按话题上色；颜色一律按用途取，深浅色各一套。
+ * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
+ * 加宽的放大数字，收窄的放来源和时间。
  */
 final class Theme {
-    static final int CINNABAR = 0xFFFF5A36;
+    /** 圆角档位（dp）：分段列表内侧、按下、选中、问一问、分段列表外侧、卡片和面板。 */
+    static final float R_XS = 8, R_S = 12, R_M = 16, R_L = 22, R_XL = 28, R_2XL = 32;
+
+    private static final Map<String, Typeface> FLEX = new HashMap<>();
 
     final boolean night;
-    final int bg, sheet, ink, sub, line, chip;
+    final int bg, sheet, hi, ink, sub, line, chip;
+    final int pri, onPri, pc, onPc, lime, onLime, inv, onInv, invPri, err, onErr;
     private final float density;
 
     Theme(Context c) {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
-        bg = night ? 0xFF141416 : 0xFFF3EEE4;
-        sheet = night ? 0xFF1F1F22 : 0xFFFBF8F2;
-        ink = night ? 0xFFEDE7DA : 0xFF1A1A1D;
-        sub = night ? 0xFF9B958A : 0xFF6E6A63;
-        line = night ? 0xFF2C2B30 : 0xFFE4DDD0;
-        chip = night ? 0x1FEDE7DA : 0x121A1A1D;
+        bg = night ? 0xFF121319 : 0xFFF3F3F8;
+        sheet = night ? 0xFF1D1E26 : 0xFFFFFFFF; // 卡片、列表项、输入框
+        hi = night ? 0xFF282A33 : 0xFFE8E8F0; // 未选中的按钮、骨架屏
+        ink = night ? 0xFFE6E6EF : 0xFF15161F;
+        sub = night ? 0xFFA2A4B6 : 0xFF5E6072;
+        line = night ? 0xFF454756 : 0xFFC6C7D6; // 拖动条、时间线
+        chip = night ? 0x1FE6E6EF : 0x1215161F;
+        pri = night ? 0xFFB9C0FF : 0xFF3443F5;
+        onPri = night ? 0xFF0D1A86 : 0xFFFFFFFF;
+        pc = night ? 0xFF283180 : 0xFFDCE0FF;
+        onPc = night ? 0xFFDCE0FF : 0xFF0E1C8F;
+        lime = night ? 0xFFC4E65A : 0xFFD6F36B;
+        onLime = night ? 0xFF1C2A00 : 0xFF1F2E00;
+        inv = night ? 0xFFE6E6EF : 0xFF2C2D36; // 底部工具栏、撤销条、更新提示
+        onInv = night ? 0xFF22232B : 0xFFF1F1F6;
+        invPri = night ? 0xFF3443F5 : 0xFFB9C0FF;
+        err = night ? 0xFF6E1F14 : 0xFFFFDAD5; // 左滑“不需要”、连接断开
+        onErr = night ? 0xFFFFDAD5 : 0xFF5C0C02;
         density = c.getResources().getDisplayMetrics().density;
+    }
+
+    /**
+     * 话题色 {底色, 文字色}：取 topics 里第一个认识的兴趣；没认识的用两种预留色之一（按名字固定），
+     * 没有话题用灰色。现在只有三个兴趣，兴趣多了合并，不再加颜色。
+     */
+    int[] topic(JSONArray topics) {
+        String first = topics == null ? "" : topics.optString(0);
+        for (int i = 0; topics != null && i < topics.length(); i++) {
+            switch (topics.optString(i)) {
+                case "大模型":
+                    return night ? new int[]{0xFF283180, 0xFFDCE0FF} : new int[]{0xFFDCE0FF, 0xFF0E1C8F};
+                case "AI 语音":
+                    return night ? new int[]{0xFF6A2246, 0xFFFFD8E8} : new int[]{0xFFFFD8E8, 0xFF6A0F3D};
+                case "Agent":
+                    return night ? new int[]{0xFF6B3D10, 0xFFFFDDB8} : new int[]{0xFFFFDDB8, 0xFF5A2E00};
+                default:
+                    break;
+            }
+        }
+        if (first.isEmpty()) return new int[]{hi, ink};
+        if ((first.hashCode() & 1) == 0) {
+            return night ? new int[]{0xFF0F5040, 0xFFC6F0E2} : new int[]{0xFFC6F0E2, 0xFF003828};
+        }
+        return night ? new int[]{0xFF4A2A7A, 0xFFEBDDFF} : new int[]{0xFFEBDDFF, 0xFF2F0F5C};
     }
 
     int dp(float v) {
@@ -54,6 +107,27 @@ final class Theme {
 
     static Typeface weight(int w) {
         return Typeface.create(Typeface.DEFAULT, w, false);
+    }
+
+    /** Roboto Flex 的某个宽度和字重；中文接系统字体。wdth 25～151，100 是标准宽度。 */
+    static Typeface flex(Context c, int wdth, int wght) {
+        String key = wdth + "/" + wght;
+        Typeface tf = FLEX.get(key);
+        if (tf != null) return tf;
+        try {
+            Font font = new Font.Builder(c.getResources(), R.font.roboto_flex)
+                    .setFontVariationSettings("'wdth' " + wdth + ", 'wght' " + wght)
+                    .setWeight(wght)
+                    .build();
+            tf = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(font).build())
+                    .setSystemFallback("sans-serif")
+                    .setStyle(new FontStyle(wght, FontStyle.FONT_SLANT_UPRIGHT))
+                    .build();
+        } catch (IOException e) {
+            tf = weight(wght);
+        }
+        FLEX.put(key, tf);
+        return tf;
     }
 
     TextView text(Context c, CharSequence s, float sp, int color, int weight) {
@@ -73,19 +147,69 @@ final class Theme {
         return d;
     }
 
-    /** 圆角背景 + 点按水波纹。 */
-    Drawable ripple(int color, float radiusDp) {
-        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
-                round(color, radiusDp), round(Color.WHITE, radiusDp));
+    /** 四个角各自的圆角：左上、右上、右下、左下。 */
+    GradientDrawable round(int color, float tl, float tr, float br, float bl) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadii(new float[]{dp(tl), dp(tl), dp(tr), dp(tr), dp(br), dp(br), dp(bl), dp(bl)});
+        return d;
     }
 
-    /** 胶囊按钮：filled 为墨色实心（主操作），否则为浅底。 */
+    /** 圆角背景 + 点按水波纹。 */
+    Drawable ripple(int color, float radiusDp) {
+        return ripple(color, radiusDp, radiusDp, radiusDp, radiusDp);
+    }
+
+    Drawable ripple(int color, float tl, float tr, float br, float bl) {
+        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
+                round(color, tl, tr, br, bl), round(Color.WHITE, tl, tr, br, bl));
+    }
+
+    /** 分段列表里的一项：一组的第一项上面两个角是大圆角，最后一项下面两个角是大圆角，中间都是小圆角。 */
+    Drawable segment(int color, boolean first, boolean last) {
+        float top = first ? R_XL : R_XS, bottom = last ? R_XL : R_XS;
+        return ripple(color, top, top, bottom, bottom);
+    }
+
+    /** 把一列行排成分段列表：卡片色底，相隔 3dp，头尾大圆角。 */
+    void segments(LinearLayout list) {
+        int n = list.getChildCount();
+        for (int i = 0; i < n; i++) {
+            View row = list.getChildAt(i);
+            row.setBackground(segment(sheet, i == 0, i == n - 1));
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) row.getLayoutParams();
+            if (lp == null) lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = i == 0 ? 0 : dp(3);
+            row.setLayoutParams(lp);
+        }
+    }
+
+    /** 胶囊按钮：filled 为钴蓝实心（主操作），否则为浅钴蓝（次要操作）。 */
     TextView pill(Context c, String label, boolean filled) {
-        TextView b = text(c, label, 14, filled ? bg : ink, 700);
+        TextView b = text(c, label, 14, filled ? onPri : onPc, 700);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(16), dp(10), dp(16), dp(10));
-        b.setBackground(ripple(filled ? ink : chip, 99));
+        press(b, filled ? pri : pc, 99);
         return b;
+    }
+
+    /** 可以按的按钮：按下时圆角收到 12、整体略微缩小，松手弹回，比水波纹更直接地告诉你“按到了”。 */
+    void press(View v, int color, float radiusDp) {
+        v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
+                new Spring.Shape(color, dp(radiusDp), dp(R_S)), null));
+        StateListAnimator scale = new StateListAnimator();
+        scale.addState(new int[]{android.R.attr.state_pressed}, scaleTo(v, 0.95f));
+        scale.addState(new int[0], scaleTo(v, 1f));
+        v.setStateListAnimator(scale);
+    }
+
+    private static ObjectAnimator scaleTo(View v, float s) {
+        ObjectAnimator a = ObjectAnimator.ofPropertyValuesHolder(v,
+                PropertyValuesHolder.ofFloat(View.SCALE_X, s), PropertyValuesHolder.ofFloat(View.SCALE_Y, s));
+        a.setDuration(Spring.FAST.duration);
+        a.setInterpolator(Spring.FAST);
+        return a;
     }
 
     /** 左上角圆形返回按钮。 */
@@ -93,7 +217,7 @@ final class Theme {
         TextView back = text(a, "←", 20, ink, 700);
         back.setGravity(Gravity.CENTER);
         back.setContentDescription("返回");
-        back.setBackground(ripple(sheet, 22));
+        back.setBackground(ripple(sheet, 99));
         back.setOnClickListener(v -> a.onBackPressed());
         return back;
     }
@@ -105,16 +229,12 @@ final class Theme {
         LinearLayout box = new LinearLayout(a);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, dp(10), 0, dp(24));
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(bg);
-        float r = dp(26);
-        shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
-        box.setBackground(shape);
+        box.setBackground(round(bg, R_2XL, R_2XL, 0, 0));
         View grab = new View(a);
         grab.setBackground(round(line, 2));
         LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(36), dp(4));
         glp.gravity = Gravity.CENTER_HORIZONTAL;
-        glp.bottomMargin = dp(10);
+        glp.bottomMargin = dp(14);
         box.addView(grab, glp);
         box.addView(content);
         d.setContentView(box);
@@ -123,7 +243,7 @@ final class Theme {
         w.setGravity(Gravity.BOTTOM);
         w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0.32f);
+        w.setDimAmount(0.42f);
         w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         return d;
     }

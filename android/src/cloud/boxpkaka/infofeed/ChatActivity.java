@@ -1,13 +1,12 @@
 package cloud.boxpkaka.infofeed;
 
-import android.animation.ObjectAnimator;
-import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
@@ -39,6 +38,7 @@ public class ChatActivity extends Activity {
     static final String EXTRA_QUESTIONS = "questions";
     static final String EXTRA_ASK = "ask";
     static final String EXTRA_THREAD = "thread";
+    static final String EXTRA_TOPICS = "topics"; // 事件的 topics（JSON 数组），标题栏用它的话题色
 
     private Theme t;
     private long eventId;
@@ -49,6 +49,7 @@ public class ChatActivity extends Activity {
     private EditText input;
     private TextView send;
     private LinearLayout suggestions;
+    private LinearLayout notes; // 这一轮的“记住了 / 会替你留意”，排成一组
     private String pendingAsk; // 从详情页带过来的问题，等历史加载完再发，避免顺序错乱
 
     @Override
@@ -91,20 +92,32 @@ public class ChatActivity extends Activity {
         root.addView(column, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // 标题栏：在事件下提问时带着事件的话题色，延伸到状态栏下面；随便问时用中性的底色
+        int[] c = {t.bg, t.ink};
+        String topics = getIntent().getStringExtra(EXTRA_TOPICS);
+        if (eventId > 0 && topics != null) {
+            try {
+                c = t.topic(new JSONArray(topics));
+            } catch (Exception ignored) {
+                // 话题坏了就用中性色
+            }
+        }
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(t.dp(14), t.dp(12), t.dp(20), t.dp(10));
-        top.addView(t.backButton(this), new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
+        top.setPadding(t.dp(12), t.dp(12), t.dp(16), t.dp(14));
+        top.setBackground(t.round(c[0], 0, 0, Theme.R_XL, Theme.R_XL));
+        top.addView(t.backButton(this), new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         titles.setPadding(t.dp(12), 0, 0, 0);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
-        TextView h = t.text(this, eventId > 0 && title != null ? title : "问 Catchup", 16, t.ink, 700);
+        TextView h = t.text(this, eventId > 0 && title != null ? title : "问 Catchup", 16, c[1], 800);
         h.setSingleLine();
         h.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titles.addView(h);
-        TextView sub = t.text(this, eventId > 0 ? "基于这件事的原文回答" : "基于 Catchup 替你整理过的事件回答", 12, t.sub, 400);
-        sub.setPadding(0, t.dp(4), 0, 0);
+        TextView sub = t.text(this, eventId > 0 ? "基于这件事的原文回答" : "基于 Catchup 替你整理过的事件回答", 12, c[1], 400);
+        sub.setAlpha(0.78f);
+        sub.setPadding(0, t.dp(3), 0, 0);
         titles.addView(sub);
         top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         column.addView(top);
@@ -118,41 +131,54 @@ public class ChatActivity extends Activity {
         scroll.addView(messages);
         column.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
+        // 输入框和发送按钮分开：空着时发送是灰色圆形，有字时变成酸橙色的圆角方块
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.BOTTOM);
-        bar.setPadding(t.dp(16), t.dp(8), t.dp(16), t.dp(12));
-        LinearLayout field = new LinearLayout(this);
-        field.setGravity(Gravity.CENTER_VERTICAL);
-        field.setPadding(t.dp(18), t.dp(4), t.dp(6), t.dp(4));
-        field.setBackground(t.round(t.sheet, 26));
+        bar.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(12));
         input = new EditText(this);
         input.setHint(eventId > 0 ? "问问这件事…" : "想知道什么？");
         input.setHintTextColor(t.sub);
         input.setTextColor(t.ink);
         input.setTextSize(15);
-        input.setBackground(null);
+        input.setBackground(t.round(t.sheet, Theme.R_XL));
         input.setMaxLines(5);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         input.setImeOptions(EditorInfo.IME_ACTION_SEND);
-        input.setPadding(0, t.dp(10), 0, t.dp(10));
-        field.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        send = t.text(this, "↑", 18, t.bg, 800);
+        input.setMinHeight(t.dp(52));
+        input.setPadding(t.dp(20), t.dp(14), t.dp(20), t.dp(14));
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable e) {
+                styleSend();
+            }
+        });
+        bar.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        send = t.text(this, "↑", 20, t.onLime, 900);
         send.setGravity(Gravity.CENTER);
         send.setContentDescription("发送");
-        send.setBackground(t.ripple(t.ink, 22));
         send.setOnClickListener(v -> sendMessage(input.getText().toString()));
-        field.addView(send, new LinearLayout.LayoutParams(t.dp(40), t.dp(40)));
-        bar.addView(field, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        t.press(send, t.hi, 99);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(t.dp(52), t.dp(52));
+        sl.leftMargin = t.dp(8);
+        bar.addView(send, sl);
+        styleSend();
         column.addView(bar);
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
                 Insets ime = insets.getInsets(WindowInsets.Type.ime());
-                top.setPadding(t.dp(14), bars.top + t.dp(12), t.dp(20), t.dp(10));
-                bar.setPadding(t.dp(16), t.dp(8), t.dp(16), Math.max(bars.bottom, ime.bottom) + t.dp(12));
+                top.setPadding(t.dp(12), bars.top + t.dp(12), t.dp(16), t.dp(14));
+                bar.setPadding(t.dp(12), t.dp(8), t.dp(12), Math.max(bars.bottom, ime.bottom) + t.dp(12));
                 if (ime.bottom > 0) scrollToEnd();
                 return WindowInsets.CONSUMED;
             });
@@ -202,20 +228,30 @@ public class ChatActivity extends Activity {
         }
         suggestions = new LinearLayout(this);
         suggestions.setOrientation(LinearLayout.VERTICAL);
-        suggestions.setPadding(0, t.dp(24), 0, 0);
-        TextView label = t.text(this, eventId > 0 ? "可以这样问" : "试试问", 13, t.sub, 700);
-        label.setPadding(0, 0, 0, t.dp(10));
-        suggestions.addView(label);
-        for (String q : questions) {
-            TextView chip = t.text(this, q, 15, t.ink, 500);
-            chip.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
-            chip.setBackground(t.ripple(t.sheet, 16));
-            chip.setOnClickListener(v -> sendMessage(q));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = t.dp(8);
-            suggestions.addView(chip, lp);
+        if (eventId <= 0) {
+            TextView hello = t.text(this, "想知道什么？", 30, t.ink, 900);
+            hello.setPadding(t.dp(2), t.dp(56), 0, 0);
+            suggestions.addView(hello);
         }
+        TextView label = t.text(this, eventId > 0 ? "可以这样问" : "试试问", 13, t.sub, 700);
+        label.setPadding(t.dp(10), t.dp(eventId > 0 ? 24 : 30), 0, t.dp(10));
+        suggestions.addView(label);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (String q : questions) {
+            TextView chip = t.text(this, q, 15, t.ink, 600);
+            chip.setLineSpacing(t.dp(3), 1f);
+            chip.setGravity(Gravity.CENTER_VERTICAL);
+            chip.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
+            Drawable mark = new Shapes.Blob(Shapes.SOFT, t.pri);
+            mark.setBounds(0, 0, t.dp(22), t.dp(22));
+            chip.setCompoundDrawablesRelative(mark, null, null, null);
+            chip.setCompoundDrawablePadding(t.dp(12));
+            chip.setOnClickListener(v -> sendMessage(q));
+            list.addView(chip);
+        }
+        t.segments(list);
+        suggestions.addView(list);
         messages.addView(suggestions);
     }
 
@@ -225,14 +261,15 @@ public class ChatActivity extends Activity {
         String msg = text.trim();
         if (msg.isEmpty() || busy) return;
         busy = true;
-        send.setAlpha(0.35f);
         input.setText("");
+        styleSend();
+        notes = null;
         if (suggestions != null) {
             messages.removeView(suggestions);
             suggestions = null;
         }
         addUser(msg);
-        TextView status = statusLine("正在思考");
+        LinearLayout status = statusLine("正在思考");
         TextView answer = addAssistant();
         StringBuilder full = new StringBuilder();
         scrollToEnd();
@@ -256,21 +293,21 @@ public class ChatActivity extends Activity {
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
                 busy = false;
-                send.setAlpha(1f);
+                styleSend();
                 removeStatus(status);
                 if (err != null && full.length() == 0) answer.setText("没有拿到回答：" + err + "。再发一次试试。");
             });
         }, "chat-send").start();
     }
 
-    private void onEvent(JSONObject e, TextView status, TextView answer, StringBuilder full) {
+    private void onEvent(JSONObject e, LinearLayout status, TextView answer, StringBuilder full) {
         if (isDestroyed()) return;
         switch (e.optString("type")) {
             case "thread":
                 threadId = e.optLong("id");
                 break;
             case "status":
-                status.setText(e.optString("text"));
+                ((TextView) status.getChildAt(1)).setText(e.optString("text"));
                 break;
             case "delta":
                 removeStatus(status);
@@ -298,27 +335,23 @@ public class ChatActivity extends Activity {
     // ---------- 消息气泡 ----------
 
     private void addUser(String text) {
-        TextView v = t.text(this, text, 15, t.bg, 500);
-        v.setLineSpacing(t.dp(3), 1f);
+        TextView v = t.text(this, text, 15, t.onPri, 500);
+        v.setLineSpacing(t.dp(4), 1f);
         v.setPadding(t.dp(16), t.dp(11), t.dp(16), t.dp(11));
-        GradientDrawable bubble = new GradientDrawable();
-        bubble.setColor(t.ink);
-        float r = t.dp(20), small = t.dp(6);
-        bubble.setCornerRadii(new float[]{r, r, r, r, small, small, r, r});
-        v.setBackground(bubble);
+        v.setBackground(t.round(t.pri, Theme.R_L, Theme.R_L, 6, Theme.R_L));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.END;
         lp.topMargin = t.dp(18);
-        lp.leftMargin = t.dp(48);
+        lp.leftMargin = t.dp(56);
         messages.addView(v, lp);
     }
 
     private TextView addAssistant() {
         TextView v = t.text(this, "", 15.5f, t.ink, 400);
-        v.setLineSpacing(t.dp(6), 1f);
+        v.setLineSpacing(t.dp(10), 1f);
         v.setMovementMethod(LinkMovementMethod.getInstance());
-        v.setLinkTextColor(t.ink);
+        v.setLinkTextColor(t.pri);
         v.setOnLongClickListener(x -> {
             getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Catchup", v.getText()));
             Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
@@ -331,23 +364,43 @@ public class ChatActivity extends Activity {
         return v;
     }
 
-    private TextView statusLine(String text) {
-        TextView v = t.text(this, text, 13, t.sub, 500);
-        v.setPadding(0, t.dp(16), 0, 0);
-        messages.addView(v);
-        ObjectAnimator pulse = ObjectAnimator.ofFloat(v, View.ALPHA, 1f, 0.35f);
-        pulse.setDuration(700);
-        pulse.setRepeatMode(ValueAnimator.REVERSE);
-        pulse.setRepeatCount(ValueAnimator.INFINITE);
-        pulse.start();
-        v.setTag(pulse);
-        return v;
+    private LinearLayout statusLine(String text) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, t.dp(16), 0, 0);
+        Shapes.Loader loader = new Shapes.Loader(this, t.pri);
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(t.dp(20), t.dp(20));
+        ll.rightMargin = t.dp(8);
+        row.addView(loader, ll);
+        row.addView(t.text(this, text, 13, t.sub, 600));
+        messages.addView(row);
+        loader.start();
+        return row;
     }
 
-    private void removeStatus(TextView status) {
+    private void removeStatus(LinearLayout status) {
         if (status.getParent() == null) return;
-        ((ValueAnimator) status.getTag()).cancel();
-        messages.removeView(status);
+        messages.removeView(status); // 指示器离开窗口时自己停
+    }
+
+    private void styleSend() {
+        boolean ready = !busy && input.getText().toString().trim().length() > 0;
+        send.setTextColor(ready ? t.onLime : t.sub);
+        ((Spring.Shape) ((android.graphics.drawable.RippleDrawable) send.getBackground()).getDrawable(0))
+                .morph(t.dp(ready ? 18 : 99), ready ? t.lime : t.hi);
+    }
+
+    /** 这一轮的“记住了 / 会替你留意”放在同一个分段列表里。 */
+    private LinearLayout notes() {
+        if (notes == null) {
+            notes = new LinearLayout(this);
+            notes.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = t.dp(16);
+            messages.addView(notes, lp);
+        }
+        return notes;
     }
 
     /** 这轮对话记住 / 改写 / 忘掉的关于你的信息；记住的可以当场撤销。 */
@@ -364,16 +417,15 @@ public class ChatActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(t.dp(14), t.dp(11), t.dp(8), t.dp(11));
-            row.setBackground(t.round(t.sheet, 14));
             View dot = new View(this);
-            dot.setBackground(t.round(Theme.CINNABAR, 99));
-            row.addView(dot, new LinearLayout.LayoutParams(t.dp(7), t.dp(7)));
-            TextView text = t.text(this, verb + "：" + m.optString("text"), 13, t.ink, 500);
+            dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
+            row.addView(dot, new LinearLayout.LayoutParams(t.dp(12), t.dp(12)));
+            TextView text = t.text(this, verb + "：" + m.optString("text"), 13, t.ink, 600);
             text.setLineSpacing(t.dp(2), 1f);
             text.setPadding(t.dp(10), 0, t.dp(8), 0);
             row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             if (undoable) {
-                TextView undo = t.text(this, "撤销", 13, t.sub, 700);
+                TextView undo = t.text(this, "撤销", 13, t.pri, 800);
                 undo.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
                 undo.setBackground(t.ripple(Color.TRANSPARENT, 10));
                 long id = m.optLong("id");
@@ -385,10 +437,8 @@ public class ChatActivity extends Activity {
                 });
                 row.addView(undo);
             }
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = t.dp(i == 0 ? 14 : 6);
-            messages.addView(row, lp);
+            notes().addView(row);
+            t.segments(notes);
         }
     }
 
@@ -397,18 +447,17 @@ public class ChatActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(t.dp(14), t.dp(11), t.dp(8), t.dp(11));
-        row.setBackground(t.round(t.sheet, 14));
-        GradientDrawable ring = new GradientDrawable(); // 空心圆环：还在等答案，和“记住了”的实心朱砂点区分开
+        GradientDrawable ring = new GradientDrawable(); // 空心圆环：还在等答案，和“记住了”的实心形状区分开
         ring.setShape(GradientDrawable.OVAL);
-        ring.setStroke(t.dp(1.5f), t.ink);
+        ring.setStroke(t.dp(2), t.ink);
         View mark = new View(this);
         mark.setBackground(ring);
-        row.addView(mark, new LinearLayout.LayoutParams(t.dp(8), t.dp(8)));
-        TextView text = t.text(this, "会替你留意：" + question, 13, t.ink, 500);
+        row.addView(mark, new LinearLayout.LayoutParams(t.dp(11), t.dp(11)));
+        TextView text = t.text(this, "会替你留意：" + question, 13, t.ink, 600);
         text.setLineSpacing(t.dp(2), 1f);
         text.setPadding(t.dp(10), 0, t.dp(8), 0);
         row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView drop = t.text(this, "不用了", 13, t.sub, 700);
+        TextView drop = t.text(this, "不用了", 13, t.pri, 800);
         drop.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
         drop.setBackground(t.ripple(Color.TRANSPARENT, 10));
         drop.setOnClickListener(v -> {
@@ -418,31 +467,33 @@ public class ChatActivity extends Activity {
             postAsync("/v1/questions/" + id, "{\"drop\": true}");
         });
         row.addView(drop);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = t.dp(8);
-        messages.addView(row, lp);
+        notes().addView(row);
+        t.segments(notes);
         scrollToEnd();
     }
 
     /** 随便问时引用到的事件，点开看详情。 */
     private void addRefs(JSONArray events) {
-        for (int i = 0; events != null && i < events.length(); i++) {
+        if (events == null || events.length() == 0) return;
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < events.length(); i++) {
             JSONObject e = events.optJSONObject(i);
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(t.dp(14), t.dp(12), t.dp(14), t.dp(12));
-            row.setBackground(t.ripple(t.sheet, 14));
+            row.setPadding(t.dp(16), t.dp(12), t.dp(14), t.dp(12));
             row.addView(t.text(this, e.optString("headline"), 14, t.ink, 600),
                     new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            row.addView(t.text(this, "↗", 14, Theme.CINNABAR, 700));
+            row.addView(t.text(this, "↗", 14, t.pri, 800));
             long id = e.optLong("id");
             row.setOnClickListener(v -> openEvent(id));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.topMargin = t.dp(i == 0 ? 14 : 6);
-            messages.addView(row, lp);
+            list.addView(row);
         }
+        t.segments(list);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = t.dp(14);
+        messages.addView(list, lp);
     }
 
     private void openEvent(long id) {

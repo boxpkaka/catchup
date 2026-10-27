@@ -222,7 +222,7 @@ public class FeedService extends Service {
             Trace.log(this, "notify", "id=" + m.optLong("id") + " " + notifyState());
             nm.notify(id, new Notification.Builder(this, CHANNEL_MESSAGES)
                     .setSmallIcon(R.drawable.ic_notify)
-                    .setColor(0xFF1A1A1D)
+                    .setColor(0xFF3443F5)
                     .setContentTitle(m.optString("title"))
                     .setContentText(body)
                     .setStyle(new Notification.BigTextStyle().bigText(body))

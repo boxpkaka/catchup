@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标：宣纸底 + 墨色 C 接住一个朱砂点；monochrome 供系统主题图标使用 -->
+<!-- 自适应图标：钴蓝底 + 酸橙波浪里挖出一个 C；monochrome 供系统主题图标使用 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launcher_bg" />
     <foreground android:drawable="@drawable/ic_launcher_fg" />

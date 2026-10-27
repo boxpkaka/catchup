@@ -1,5 +1,8 @@
 package cloud.boxpkaka.infofeed;
 
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -7,8 +10,8 @@ import android.view.View;
 import android.view.ViewConfiguration;
 
 /**
- * 左滑移除：横向拖动时内容跟手，背后露出“不需要”；超过 35% 宽度（或快速甩动）松手即移出，
- * 跨过阈值时震一下。没开始横向拖动前不消费事件，点按和纵向滚动照常。
+ * 左滑移除：横向拖动时内容跟手，圆角随距离收到一半、略微缩小，背后露出“不需要”；
+ * 超过 35% 宽度（或快速甩动）松手即用弹簧飞出，跨过阈值时震一下。没开始横向拖动前不消费事件，点按和纵向滚动照常。
  */
 final class SwipeDismiss implements View.OnTouchListener {
     interface Callback {
@@ -21,6 +24,8 @@ final class SwipeDismiss implements View.OnTouchListener {
     private float downX, downY;
     private boolean swiping, armed;
     private VelocityTracker velocity;
+    private GradientDrawable shape; // 前景的圆角背景，拖动时改圆角
+    private float[] radii;
 
     SwipeDismiss(View front, View behind, Callback callback) {
         this.behind = behind;
@@ -48,10 +53,11 @@ final class SwipeDismiss implements View.OnTouchListener {
                     v.setPressed(false);
                     v.getParent().requestDisallowInterceptTouchEvent(true);
                     behind.setVisibility(View.VISIBLE);
+                    grabShape(v);
                 }
                 if (!swiping) return false;
                 float x = Math.min(0, dx);
-                v.setTranslationX(x);
+                follow(v, x);
                 boolean over = -x > v.getWidth() * 0.35f;
                 if (over != armed) {
                     armed = over;
@@ -75,18 +81,44 @@ final class SwipeDismiss implements View.OnTouchListener {
                 }
                 recycle();
                 boolean dismiss = e.getActionMasked() == MotionEvent.ACTION_UP && (armed || vx < -minFling);
-                if (dismiss) {
-                    v.animate().translationX(-v.getWidth()).alpha(0f).setDuration(180)
-                            .withEndAction(() -> callback.dismissed(v)).start();
-                } else {
-                    v.animate().translationX(0).setDuration(200).withEndAction(() -> behind.setVisibility(View.INVISIBLE))
-                            .start();
-                }
+                // 用 ViewPropertyAnimator：列表复用这一行时 reset() 能把它取消掉
+                v.animate().translationX(dismiss ? -v.getWidth() * 1.15f : 0)
+                        .setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
+                        .setUpdateListener(an -> morph(v, v.getTranslationX()))
+                        .withEndAction(() -> {
+                            v.animate().setUpdateListener(null);
+                            if (dismiss) callback.dismissed(v);
+                            else behind.setVisibility(View.INVISIBLE);
+                        })
+                        .start();
                 return true;
             }
             default:
                 return false;
         }
+    }
+
+    private void grabShape(View v) {
+        Drawable bg = v.getBackground();
+        if (bg instanceof RippleDrawable) bg = ((RippleDrawable) bg).getDrawable(0);
+        shape = bg instanceof GradientDrawable ? (GradientDrawable) bg : null;
+        radii = shape == null ? null : shape.getCornerRadii();
+    }
+
+    private void follow(View v, float x) {
+        v.setTranslationX(x);
+        morph(v, x);
+    }
+
+    /** 跟着位移改样子：离开得越远，圆角越小（最多收到一半），整体越小（最多 3%）。 */
+    private void morph(View v, float x) {
+        float p = Math.min(1f, -x / Math.max(1f, v.getWidth() * 0.35f));
+        v.setScaleX(1 - 0.03f * p);
+        v.setScaleY(1 - 0.03f * p);
+        if (radii == null) return;
+        float[] r = new float[radii.length];
+        for (int i = 0; i < r.length; i++) r[i] = radii[i] * (1 - 0.5f * p);
+        shape.setCornerRadii(r);
     }
 
     private void recycle() {
@@ -99,7 +131,10 @@ final class SwipeDismiss implements View.OnTouchListener {
     /** 列表复用这一行之前恢复原位。 */
     static void reset(View front, View behind) {
         front.animate().cancel();
+        front.animate().setUpdateListener(null);
         front.setTranslationX(0);
+        front.setScaleX(1f);
+        front.setScaleY(1f);
         front.setAlpha(1f);
         behind.setVisibility(View.INVISIBLE);
         behind.setAlpha(0.45f);

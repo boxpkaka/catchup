@@ -2,47 +2,44 @@ package cloud.boxpkaka.infofeed;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.graphics.RectF;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
-import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.animation.DecelerateInterpolator;
-import android.view.animation.LinearInterpolator;
 import android.widget.AbsListView;
 import android.widget.FrameLayout;
 
 /**
- * 下拉刷新：列表在顶部时向下拉，露出图标里的 C 形圆环，圆环随拉动距离画出；
- * 拉过阈值时朱砂点“被接住”并震一下，松手后圆环转动直到刷新结束。框架里没有 SwipeRefreshLayout，这里自己实现。
+ * 下拉刷新：列表在顶部时向下拉，露出加载指示器，随拉动距离放大、转动；拉过阈值时震一下，
+ * 松手后指示器边变形边转，直到刷新结束。框架里没有 SwipeRefreshLayout，这里自己实现。
  */
 final class PullLayout extends FrameLayout {
     interface OnRefresh {
         void refresh();
     }
 
-    private final Theme theme;
     private final AbsListView list;
-    private final Indicator indicator;
+    private final FrameLayout indicator;
+    private final Shapes.Loader loader;
     private final int slop, threshold, rest;
     private float downY, downX, offset;
     private boolean dragging, refreshing, armed;
     private OnRefresh listener;
-    private ValueAnimator spin;
 
     PullLayout(Context c, Theme theme, AbsListView list) {
         super(c);
-        this.theme = theme;
         this.list = list;
         slop = ViewConfiguration.get(c).getScaledTouchSlop();
-        threshold = theme.dp(84);
-        rest = theme.dp(64);
-        indicator = new Indicator(c);
-        LayoutParams lp = new LayoutParams(theme.dp(32), theme.dp(32), Gravity.CENTER_HORIZONTAL | Gravity.TOP);
-        lp.topMargin = theme.dp(18);
+        threshold = theme.dp(96);
+        rest = theme.dp(78);
+        indicator = new FrameLayout(c);
+        indicator.setBackground(theme.round(theme.pc, 99));
+        indicator.setAlpha(0);
+        loader = new Shapes.Loader(c, theme.pri);
+        indicator.addView(loader, new LayoutParams(theme.dp(34), theme.dp(34), Gravity.CENTER));
+        LayoutParams lp = new LayoutParams(theme.dp(56), theme.dp(56), Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+        lp.topMargin = theme.dp(12);
         addView(indicator, lp);
         addView(list, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
     }
@@ -55,7 +52,7 @@ final class PullLayout extends FrameLayout {
     void done() {
         if (!refreshing) return;
         refreshing = false;
-        if (spin != null) spin.cancel();
+        loader.stop();
         animateTo(0);
     }
 
@@ -106,7 +103,7 @@ final class PullLayout extends FrameLayout {
                 if (offset >= threshold && listener != null) {
                     refreshing = true;
                     animateTo(rest);
-                    startSpin();
+                    loader.start();
                     listener.refresh();
                 } else {
                     animateTo(0);
@@ -120,9 +117,11 @@ final class PullLayout extends FrameLayout {
     private void setOffset(float v) {
         offset = v;
         list.setTranslationY(v);
-        indicator.progress = Math.min(1f, v / threshold);
+        float progress = Math.min(1f, v / threshold);
         indicator.setAlpha(Math.min(1f, v / (threshold * 0.4f)));
-        indicator.invalidate();
+        indicator.setScaleX(0.6f + 0.4f * progress);
+        indicator.setScaleY(0.6f + 0.4f * progress);
+        if (!refreshing) loader.setRotation(progress * 180);
     }
 
     private void animateTo(float target) {
@@ -131,47 +130,5 @@ final class PullLayout extends FrameLayout {
         a.setInterpolator(new DecelerateInterpolator());
         a.addUpdateListener(v -> setOffset((float) v.getAnimatedValue()));
         a.start();
-    }
-
-    private void startSpin() {
-        spin = ValueAnimator.ofFloat(0, 360);
-        spin.setDuration(900);
-        spin.setRepeatCount(ValueAnimator.INFINITE);
-        spin.setInterpolator(new LinearInterpolator());
-        spin.addUpdateListener(v -> indicator.setRotation((float) v.getAnimatedValue()));
-        spin.addListener(new android.animation.AnimatorListenerAdapter() {
-            @Override
-            public void onAnimationCancel(android.animation.Animator animation) {
-                indicator.setRotation(0);
-            }
-        });
-        spin.start();
-    }
-
-    /** 图标里的 C：开口朝右的圆环，进度到 1 时开口处出现朱砂点。 */
-    private final class Indicator extends View {
-        float progress;
-        private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF box = new RectF();
-
-        Indicator(Context c) {
-            super(c);
-            ring.setStyle(Paint.Style.STROKE);
-            ring.setStrokeCap(Paint.Cap.ROUND);
-            ring.setColor(theme.ink);
-            dot.setColor(Theme.CINNABAR);
-            setAlpha(0);
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            float w = getWidth(), stroke = w * 0.16f, r = w * 0.32f;
-            ring.setStrokeWidth(stroke);
-            box.set(w / 2 - r, w / 2 - r, w / 2 + r, w / 2 + r);
-            // 和图标一致：从右上 40° 开始逆时针画到右下，最多 280°
-            canvas.drawArc(box, -40, -280 * progress, false, ring);
-            if (progress >= 1f) canvas.drawCircle(w / 2 + r + stroke * 0.2f, w / 2, stroke * 0.62f, dot);
-        }
     }
 }
