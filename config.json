@@ -334,8 +334,7 @@
     "merge_top": 40
   },
   "push": {
-    "min_importance": 4,
-    "min_score": 1.5,
+    "min_importance": 3,
     "quiet_hours": [
       23,
       8

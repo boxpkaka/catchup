@@ -26,11 +26,14 @@ def ranked(config: Config, store: Store, now: datetime) -> tuple[list, list[Even
 
 
 def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = None, top: int | None = None) -> int:
-    """按当前记忆给前排事件写或重写简报（记忆变了的、有新报道的、还没有简报的）。"""
+    """按当前记忆给前排事件写或重写简报（记忆变了的、有新报道的、还没有简报的）。
+    不指定 top 时（每轮采集后）还包括排在后面但正热门的事件，见 brief.candidates。"""
     now = now or datetime.now(timezone.utc)
     _, events = ranked(config, store, now)
-    return brief.write_briefs(store, events, personal.focus(config, store, now), llm, build_sources(config.sources),
-                              now, top or config.llm.get("brief_top", 25), personal.memory_rev(store), brief.READ_WAIT)
+    sources = build_sources(config.sources)
+    pool = events[:top] if top else brief.candidates(events, config.llm.get("brief_top", 25), sources)
+    return brief.write_briefs(store, pool, personal.focus(config, store, now), llm, sources,
+                              now, len(pool), personal.memory_rev(store), brief.READ_WAIT)
 
 
 def update(config: Config, store: Store, now: datetime | None = None, llm=None, deliver: bool = True) -> dict:
@@ -44,7 +47,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     updates = []
     if llm:
         if stats["new_events"]:  # 每 10 分钟一轮，没有新事件时前排事件上一轮已经查过重复
-            stats["merged"] = brief.merge_duplicates(store, events, llm, sources, config.llm.get("merge_top", 40))
+            pool = brief.candidates(events, config.llm.get("merge_top", 40), sources)
+            stats["merged"] = brief.merge_duplicates(store, pool, llm, sources, len(pool))
         learned = personal.learn_from_feedback(config, store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
         stats["briefs"] = refresh_briefs(config, store, llm, now)

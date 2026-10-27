@@ -118,7 +118,7 @@ class PushTest(unittest.TestCase):
         brief.write_briefs(self.store, self.events, "关注语音", FakeLLM(), {}, NOW)
 
     def test_quiet_hours_pushed_and_feedback(self):
-        opts = {"min_score": 0}
+        opts = {}
         self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 5)  # 过了门槛的都推，不限条数
         self.assertEqual(push.select(opts, self.store, self.events, NOW.replace(hour=16)), [])  # 北京时间 0 点
         for e in self.events[:2]:
@@ -129,8 +129,8 @@ class PushTest(unittest.TestCase):
         self.assertNotIn(self.events[2].id, [e.id for e in picked])
 
     def test_low_importance_is_not_pushed(self):
-        self.store.con.execute("update briefs set importance = 3")
-        self.assertEqual(push.select({"min_score": 0}, self.store, self.events, NOW), [])
+        self.store.con.execute("update briefs set importance = 2")  # 边缘信息不推，一般动态就推
+        self.assertEqual(push.select({}, self.store, self.events, NOW), [])
 
     def test_deliver_records_only_successes(self):
         with mock.patch.dict("os.environ", {"FEED_URL": "http://hub/publish", "FEED_TOKEN": "t"}), \
@@ -371,7 +371,7 @@ class MorningDigestTest(unittest.TestCase):
         events = Ranker.from_config(INTERESTS, {}).rank(group_events(store.recent(NOW - timedelta(days=3), NOW)), NOW)
         brief.write_briefs(store, events, "", FakeLLM(), {}, NOW)
         at8 = NOW.replace(hour=0, minute=37)  # 北京时间 8:37
-        picked = push.select({"min_score": 0}, store, events, at8)
+        picked = push.select({}, store, events, at8)
         self.assertEqual(len(picked), 3)
         with mock.patch.dict("os.environ", {"FEED_URL": "u", "FEED_TOKEN": "t"}), \
                 mock.patch("catchup.http.post_json") as post:
@@ -429,7 +429,7 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertIn(r["event_id"], self.store.briefs([r["event_id"]]))
         self.assertEqual(self.call("POST", "/v1/shares", {"text": s.url})[1]["event_id"], r["event_id"])  # 再分享一次
         self.assertEqual([a[2] for a in self.store.actions(NOW - timedelta(days=1))], ["share", "share"])
-        picked = push.select({"min_score": 0, "min_importance": 0}, self.store, ranked(config(), self.store, NOW)[1], NOW)
+        picked = push.select({"min_importance": 0}, self.store, ranked(config(), self.store, NOW)[1], NOW)
         self.assertEqual([e.id for e in picked], [dessa])  # 自己分享的不会再推给自己
         self.assertEqual(self.call("POST", "/v1/shares", {"text": "没有链接"})[0], 400)
 
@@ -464,8 +464,14 @@ class AppApiMoreTest(unittest.TestCase):
         assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
         [s] = self.call("GET", "/v1/feed")[1]["skipped"]  # 和你有关的 Dessa 不在里面
         self.assertEqual((s["headline"], s["why"]), ("UK invests in biosecurity lab", "和你的关注无关"))
-        # 翻译之后，没写简报的标题和详情里的来源标题都显示中文；已经翻过的不再翻
         events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        # 排在简报范围之外但正热门的，也让模型判断重要性
+        self.assertEqual([e.lead.url for e in brief.candidates(events, 0, build_sources(SOURCES))], ["https://c/3"])
+        with mock.patch("catchup.web.app_api.FEED_LIMIT", 0):  # 推送过的一定在首页
+            self.assertEqual(self.call("GET", "/v1/feed")[1]["events"], [])
+            self.store.record_push(s["id"], NOW)
+            self.assertEqual([e["id"] for e in self.call("GET", "/v1/feed")[1]["events"]], [s["id"]])
+        # 翻译之后，没写简报的标题和详情里的来源标题都显示中文；已经翻过的不再翻
         self.assertEqual(translate.run(self.store, FakeLLM(), events), 2)
         self.assertEqual(translate.run(self.store, FakeLLM(), events), 0)
         [s] = self.call("GET", "/v1/feed")[1]["skipped"]
