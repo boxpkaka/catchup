@@ -213,13 +213,16 @@ final class Theme {
     }
 
     /**
-     * 浮在内容上面的按钮和工具栏的阴影。系统阴影有两层：四周均匀的一圈环境阴影边缘整齐，看起来像描边，去掉；
-     * 只留屏幕上方光源投下来的那层，下沿重、上沿轻，边缘是虚的。颜色带一点钴蓝，比纯黑柔和。
+     * 浮动按钮下面垫的渐隐底：内容滚到按钮下面时逐渐淡成底色，按钮落在干净的底色上，不用阴影也分得清层次
+     * （系统阴影在 vivo 上边缘整齐、像描边，看着假）。bottom 为 true 时贴底部，否则贴顶部；靠边的一半是实色。
      */
-    void lift(View v, float elevationDp) {
-        v.setElevation(dp(elevationDp));
-        v.setOutlineAmbientShadowColor(Color.TRANSPARENT);
-        v.setOutlineSpotShadowColor(night ? Color.BLACK : 0xFF1B1E3D);
+    View fade(Context c, boolean bottom) {
+        GradientDrawable g = new GradientDrawable(bottom ? GradientDrawable.Orientation.BOTTOM_TOP
+                : GradientDrawable.Orientation.TOP_BOTTOM, null);
+        g.setColors(new int[]{bg, bg, bg & 0x00FFFFFF}, new float[]{0f, 0.55f, 1f});
+        View v = new View(c);
+        v.setBackground(g);
+        return v;
     }
 
     /** 左上角圆形返回按钮。 */

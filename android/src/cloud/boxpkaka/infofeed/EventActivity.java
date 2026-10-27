@@ -93,9 +93,19 @@ public class EventActivity extends Activity {
         scroll.addView(page);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        // 按钮下面垫渐隐底，不用阴影：顶部的等话题色页头滚出去才出现，免得盖住页头
+        View topFade = t.fade(this, false);
+        topFade.setAlpha(0f);
+        FrameLayout.LayoutParams tfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(80));
+        root.addView(topFade, tfl);
+        View bottomFade = t.fade(this, true);
+        FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
+                Gravity.BOTTOM);
+        root.addView(bottomFade, bfl);
+        scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> topFade.setAlpha(
+                Math.max(0f, Math.min(1f, (y - head.getHeight() + topFade.getHeight()) / (float) t.dp(32)))));
 
         TextView back = t.backButton(this);
-        t.lift(back, 4);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(48), t.dp(48));
         bl.setMargins(t.dp(12), t.dp(10), 0, 0);
         root.addView(back, bl);
@@ -103,7 +113,6 @@ public class EventActivity extends Activity {
         follow = t.text(this, "", 14, t.ink, 800);
         follow.setGravity(Gravity.CENTER);
         follow.setPadding(t.dp(20), 0, t.dp(20), 0);
-        t.lift(follow, 4);
         t.press(follow, t.sheet, 99);
         follow.setOnClickListener(v -> toggleFollow());
         FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(48),
@@ -117,7 +126,6 @@ public class EventActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
         bar.setBackground(t.round(t.inv, 99));
-        t.lift(bar, 8);
         useful = action("有用", v -> toggleUseful());
         bar.addView(useful, weight());
         LinearLayout.LayoutParams gap = weight();
@@ -127,7 +135,6 @@ public class EventActivity extends Activity {
         TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
         ask.setGravity(Gravity.CENTER);
         t.press(ask, t.lime, Theme.R_L);
-        t.lift(ask, 8);
         ask.setOnClickListener(v -> openChat(null));
         LinearLayout.LayoutParams askLp = new LinearLayout.LayoutParams(t.dp(104), t.dp(64));
         askLp.leftMargin = t.dp(10);
@@ -146,6 +153,10 @@ public class EventActivity extends Activity {
                 fl.topMargin = bars.top + t.dp(10);
                 follow.setLayoutParams(fl);
                 head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
+                tfl.height = bars.top + t.dp(72);
+                topFade.setLayoutParams(tfl);
+                bfl.height = bars.bottom + t.dp(132);
+                bottomFade.setLayoutParams(bfl);
                 page.setPadding(0, 0, 0, bars.bottom + t.dp(120));
                 al.bottomMargin = bars.bottom + t.dp(16);
                 actions.setLayoutParams(al);
