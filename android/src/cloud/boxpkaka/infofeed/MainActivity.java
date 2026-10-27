@@ -297,7 +297,7 @@ public class MainActivity extends Activity {
         undoBar.setOrientation(LinearLayout.VERTICAL);
         undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
         undoBar.setBackground(t.round(t.inv, Theme.R_XL));
-        undoBar.setElevation(t.dp(6));
+        t.lift(undoBar, 8);
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
         undoLabel = t.text(this, "", 14, t.onInv, 600);
