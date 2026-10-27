@@ -36,6 +36,7 @@ public class FeedService extends Service {
     private static final int FG_ID = 1;
     private static final String EVENT_LINK = "catchup://event/";
     private static final String THREAD_LINK = "catchup://thread/";
+    private static final String REPORT_LINK = "catchup://report/";
     // App 被系统关掉期间漏掉的推送，重连补到时这个时间内的照样弹通知；更早的只在首页标出
     private static final long NOTIFY_MAX_AGE_MS = 12 * 3600_000;
 
@@ -210,6 +211,9 @@ public class FeedService extends Service {
             } else if (click.startsWith(THREAD_LINK)) { // 你问过的问题有答案了：回到原来的对话
                 open = new Intent(this, ChatActivity.class)
                         .putExtra(ChatActivity.EXTRA_THREAD, Long.parseLong(click.substring(THREAD_LINK.length())));
+            } else if (click.startsWith(REPORT_LINK)) { // 周报、月报：进首页的报告页，显示这一份
+                open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        .putExtra(MainActivity.EXTRA_REPORT, click.substring(REPORT_LINK.length()));
             } else if (click.isEmpty() || "null".equals(click) || click.startsWith("catchup://")) {
                 open = new Intent(this, MainActivity.class);
             } else {

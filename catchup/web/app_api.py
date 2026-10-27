@@ -17,15 +17,14 @@ from .. import chat, personal, share
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
-from ..pipeline import push, translate
-from ..pipeline.brief import final_score, hot
+from ..pipeline import push, reports, translate
+from ..pipeline.brief import candidates, final_score, hot
 from ..pipeline.events import group_events
 from ..pipeline.update import ranked
 from ..sources import Source, build_sources, source_of
 from ..store import Store
 from ..util import parse_time, to_iso
 
-FEED_LIMIT = 80
 MAX_PENDING_DEVICES = 10
 # 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS）；在“替你略过的”里点“想看这类”是 useful + topic
 FEEDBACK_REASONS = {"not_needed": {None, *personal.REASONS}, "useful": {None, "topic"}, None: {None}}
@@ -51,7 +50,10 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
     store.touch_device(device["id"], now)
 
     if method == "GET" and path == "/v1/feed":
-        return 200, feed(config, store, now)
+        return 200, feed(config, store, now, parse_time((query or {}).get("before")))
+    if method == "GET" and (m := re.fullmatch(r"/v1/reports/(daily|weekly|monthly)(?:/([\d-]+))?", path)):
+        out = report(config, store, m.group(1), m.group(2), now)
+        return (200, out) if out else (404, {"error": "not found"})
     if method == "GET" and path == "/v1/dismissed":
         return 200, {"events": dismissed(store, now)}
     if method == "POST" and path == "/v1/chat":
@@ -164,23 +166,35 @@ def dismissed(store: Store, now: datetime) -> list[dict]:
     return out
 
 
-def feed(config: Config, store: Store, now: datetime) -> dict:
+def feed(config: Config, store: Store, now: datetime, before: datetime | None = None) -> dict:
+    """信息流：模型判定为新闻（重要性够推送门槛）的事件和推送过的事件，按见报时间从新到旧。还没写简报的前排和热门事件
+    先显示，写完简报再按重要性决定去留。一页是一个时间窗（window_hours）里见报的事件，before 为空时是最新一页，
+    older 是下一页的 before，到开始采集为止；追踪中、未追踪信息只在第一页。"""
     sources = build_sources(config.sources)
-    _, events = ranked(config, store, now)
+    until = before or now
+    since = until - timedelta(hours=config.ranking.get("window_hours", 72))
+    _, events = ranked(config, store, until)
     briefs, feedback, pushed = store.briefs(e.id for e in events), store.feedback(), store.pushed()
     follows = {f["event_id"]: f for f in store.follows()}
-    events = [e for e in events if feedback.get(e.id) != "not_needed"]
-    events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
+    bar = config.push.get("min_importance", push.DEFAULTS["min_importance"])
+    pending = {e.id for e in candidates(events, config.llm.get("brief_top", 25), sources) if e.id not in briefs}
+    published = store.event_published(e.id for e in events)
     zh = _zh(store, [t for e in events if e.id not in briefs
                      for t in (e.lead.title, e.lead.summary[:translate.SUMMARY_CHARS])])
-    passed = skipped(events, briefs, feedback, sources, zh,
-                     config.push.get("min_importance", push.DEFAULTS["min_importance"]))
-    events = [e for i, e in enumerate(events) if i < FEED_LIMIT or e.id in pushed]  # 推送过的一定在首页，方便划掉
-    created = store.event_created(e.id for e in events)
-    out = [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, zh,
-                  e.id in follows) for e in events]
-    return {"generated": to_iso(now), "events": out, "following": following(config, store, follows, now),
-            "answers": answers(store, now), "skipped": passed, "personalize": personal.personalized(store)}
+    shown = [e for e in events if feedback.get(e.id) != "not_needed" and since <= published[e.id] < until
+             and (e.id in pushed or e.id in pending or briefs.get(e.id, {}).get("importance", 0) >= bar)]
+    shown.sort(key=lambda e: published[e.id], reverse=True)
+    created = store.event_created(e.id for e in shown)
+    started = store.first_fetched()
+    out = {"generated": to_iso(now),
+           "events": [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, zh,
+                             e.id in follows) for e in shown],
+           "older": to_iso(since) if started and since > started else None}
+    if before is None:
+        events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
+        out.update(following=following(config, store, follows, now), answers=answers(store, now),
+                   skipped=skipped(events, briefs, feedback, sources, zh, bar), personalize=personal.personalized(store))
+    return out
 
 
 def skipped(events: list[Event], briefs: dict, feedback: dict, sources, zh, min_importance: int) -> list[dict]:
@@ -266,7 +280,7 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
         "topics": e.topics,
         "reasons": e.reasons,
         "url": lead.url,
-        "time": to_iso(max(s.published for s in e.signals)),
+        "time": to_iso(min(s.published for s in e.signals)),  # 见报时间，信息流按它排
         "first_seen": to_iso(created),
         "source_count": len(e.signals),
         "sources": list(dict.fromkeys(_label(s, sources) for s in e.signals))[:6],
@@ -276,6 +290,39 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
         "pushed_at": pushed_at,  # App 把离开期间推送过的事件也算作新的
         "following": following,
     }
+
+
+def report(config: Config, store: Store, kind: str, period: str | None, now: datetime) -> dict | None:
+    """一份报告，period 为空时是最新一份；还没有这类报告时 period 为空，upcoming 是第一份出来的日期。
+    要点、趋势里的事件和分领域的条目都带上事件标题，App 点开进详情。"""
+    periods = store.report_periods(kind)
+    period = period or (periods[0] if periods else None)
+    out = {"kind": kind, "name": reports.KINDS[kind], "period": period}
+    if period is None:
+        today = reports.local_now(config.push, now).date()
+        first = reports.end(kind, reports.current(kind, today))
+        return {**out, "upcoming": f"{first.month}月{first.day}日"}
+    r = store.report(kind, period)
+    if r is None:
+        return None
+    c = r["content"]
+    ids = {i for key in ("highlights", "trends", "ongoing") for x in c.get(key, []) for i in x["events"]}
+    ids |= {item["event"] for s in c["sections"] for item in s["items"]}
+    briefs = store.briefs(ids)
+
+    def refs(ids):
+        return [{"id": i, "headline": briefs[i]["headline"]} for i in ids if i in briefs]
+
+    def notes(key):
+        return [{"text": x["text"], "events": refs(x["events"])} for x in c.get(key, [])]
+
+    i = periods.index(period)
+    return {**out, "label": reports.label(kind, reports.start_of(kind, period)),
+            "highlights": notes("highlights"), "trends": notes("trends"), "ongoing": notes("ongoing"),
+            "sections": [{"name": s["name"], "items": [{"id": item["event"], "headline": briefs[item["event"]]["headline"],
+                                                        "text": item["text"]} for item in s["items"] if item["event"] in briefs]}
+                         for s in c["sections"]],
+            "prev": periods[i + 1] if i + 1 < len(periods) else None, "next": periods[i - 1] if i > 0 else None}
 
 
 def _zh(store: Store, texts: list[str]):

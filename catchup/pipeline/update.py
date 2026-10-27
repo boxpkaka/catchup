@@ -1,4 +1,5 @@
-"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、写简报 → 追踪进展 → 从反馈学习 → 推送。
+"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、写简报 → 追踪进展 → 从反馈学习 → 推送
+→ 写到期的日报、周报、月报 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
 """
@@ -13,7 +14,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import answers, brief, follow, push, translate
+from . import answers, brief, follow, push, reports, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0, "translated": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0, "reports": 0, "translated": 0}
     _, events = ranked(config, store, now)
     updates = []
     if llm:
@@ -60,7 +61,9 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["pushed"] = push.deliver(store, push.select(config.push, store, events, now), now, config.push)
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)
-    if llm:  # 放在推送之后，翻译慢不耽误推送
+        reports.deliver(config.push, store, now)
+    if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报下一轮推送
+        stats["reports"] = len(reports.run(config, store, llm, now))
         stats["translated"] = translate.run(store, llm, events)
     log.info("update: %s", stats)
     return stats

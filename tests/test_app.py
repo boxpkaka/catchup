@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,7 @@ from unittest import mock
 
 from catchup.config import Config
 from catchup.models import Signal
-from catchup.pipeline import brief, push, translate
+from catchup.pipeline import brief, push, reports, translate
 from catchup.pipeline.events import assign_events, group_events
 from catchup.pipeline.ranking import Ranker
 from catchup.sources import build_sources
@@ -35,6 +36,10 @@ class FakeLLM:
     def json(self, system, user, max_tokens=800):
         self.calls += 1
         self.prompts.append(user)
+        if "的编辑，给一名 AI 从业者写" in system:  # 日报、周报、月报
+            first = re.findall(r"\[E(\d+)\]", user)[0]
+            return {"highlights": [{"text": "Block 发布 Dessa", "events": [first]}], "trends": [], "ongoing": [],
+                    "sections": [{"name": "AI 语音", "items": [{"event": f"E{first}", "text": "只用语音训练"}]}]}
         if "分组" in system:
             return {"groups": self.groups}
         if system.startswith("为下面这条"):
@@ -467,10 +472,6 @@ class AppApiMoreTest(unittest.TestCase):
         events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
         # 排在简报范围之外但正热门的，也让模型判断重要性
         self.assertEqual([e.lead.url for e in brief.candidates(events, 0, build_sources(SOURCES))], ["https://c/3"])
-        with mock.patch("catchup.web.app_api.FEED_LIMIT", 0):  # 推送过的一定在首页
-            self.assertEqual(self.call("GET", "/v1/feed")[1]["events"], [])
-            self.store.record_push(s["id"], NOW)
-            self.assertEqual([e["id"] for e in self.call("GET", "/v1/feed")[1]["events"]], [s["id"]])
         # 翻译之后，没写简报的标题和详情里的来源标题都显示中文；已经翻过的不再翻
         self.assertEqual(translate.run(self.store, FakeLLM(), events), 2)
         self.assertEqual(translate.run(self.store, FakeLLM(), events), 0)
@@ -480,6 +481,20 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual((detail["headline"], detail["signals"][0]["title"]),
                          ("译：UK invests in biosecurity lab", "译：UK invests in biosecurity lab"))
 
+    def test_feed_is_a_timeline_of_news(self):
+        self.store.add([Signal(url="https://c/3", title="UK invests in biosecurity lab", source="news", heat=1.5,
+                               published=NOW - timedelta(hours=2))], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        [dessa] = self.call("GET", "/v1/feed")[1]["events"][:1]
+        uk = next(e for e in group_events(self.store.recent(NOW - timedelta(days=3), NOW)) if e.lead.url == "https://c/3")
+        ids = lambda **q: [e["id"] for e in self.call("GET", "/v1/feed", query=q)[1]["events"]]
+        self.assertEqual(ids(), [dessa["id"], uk.id])  # 按见报时间从新到旧；还没写简报的前排事件先显示
+        self.assertEqual(ids(before=to_iso(NOW - timedelta(minutes=90))), [uk.id])  # 往前翻页
+        brief.write_briefs(self.store, [uk], "", FakeLLM(importance=2), {}, NOW)
+        self.assertEqual(ids(), [dessa["id"]])  # 判定为边缘信息的不显示
+        self.store.record_push(uk.id, NOW)
+        self.assertEqual(ids(), [dessa["id"], uk.id])  # 推送过的一定在信息流里，方便划掉
+
     def test_follow_rating_and_detail(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
         self.call("POST", f"/v1/events/{eid}/follow", {"on": True})
@@ -488,3 +503,30 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual((feed["following"][0]["id"], feed["events"][0]["following"]), (eid, True))
         detail = self.call("GET", f"/v1/events/{eid}")[1]
         self.assertEqual((detail["would_miss"], detail["questions"][0], detail["thread"]), (True, "能本地跑吗？", None))
+
+
+class ReportsTest(unittest.TestCase):
+    def test_daily_then_weekly_pushed_once(self):
+        store = Store(":memory:")
+        store.add([sig("https://a/1", "Block unveils Dessa voice model", hours_ago=20)], now=NOW - timedelta(hours=20))
+        assign_events(store, store.recent(NOW - timedelta(days=3), NOW), NOW)
+        brief.write_briefs(store, group_events(store.recent(NOW - timedelta(days=3), NOW)), "", FakeLLM(), {}, NOW)
+        llm = FakeLLM()
+        self.assertEqual(reports.run(config(), store, llm, NOW.replace(day=23, hour=20)), [])  # 北京时间 4 点还不写
+        self.assertEqual(reports.run(config(), store, llm, NOW), ["daily:2026-10-23"])  # 10月24日中午写昨天的日报
+        self.assertEqual(reports.run(config(), store, llm, NOW), [])
+        monday = NOW + timedelta(days=2)  # 10月26日周一中午：写上周的周报；九月还没开始采集，不写月报
+        self.assertEqual(reports.run(config(), store, llm, monday), ["weekly:2026-10-19"])
+        with mock.patch.dict("os.environ", {"FEED_URL": "u", "FEED_TOKEN": "t"}), \
+                mock.patch("catchup.http.post_json") as post:
+            self.assertEqual(reports.deliver({}, store, monday), 1)  # 只推周报，日报不推
+            self.assertEqual(reports.deliver({}, store, monday), 0)
+        self.assertEqual(post.call_args.args[1]["title"], "周报 · 10月19日–25日")
+        self.assertEqual(post.call_args.args[1]["click"], "catchup://report/weekly/2026-10-19")
+        week = app_api.report(config(), store, "weekly", None, monday)
+        self.assertEqual((week["label"], week["highlights"][0]["events"][0]["headline"], week["prev"]),
+                         ("10月19日–25日", "Block 发布语音模型 Dessa", None))
+        self.assertIn("10月23日 周五的日报", llm.prompts[-1])  # 周报由日报汇总
+        self.assertEqual(app_api.report(config(), store, "daily", "2026-10-23", monday)["sections"][0]["items"][0]["text"],
+                         "只用语音训练")
+        self.assertEqual(app_api.report(config(), store, "monthly", None, monday)["upcoming"], "11月1日")

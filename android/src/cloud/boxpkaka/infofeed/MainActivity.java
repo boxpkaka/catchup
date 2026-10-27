@@ -55,13 +55,14 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 首页：“未追踪信息”入口，下面依次是追踪中、值得知道的事件卡（按话题上色）和其余动态。
- * 下拉刷新，左滑标记不需要（可撤销），点开看详情。
+ * 首页，分“信息流”和“报告”两页。信息流按见报时间从新到旧、按天分组：重要性 4 以上的是按话题上色的事件卡，
+ * 其余是紧凑行；最上面是“未追踪信息”入口和追踪中，滑到底继续加载更早的。下拉刷新，左滑标记不需要（可撤销），点开看详情。
+ * 报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
-    private static final int MAX_HIGHLIGHTS = 8;
-    private static final int MAX_OTHERS = 40;
+    static final String EXTRA_REPORT = "report"; // 如 weekly/2026-10-19，见 FeedService
     private static final long REFETCH_MS = 30_000;
+    private static final long OLDER_RETRY_MS = 10_000;
     private static final long UNDO_MS = 6000;
     /** “不需要”的原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。 */
     private static final String[][] REASONS = {
@@ -103,6 +104,13 @@ public class MainActivity extends Activity {
     private final Runnable commitDismiss = () -> commitDismiss(null);
     private final Runnable hideUndoLater = this::hideUndo;
     private Updater.Release release;
+    private TextView tabFeed, tabReport;
+    private ReportView reports;
+    private boolean reportTab;
+    private final List<JSONObject> olderEvents = new ArrayList<>(); // 往前翻页加载的，接在第一页后面
+    private String olderCursor; // 下一页的 before，到开始采集为止
+    private boolean loadingOlder;
+    private long olderRetryAt;
 
     private static final class Row {
         final int type; // 0 分组标题，1 事件卡，2 紧凑行
@@ -132,6 +140,7 @@ public class MainActivity extends Activity {
         t.applyWindow(this);
         setContentView(build());
         feed = Store.loadFeed(this);
+        olderCursor = cursor(feed);
         seenAtOpen = Store.seenAt(this);
         render();
         if (Build.VERSION.SDK_INT >= 33
@@ -140,12 +149,20 @@ public class MainActivity extends Activity {
         }
         FeedService.start(this);
         onInstallResult(getIntent());
+        openReport(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         onInstallResult(intent);
+        openReport(intent);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (reportTab) selectTab(false);
+        else super.onBackPressed();
     }
 
     @Override
@@ -224,6 +241,7 @@ public class MainActivity extends Activity {
         ml.leftMargin = t.dp(4);
         topBar.addView(menu, ml);
         column.addView(topBar);
+        column.addView(buildTabs());
         topDivider = new View(this);
         topDivider.setBackgroundColor(t.hi);
         topDivider.setAlpha(0);
@@ -247,11 +265,17 @@ public class MainActivity extends Activity {
             public void onScroll(AbsListView v, int first, int visible, int total) {
                 boolean scrolled = first > 0 || (v.getChildCount() > 0 && v.getChildAt(0).getTop() < 0);
                 topDivider.setAlpha(scrolled ? 1f : 0f);
+                if (total > 0 && first + visible >= total - 4) loadOlder();
             }
         });
         pull = new PullLayout(this, t, list);
         pull.setOnRefresh(this::load);
-        column.addView(pull, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        FrameLayout content = new FrameLayout(this);
+        content.addView(pull, match());
+        reports = new ReportView(this, t, this::openEvent);
+        reports.setVisibility(View.GONE);
+        content.addView(reports, match());
+        column.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         skeleton = buildSkeleton();
         root.addView(skeleton, match());
@@ -312,12 +336,66 @@ public class MainActivity extends Activity {
                 topBar.setPadding(t.dp(20), bars.top + t.dp(10), t.dp(10), t.dp(6));
                 skeleton.setPadding(0, bars.top + t.dp(60), 0, 0);
                 list.setPadding(0, 0, 0, bars.bottom + t.dp(96));
+                reports.setBottomInset(bars.bottom + t.dp(96));
                 ub.bottomMargin = bars.bottom + t.dp(16);
                 undoBar.setLayoutParams(ub);
                 return WindowInsets.CONSUMED;
             });
         }
         return root;
+    }
+
+    /** 信息流 / 报告：顶栏下面两个胶囊标签，选中的是主色容器。 */
+    private View buildTabs() {
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setPadding(t.dp(16), t.dp(2), t.dp(16), t.dp(8));
+        tabs.setBackgroundColor(t.bg);
+        tabFeed = tab("信息流", false);
+        tabReport = tab("报告", true);
+        tabs.addView(tabFeed, gapLp(6));
+        tabs.addView(tabReport);
+        styleTabs();
+        return tabs;
+    }
+
+    private TextView tab(String label, boolean report) {
+        TextView v = t.text(this, label, 15, t.ink, 800);
+        v.setPadding(t.dp(18), t.dp(8), t.dp(18), t.dp(8));
+        v.setOnClickListener(x -> selectTab(report));
+        return v;
+    }
+
+    private void styleTabs() {
+        for (TextView v : new TextView[]{tabFeed, tabReport}) {
+            boolean on = (v == tabReport) == reportTab;
+            v.setTextColor(on ? t.onPc : t.sub);
+            v.setBackground(t.ripple(on ? t.pc : Color.TRANSPARENT, 99));
+        }
+    }
+
+    private void selectTab(boolean report) {
+        if (report != reportTab) Trace.log(this, "ui.tab", report ? "report" : "feed");
+        reportTab = report;
+        styleTabs();
+        pull.setVisibility(report ? View.GONE : View.VISIBLE);
+        reports.setVisibility(report ? View.VISIBLE : View.GONE);
+        topDivider.setAlpha(0f);
+        if (report) reports.showIfEmpty();
+    }
+
+    /** 推送的周报、月报点开：进报告页并显示那一份。 */
+    private void openReport(Intent intent) {
+        String r = intent == null ? null : intent.getStringExtra(EXTRA_REPORT);
+        if (r == null) return;
+        intent.removeExtra(EXTRA_REPORT); // 转屏重建时不再重复打开
+        String[] parts = r.split("/", 2);
+        selectTab(true);
+        reports.show(parts[0], parts.length > 1 ? parts[1] : null);
+    }
+
+    private void openEvent(long id) {
+        startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+        overridePendingTransition(R.anim.enter_up, R.anim.hold);
     }
 
     private View buildHeader() {
@@ -441,6 +519,8 @@ public class MainActivity extends Activity {
                 if (got != null) {
                     lastFetch = System.currentTimeMillis();
                     feed = got;
+                    olderEvents.clear(); // 刷新后从第一页重新开始
+                    olderCursor = cursor(got);
                     hidden.clear();
                     if (pendingDismiss >= 0) hidden.add(pendingDismiss);
                     updateStatusChip(); // 清掉“刷新失败”，只保留推送连接的状态
@@ -450,6 +530,39 @@ public class MainActivity extends Activity {
                 }
             });
         }, "feed-load").start();
+    }
+
+    /** 滑到底时加载更早的一页，接在后面；失败的话隔一会儿再试，不跟着每次滚动重复请求。 */
+    private void loadOlder() {
+        if (loadingOlder || olderCursor == null || System.currentTimeMillis() < olderRetryAt) return;
+        loadingOlder = true;
+        String before = olderCursor;
+        new Thread(() -> {
+            JSONObject page = null;
+            try {
+                page = Api.get(this, "/v1/feed?before=" + Uri.encode(before));
+            } catch (Exception e) {
+                Trace.log(this, "feed.older.fail", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            JSONObject got = page;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                loadingOlder = false;
+                if (got == null) {
+                    olderRetryAt = System.currentTimeMillis() + OLDER_RETRY_MS;
+                    return;
+                }
+                if (!before.equals(olderCursor)) return; // 期间刷新过，这一页作废
+                JSONArray events = got.optJSONArray("events");
+                for (int i = 0; events != null && i < events.length(); i++) olderEvents.add(events.optJSONObject(i));
+                olderCursor = cursor(got);
+                render();
+            });
+        }, "feed-older").start();
+    }
+
+    private static String cursor(JSONObject page) {
+        return page == null || page.isNull("older") ? null : page.optString("older", null);
     }
 
     private void onLoadFailed(Exception e, int pendingDevice) {
@@ -512,18 +625,10 @@ public class MainActivity extends Activity {
         if (feed == null) return;
         stopSkeleton();
         stateView.setVisibility(View.GONE);
-        JSONArray all = feed.optJSONArray("events");
-        List<JSONObject> highlights = new ArrayList<>(), others = new ArrayList<>();
-        for (int i = 0; all != null && i < all.length(); i++) {
-            JSONObject e = all.optJSONObject(i);
-            if (e == null || hidden.contains(e.optLong("id"))) continue;
-            if (e.optBoolean("highlight") && highlights.size() < MAX_HIGHLIGHTS) {
-                highlights.add(e);
-            } else if (others.size() < MAX_OTHERS) {
-                others.add(e);
-            }
-        }
-        others.sort((a, b) -> Long.compare(Theme.millis(b.optString("time")), Theme.millis(a.optString("time"))));
+        List<JSONObject> events = new ArrayList<>();
+        JSONArray first = feed.optJSONArray("events");
+        for (int i = 0; first != null && i < first.length(); i++) events.add(first.optJSONObject(i));
+        events.addAll(olderEvents);
 
         JSONArray skipped = feed.optJSONArray("skipped");
         skippedLine.setText("未追踪信息 ›");
@@ -535,10 +640,13 @@ public class MainActivity extends Activity {
         if (followCount + answerCount > 0) rows.add(new Row(0, "追踪中", null));
         for (int i = 0; i < answerCount; i++) rows.add(new Row(3, ANSWER, answers.optJSONObject(i)));
         for (int i = 0; i < followCount; i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
-        if (!highlights.isEmpty()) rows.add(new Row(0, "值得知道", null));
-        for (JSONObject e : highlights) rows.add(new Row(1, null, e));
-        if (!others.isEmpty()) rows.add(new Row(0, "其他动态", null));
-        for (JSONObject e : others) rows.add(new Row(2, null, e));
+        String day = null;
+        for (JSONObject e : events) { // 服务器已按见报时间从新到旧排好
+            if (e == null || hidden.contains(e.optLong("id"))) continue;
+            String d = dayLabel(Theme.millis(e.optString("time")));
+            if (!d.equals(day)) rows.add(new Row(0, day = d, null));
+            rows.add(new Row(e.optInt("importance") >= 4 ? 1 : 2, null, e));
+        }
         adapter.notifyDataSetChanged();
     }
 
@@ -627,7 +735,7 @@ public class MainActivity extends Activity {
             if (convert == null) convert = r.type == 1 ? newCard() : newRow();
             Holder h = (Holder) convert.getTag();
             SwipeDismiss.reset(h.front, h.behind);
-            if (r.type == 1) bindCard(h, r.e, first);
+            if (r.type == 1) bindCard(h, r.e, r.e.optInt("importance") >= 5);
             else bindRow(h, r.e, first, last);
             h.front.setOnClickListener(v -> open(v, r.e));
             h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
@@ -662,7 +770,7 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 值得知道的事件卡：底色取话题色，右上角的形状是重要性。 */
+    /** 重要事件的卡片：底色取话题色，右上角的形状是重要性。 */
     private View newCard() {
         Holder h = new Holder();
         LinearLayout card = new LinearLayout(this);
@@ -708,7 +816,7 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 其他动态：分段列表里的一行，左边是时间，离开期间出现的时间用主色。 */
+    /** 其余事件：分段列表里的一行，左边是时间，离开期间出现的时间用主色。 */
     private View newRow() {
         Holder h = new Holder();
         LinearLayout row = new LinearLayout(this);
@@ -819,7 +927,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** big 是“值得知道”的第一张：标题更大，概要多显示一行。 */
+    /** big 是重要性 5 的大事：标题更大，概要多显示一行。 */
     private void bindCard(Holder h, JSONObject e, boolean big) {
         JSONArray topics = e.optJSONArray("topics");
         int[] c = t.topic(topics);
@@ -839,7 +947,7 @@ public class MainActivity extends Activity {
         h.headline.setText(e.optString("headline"));
         h.summary.setMaxLines(big ? 4 : 3);
         show(h.summary, e.optString("summary"));
-        h.meta.setText(e.optInt("source_count") + " 个来源   " + Theme.ago(Theme.millis(e.optString("time")))
+        h.meta.setText(clock(Theme.millis(e.optString("time"))) + "   " + e.optInt("source_count") + " 个来源"
                 + (e.optBoolean("pushed") ? "   已推送" : ""));
     }
 
@@ -847,7 +955,7 @@ public class MainActivity extends Activity {
         h.front.setBackground(t.segment(t.sheet, first, last));
         float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
         h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
-        h.time.setText(shortTime(Theme.millis(e.optString("time"))));
+        h.time.setText(clock(Theme.millis(e.optString("time"))));
         h.time.setTextColor(isNew(e) ? t.pri : t.sub);
         h.headline.setText(e.optString("headline"));
         show(h.summary, e.optString("summary"));
@@ -857,17 +965,21 @@ public class MainActivity extends Activity {
         h.meta.setText((n > 1 ? lead + " 等 " + n + " 个来源" : lead) + (e.optBoolean("pushed") ? " · 已推送" : ""));
     }
 
-    private static String shortTime(long ms) {
+    private static String clock(long ms) {
+        return new SimpleDateFormat("HH:mm", Locale.CHINA).format(new Date(ms));
+    }
+
+    /** 信息流按天分组的标题：今天、昨天，更早的写日期和星期。 */
+    private static String dayLabel(long ms) {
         Calendar today = Calendar.getInstance();
         today.set(Calendar.HOUR_OF_DAY, 0);
         today.set(Calendar.MINUTE, 0);
         today.set(Calendar.SECOND, 0);
         today.set(Calendar.MILLISECOND, 0);
         long start = today.getTimeInMillis();
-        Date d = new Date(ms);
-        if (ms >= start) return new SimpleDateFormat("HH:mm", Locale.CHINA).format(d);
+        if (ms >= start) return "今天";
         if (ms >= start - 86400_000L) return "昨天";
-        return new SimpleDateFormat("M/d", Locale.CHINA).format(d);
+        return new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
     }
 
     private TextView chip() {
