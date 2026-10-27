@@ -73,6 +73,10 @@ public class MemoryActivity extends Activity {
         scroll.addView(body);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        View bottomFade = t.fade(this, true); // 底部按钮下面垫渐隐底，不用阴影
+        FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
+                Gravity.BOTTOM);
+        root.addView(bottomFade, bfl);
 
         TextView back = t.backButton(this);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(44), t.dp(44));
@@ -84,13 +88,11 @@ public class MemoryActivity extends Activity {
         TextView add = t.text(this, "添加一条", 14, t.onInv, 700);
         add.setGravity(Gravity.CENTER);
         t.press(add, t.inv, 99);
-        t.lift(add, 8);
         add.setOnClickListener(v -> editor(null));
         actions.addView(add, new LinearLayout.LayoutParams(0, t.dp(60), 1));
         TextView miss = t.text(this, "报告漏报", 15, t.onLime, 800);
         miss.setGravity(Gravity.CENTER);
         t.press(miss, t.lime, Theme.R_L);
-        t.lift(miss, 8);
         miss.setOnClickListener(v -> reportMiss());
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(120), t.dp(64));
         ml.leftMargin = t.dp(10);
@@ -108,6 +110,8 @@ public class MemoryActivity extends Activity {
                 body.setPadding(t.dp(12), bars.top + t.dp(72), t.dp(12), bars.bottom + t.dp(120));
                 al.bottomMargin = bars.bottom + t.dp(16);
                 actions.setLayoutParams(al);
+                bfl.height = bars.bottom + t.dp(132);
+                bottomFade.setLayoutParams(bfl);
                 return WindowInsets.CONSUMED;
             });
         }

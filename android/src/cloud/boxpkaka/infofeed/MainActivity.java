@@ -18,6 +18,7 @@ import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -55,8 +56,9 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 首页，分“信息流”和“报告”两页。信息流按见报时间从新到旧、按天分组：重要性 4 以上的是按话题上色的事件卡，
- * 其余是紧凑行；最上面是“未追踪信息”入口和追踪中，滑到底继续加载更早的。下拉刷新，左滑标记不需要（可撤销），点开看详情。
+ * 首页，分“信息流”和“报告”两页。信息流按见报时间从新到旧、按天分组，每条都是同样的一行；重点只靠字重和标记区分
+ * （重要性 4 以上标题加粗，5 加“要闻”），话题色只是来源前的小圆点。最上面是“未追踪信息”入口和追踪中，
+ * 滑到底继续加载更早的。下拉刷新，左滑标记不需要（可撤销），点开看详情。
  * 报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
@@ -119,7 +121,7 @@ public class MainActivity extends Activity {
     private long olderRetryAt;
 
     private static final class Row {
-        final int type; // 0 分组标题，1 事件卡，2 紧凑行
+        final int type; // 0 分组标题，1 事件，2 追踪中（追踪的事件和有了答案的问题）
         final String label;
         final JSONObject e;
 
@@ -297,7 +299,6 @@ public class MainActivity extends Activity {
         undoBar.setOrientation(LinearLayout.VERTICAL);
         undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
         undoBar.setBackground(t.round(t.inv, Theme.R_XL));
-        t.lift(undoBar, 8);
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
         undoLabel = t.text(this, "", 14, t.onInv, 600);
@@ -470,7 +471,7 @@ public class MainActivity extends Activity {
         return header;
     }
 
-    /** 首次加载的骨架屏：形状和真实布局一致（入口胶囊、追踪中一组、事件卡），中间是加载指示器。 */
+    /** 首次加载的骨架屏：形状和真实布局一致（入口胶囊、追踪中一组、一天的事件），中间是加载指示器。 */
     private View buildSkeleton() {
         FrameLayout s = new FrameLayout(this);
         s.setBackgroundColor(t.bg);
@@ -479,8 +480,7 @@ public class MainActivity extends Activity {
         blocks.setOrientation(LinearLayout.VERTICAL);
         blocks.addView(block(128, 40, 99, 8));
         blocks.addView(block(-1, 136, Theme.R_XL, 52));
-        blocks.addView(block(-1, 220, Theme.R_2XL, 62));
-        blocks.addView(block(-1, 150, Theme.R_2XL, 12));
+        for (int i = 0; i < 3; i++) blocks.addView(block(-1, 112, i == 0 ? Theme.R_XL : Theme.R_XS, i == 0 ? 62 : 3));
         s.addView(blocks, match());
         skeletonLoader = new Shapes.Loader(this, t.pri);
         skeletonLoader.setPadding(t.dp(11), t.dp(11), t.dp(11), t.dp(11));
@@ -653,14 +653,14 @@ public class MainActivity extends Activity {
         JSONArray follows = feed.optJSONArray("following"), answers = feed.optJSONArray("answers");
         int followCount = follows == null ? 0 : follows.length(), answerCount = answers == null ? 0 : answers.length();
         if (followCount + answerCount > 0) rows.add(new Row(0, "追踪中", null));
-        for (int i = 0; i < answerCount; i++) rows.add(new Row(3, ANSWER, answers.optJSONObject(i)));
-        for (int i = 0; i < followCount; i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
+        for (int i = 0; i < answerCount; i++) rows.add(new Row(2, ANSWER, answers.optJSONObject(i)));
+        for (int i = 0; i < followCount; i++) rows.add(new Row(2, null, follows.optJSONObject(i)));
         String day = null;
         for (JSONObject e : events) { // 服务器已按见报时间从新到旧排好
             if (e == null || hidden.contains(e.optLong("id"))) continue;
             String d = dayLabel(Theme.millis(e.optString("time")));
             if (!d.equals(day)) rows.add(new Row(0, day = d, null));
-            rows.add(new Row(e.optInt("importance") >= 4 ? 1 : 2, null, e));
+            rows.add(new Row(1, null, e));
         }
         adapter.notifyDataSetChanged();
     }
@@ -708,7 +708,7 @@ public class MainActivity extends Activity {
             Row r = rows.get(i);
             if (r.e == null) return -i - 1;
             if (ANSWER.equals(r.label)) return -2_000_000L - r.e.optLong("id");
-            return r.type == 3 ? -1_000_000L - r.e.optLong("id") : r.e.optLong("id"); // 追踪的事件也可能出现在下面
+            return r.type == 2 ? -1_000_000L - r.e.optLong("id") : r.e.optLong("id"); // 追踪的事件也可能出现在下面
         }
 
         @Override
@@ -718,7 +718,7 @@ public class MainActivity extends Activity {
 
         @Override
         public int getViewTypeCount() {
-            return 4;
+            return 3;
         }
 
         @Override
@@ -739,19 +739,18 @@ public class MainActivity extends Activity {
                 label.setText(r.label);
                 return label;
             }
-            // 追踪中和其他动态是分段列表：一组的头尾用大圆角
+            // 追踪中和每一天的事件都是分段列表：一组的头尾用大圆角
             boolean first = rows.get(i - 1).type != r.type, last = i == rows.size() - 1 || rows.get(i + 1).type != r.type;
-            if (r.type == 3) {
+            if (r.type == 2) {
                 if (convert == null) convert = newFollowRow();
                 if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e, first, last);
                 else bindFollow((Holder) convert.getTag(), r.e, first, last);
                 return convert;
             }
-            if (convert == null) convert = r.type == 1 ? newCard() : newRow();
+            if (convert == null) convert = newRow();
             Holder h = (Holder) convert.getTag();
             SwipeDismiss.reset(h.front, h.behind);
-            if (r.type == 1) bindCard(h, r.e, r.e.optInt("importance") >= 5);
-            else bindRow(h, r.e, first, last);
+            bindRow(h, r.e, first, last);
             h.front.setOnClickListener(v -> open(v, r.e));
             h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
             return convert;
@@ -760,7 +759,7 @@ public class MainActivity extends Activity {
 
     private static final class Holder {
         View front, behind;
-        TextView label, chipA, chipB, badge, headline, summary, meta, time;
+        TextView label, badge, headline, summary, meta, time;
     }
 
     private TextView sectionLabel() {
@@ -785,53 +784,7 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 重要事件的卡片：底色取话题色，右上角的形状是重要性。 */
-    private View newCard() {
-        Holder h = new Holder();
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(18));
-        card.setClickable(true);
-
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        h.label = newLabel("新");
-        top.addView(h.label, gapLp(6));
-        h.chipA = chip();
-        h.chipB = chip();
-        top.addView(h.chipA, gapLp(6));
-        top.addView(h.chipB);
-        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        h.badge = t.text(this, "", 13, t.sheet, 900);
-        h.badge.setTypeface(Theme.flex(this, 140, 900));
-        h.badge.setGravity(Gravity.CENTER);
-        top.addView(h.badge, new LinearLayout.LayoutParams(t.dp(30), t.dp(30)));
-        card.addView(top);
-
-        h.headline = t.text(this, "", 19, t.ink, 800);
-        h.headline.setLineSpacing(t.dp(4), 1f);
-        h.headline.setPadding(0, t.dp(14), 0, 0);
-        card.addView(h.headline);
-        h.summary = t.text(this, "", 14.5f, t.ink, 400);
-        h.summary.setAlpha(0.82f);
-        h.summary.setLineSpacing(t.dp(5), 1f);
-        h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(8), 0, 0);
-        card.addView(h.summary);
-
-        h.meta = t.text(this, "", 12.5f, t.ink, 600);
-        h.meta.setTypeface(Theme.flex(this, 88, 600));
-        h.meta.setAlpha(0.78f);
-        h.meta.setPadding(0, t.dp(14), 0, 0);
-        card.addView(h.meta);
-
-        FrameLayout frame = swipeFrame(h, card);
-        frame.setPadding(t.dp(12), t.dp(4), t.dp(12), t.dp(4));
-        h.behind.setBackground(t.round(t.err, Theme.R_2XL));
-        return frame;
-    }
-
-    /** 其余事件：分段列表里的一行，左边是时间，离开期间出现的时间用主色。 */
+    /** 信息流的一行：左边是时间（离开期间出现的用主色），右边是标题、概要，最下面一行是话题圆点、来源和“要闻”。 */
     private View newRow() {
         Holder h = new Holder();
         LinearLayout row = new LinearLayout(this);
@@ -847,7 +800,7 @@ public class MainActivity extends Activity {
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        h.headline = t.text(this, "", 15, t.ink, 700);
+        h.headline = t.text(this, "", 16, t.ink, 800);
         h.headline.setLineSpacing(t.dp(4), 1f);
         h.headline.setMaxLines(2);
         h.headline.setEllipsize(TextUtils.TruncateAt.END);
@@ -858,11 +811,19 @@ public class MainActivity extends Activity {
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
         h.summary.setPadding(0, t.dp(3), 0, 0);
         col.addView(h.summary);
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(0, t.dp(7), 0, 0);
+        h.badge = t.text(this, "要闻", 11, t.onPri, 800);
+        h.badge.setPadding(t.dp(7), t.dp(1), t.dp(7), t.dp(1));
+        h.badge.setBackground(t.round(t.pri, 99));
+        metaRow.addView(h.badge, gapLp(8));
         h.meta = t.text(this, "", 12, t.sub, 600);
-        h.meta.setPadding(0, t.dp(5), 0, 0);
         h.meta.setSingleLine();
         h.meta.setEllipsize(TextUtils.TruncateAt.END);
-        col.addView(h.meta);
+        h.meta.setCompoundDrawablePadding(t.dp(6));
+        metaRow.addView(h.meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        col.addView(metaRow);
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         FrameLayout frame = swipeFrame(h, row);
         frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
@@ -942,42 +903,33 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** big 是重要性 5 的大事：标题更大，概要多显示一行。 */
-    private void bindCard(Holder h, JSONObject e, boolean big) {
-        JSONArray topics = e.optJSONArray("topics");
-        int[] c = t.topic(topics);
-        h.front.setBackground(t.ripple(c[0], Theme.R_2XL));
-        for (TextView v : new TextView[]{h.headline, h.summary, h.meta, h.chipA, h.chipB}) v.setTextColor(c[1]);
-        h.chipA.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
-        h.chipB.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
-        show(h.chipA, topics != null && topics.length() > 0 ? topics.optString(0) : "");
-        show(h.chipB, topics != null && topics.length() > 1 ? topics.optString(1) : "");
-        h.label.setVisibility(isNew(e) ? View.VISIBLE : View.GONE);
-        int importance = e.optInt("importance");
-        h.badge.setVisibility(importance >= 4 ? View.VISIBLE : View.GONE);
-        h.badge.setText(String.valueOf(importance));
-        h.badge.setTextColor(c[0]);
-        h.badge.setBackground(new Shapes.Blob(importance >= 5 ? Shapes.SUNNY : Shapes.CLOVER, c[1]));
-        h.headline.setTextSize(big ? 22 : 19);
-        h.headline.setText(e.optString("headline"));
-        h.summary.setMaxLines(big ? 4 : 3);
-        show(h.summary, e.optString("summary"));
-        h.meta.setText(clock(Theme.millis(e.optString("time"))) + "   " + e.optInt("source_count") + " 个来源"
-                + (e.optBoolean("pushed") ? "   已推送" : ""));
-    }
-
     private void bindRow(Holder h, JSONObject e, boolean first, boolean last) {
         h.front.setBackground(t.segment(t.sheet, first, last));
         float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
         h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
         h.time.setText(clock(Theme.millis(e.optString("time"))));
         h.time.setTextColor(isNew(e) ? t.pri : t.sub);
+        // 重点只靠字重和标记：4 以上标题加粗、颜色实，3 轻一些、淡一些，5 再加“要闻”
+        int importance = e.optInt("importance");
         h.headline.setText(e.optString("headline"));
+        h.headline.setTypeface(Theme.weight(importance >= 4 ? 800 : 500));
+        h.headline.setTextColor(importance >= 4 ? t.ink : (t.ink & 0x00FFFFFF) | 0xC8000000);
         show(h.summary, e.optString("summary"));
-        JSONArray src = e.optJSONArray("sources");
+        h.badge.setVisibility(importance >= 5 ? View.VISIBLE : View.GONE);
+        JSONArray topics = e.optJSONArray("topics"), src = e.optJSONArray("sources");
+        String topic = topics != null && topics.length() > 0 ? topics.optString(0) : "";
         String lead = src != null && src.length() > 0 ? src.optString(0) : "";
         int n = e.optInt("source_count");
-        h.meta.setText((n > 1 ? lead + " 等 " + n + " 个来源" : lead) + (e.optBoolean("pushed") ? " · 已推送" : ""));
+        h.meta.setText((topic.isEmpty() ? "" : topic + " · ") + (n > 1 ? lead + " 等 " + n + " 家" : lead));
+        GradientDrawable dot = null;
+        if (!topic.isEmpty()) { // 话题色只留一个小圆点
+            dot = new GradientDrawable();
+            dot.setShape(GradientDrawable.OVAL);
+            dot.setColor(t.topic(topics)[1]);
+            dot.setSize(t.dp(7), t.dp(7));
+            dot.setBounds(0, 0, t.dp(7), t.dp(7));
+        }
+        h.meta.setCompoundDrawablesRelative(dot, null, null, null);
     }
 
     private static String clock(long ms) {
@@ -995,12 +947,6 @@ public class MainActivity extends Activity {
         if (ms >= start) return "今天";
         if (ms >= start - 86400_000L) return "昨天";
         return new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
-    }
-
-    private TextView chip() {
-        TextView c = t.text(this, "", 12, t.ink, 700);
-        c.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
-        return c;
     }
 
     /** 主色小标签：“新”“新进展”“有了答案”。 */
@@ -1025,7 +971,7 @@ public class MainActivity extends Activity {
 
     // ---------- 打开与移除 ----------
 
-    /** 卡片展开成详情：从卡片的位置和大小揭开详情页；详情头部和卡片是同一个话题色，看起来像卡片长大了。 */
+    /** 从这一行的位置和大小揭开详情页。 */
     private void open(View from, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
