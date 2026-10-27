@@ -81,6 +81,13 @@ MIGRATIONS = [
     "alter table briefs add column points text;",
     # 英文原文的中文译文：来源标题、没写简报的事件摘要，见 pipeline/translate.py
     "create table translations (text text primary key, zh text not null);",
+    # 日报、周报、月报：kind 为 daily / weekly / monthly，period 为 2026-10-26 / 2026-10-19（那周的周一）/ 2026-10；
+    # content 是 JSON（要点、分领域、趋势、持续发展的事），见 pipeline/reports.py；notified 为 0 表示还要推送
+    """
+    create table reports (
+        kind text not null, period text not null, created text not null, content text not null,
+        notified integer not null default 1, primary key (kind, period));
+    """,
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -168,6 +175,17 @@ class Store:
         ids = list(ids)
         rows = self.con.execute(f"select id, created from events where id in ({','.join('?' * len(ids))})", ids)
         return {r[0]: parse_time(r[1]) for r in rows}
+
+    def event_published(self, ids: Iterable[int]) -> dict[int, datetime]:
+        """事件见报的时间：最早一条报道的发布时间。"""
+        ids = list(ids)
+        rows = self.con.execute(f"select event_id, min(published) from signals where event_id in ({','.join('?' * len(ids))}) "
+                                "group by event_id", ids)
+        return {r[0]: parse_time(r[1]) for r in rows}
+
+    def first_fetched(self) -> datetime | None:
+        """开始采集的时间。"""
+        return parse_time(self.con.execute("select min(fetched) from signals").fetchone()[0])
 
     def event_signals(self, event_id: int) -> list[Signal]:
         rows = self.con.execute(f"select {COLUMNS}, event_id from signals where event_id = ? order by published",
@@ -353,6 +371,30 @@ class Store:
 
     def save_translations(self, pairs: dict[str, str]) -> None:
         self.con.executemany("insert or replace into translations values (?, ?)", pairs.items())
+        self.con.commit()
+
+    # ---------- 报告 ----------
+
+    def report(self, kind: str, period: str) -> dict | None:
+        r = self.con.execute("select period, created, content, notified from reports where kind = ? and period = ?",
+                             (kind, period)).fetchone()
+        return {"kind": kind, "period": r[0], "created": r[1], "content": json.loads(r[2]), "notified": bool(r[3])} if r else None
+
+    def report_periods(self, kind: str) -> list[str]:
+        """已有的报告，新的在前。"""
+        return [r[0] for r in self.con.execute("select period from reports where kind = ? order by period desc", (kind,))]
+
+    def save_report(self, kind: str, period: str, content: dict, now: datetime, notified: bool) -> None:
+        self.con.execute("insert or replace into reports values (?, ?, ?, ?, ?)",
+                         (kind, period, to_iso(now), json.dumps(content, ensure_ascii=False), int(notified)))
+        self.con.commit()
+
+    def unnotified_reports(self) -> list[dict]:
+        rows = self.con.execute("select kind, period from reports where notified = 0 order by period").fetchall()
+        return [self.report(kind, period) for kind, period in rows]
+
+    def set_report_notified(self, kind: str, period: str) -> None:
+        self.con.execute("update reports set notified = 1 where kind = ? and period = ?", (kind, period))
         self.con.commit()
 
     # ---------- 追踪 ----------
