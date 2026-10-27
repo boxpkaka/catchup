@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.text.method.LinkMovementMethod;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -29,8 +30,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 对话页：在某件事下面问（基于原文回答，标注出处），或者直接问 Catchup（基于你的事件库）。
- * 回答流式显示；每轮之后如果记住了关于你的新信息，会在回答下方显示，可以当场撤销。
+ * 对话页：在某件事下面问（基于原文回答，标注出处），或者直接问 Catchup（基于你的事件库）；两种都会联网搜索补充，
+ * 引用到的来源列在回答最后。回答流式显示，往上翻着看时不会被拽回底部。同一个问题最近问过，直接显示上次的回答，
+ * 可以要求重新回答。每轮之后如果记住了关于你的新信息，会在回答下方显示，可以当场撤销。
  */
 public class ChatActivity extends Activity {
     static final String EXTRA_EVENT = "event";
@@ -51,6 +53,8 @@ public class ChatActivity extends Activity {
     private LinearLayout suggestions;
     private LinearLayout notes; // 这一轮的“记住了 / 会替你留意”，排成一组
     private String pendingAsk; // 从详情页带过来的问题，等历史加载完再发，避免顺序错乱
+    private boolean follow = true; // 回答输出时跟着滚到底；手指往上拖就停下，滑回底部再继续
+    private boolean touching;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -115,7 +119,7 @@ public class ChatActivity extends Activity {
         h.setSingleLine();
         h.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titles.addView(h);
-        TextView sub = t.text(this, eventId > 0 ? "基于这件事的原文回答" : "基于 Catchup 替你整理过的事件回答", 12, c[1], 400);
+        TextView sub = t.text(this, eventId > 0 ? "基于原文和网页搜索回答" : "基于你的事件库和网页搜索回答", 12, c[1], 400);
         sub.setAlpha(0.78f);
         sub.setPadding(0, t.dp(3), 0, 0);
         titles.addView(sub);
@@ -129,6 +133,15 @@ public class ChatActivity extends Activity {
         messages.setOrientation(LinearLayout.VERTICAL);
         messages.setPadding(t.dp(20), t.dp(8), t.dp(20), t.dp(16));
         scroll.addView(messages);
+        scroll.setOnTouchListener((v, ev) -> {
+            int a = ev.getActionMasked();
+            touching = a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE;
+            return false;
+        });
+        scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+            if (touching && y < oldY) follow = false;
+            else if (y + scroll.getHeight() >= messages.getHeight() - t.dp(24)) follow = true;
+        });
         column.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         // 输入框和发送按钮分开：空着时发送是灰色圆形，有字时变成酸橙色的圆角方块
@@ -209,10 +222,21 @@ public class ChatActivity extends Activity {
                     else showSuggestions(getIntent().getStringArrayExtra(EXTRA_QUESTIONS));
                     return;
                 }
+                View asked = null;
                 for (int i = 0; i < ms.length(); i++) {
                     JSONObject m = ms.optJSONObject(i);
-                    if ("user".equals(m.optString("role"))) addUser(m.optString("content"));
-                    else addAssistant().setText(Markdown.render(m.optString("content"), t, this::openEvent));
+                    if ("user".equals(m.optString("role"))) {
+                        View v = addUser(m.optString("content"));
+                        if (ask != null && same(ask, m.optString("content"))) asked = v;
+                    } else {
+                        addAssistant().setText(Markdown.render(m.optString("content"), t, this::openEvent));
+                    }
+                }
+                if (asked != null) { // 这个问题问过了：直接看上次的回答，不再重新生成
+                    View target = asked;
+                    follow = false;
+                    scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, target.getTop() - t.dp(12))));
+                    return;
                 }
                 scrollToEnd();
                 if (ask != null && !ask.isEmpty()) sendMessage(ask);
@@ -257,7 +281,18 @@ public class ChatActivity extends Activity {
 
     // ---------- 发送与流式回复 ----------
 
+    /** 去掉空白和标点再比，和服务器判断“同一个问题”的方式一致。 */
+    private static boolean same(String a, String b) {
+        String strip = "[\\s，,。.？?！!、]+";
+        return a.replaceAll(strip, "").equalsIgnoreCase(b.replaceAll(strip, ""));
+    }
+
     private void sendMessage(String text) {
+        sendMessage(text, false);
+    }
+
+    /** fresh：不用上次的回答，重新生成。 */
+    private void sendMessage(String text, boolean fresh) {
         String msg = text.trim();
         if (msg.isEmpty() || busy) return;
         busy = true;
@@ -278,13 +313,14 @@ public class ChatActivity extends Activity {
             body.put("message", msg);
             if (threadId > 0) body.put("thread_id", threadId);
             else if (eventId > 0) body.put("event_id", eventId);
+            if (fresh) body.put("fresh", true);
         } catch (Exception ignored) {
             // put 不会失败
         }
         new Thread(() -> {
             String error = null;
             try {
-                Api.stream(this, "/v1/chat", body, e -> runOnUiThread(() -> onEvent(e, status, answer, full)));
+                Api.stream(this, "/v1/chat", body, e -> runOnUiThread(() -> onEvent(e, status, answer, full, msg)));
             } catch (Exception e) {
                 error = MainActivity.reason(e);
                 Trace.log(this, "chat.fail", e.toString());
@@ -300,7 +336,7 @@ public class ChatActivity extends Activity {
         }, "chat-send").start();
     }
 
-    private void onEvent(JSONObject e, LinearLayout status, TextView answer, StringBuilder full) {
+    private void onEvent(JSONObject e, LinearLayout status, TextView answer, StringBuilder full, String question) {
         if (isDestroyed()) return;
         switch (e.optString("type")) {
             case "thread":
@@ -313,7 +349,10 @@ public class ChatActivity extends Activity {
                 removeStatus(status);
                 full.append(e.optString("text"));
                 answer.setText(Markdown.render(full.toString(), t, this::openEvent));
-                scrollToEnd();
+                followEnd();
+                break;
+            case "cached":
+                addCachedNote(e.optString("at"), question);
                 break;
             case "refs":
                 addRefs(e.optJSONArray("events"));
@@ -334,7 +373,7 @@ public class ChatActivity extends Activity {
 
     // ---------- 消息气泡 ----------
 
-    private void addUser(String text) {
+    private View addUser(String text) {
         TextView v = t.text(this, text, 15, t.onPri, 500);
         v.setLineSpacing(t.dp(4), 1f);
         v.setPadding(t.dp(16), t.dp(11), t.dp(16), t.dp(11));
@@ -345,6 +384,27 @@ public class ChatActivity extends Activity {
         lp.topMargin = t.dp(18);
         lp.leftMargin = t.dp(56);
         messages.addView(v, lp);
+        return v;
+    }
+
+    /** 这次给的是之前的回答：标出是什么时候的，可以要求重新回答。 */
+    private void addCachedNote(String at, String question) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(t.text(this, Theme.ago(Theme.millis(at)) + "的回答", 12.5f, t.sub, 600));
+        TextView redo = t.text(this, "重新回答", 12.5f, t.pri, 800);
+        redo.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
+        redo.setBackground(t.ripple(Color.TRANSPARENT, 10));
+        redo.setOnClickListener(v -> {
+            if (busy) return;
+            messages.removeView(row);
+            sendMessage(question, true);
+        });
+        row.addView(redo);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = t.dp(6);
+        messages.addView(row, lp);
     }
 
     private TextView addAssistant() {
@@ -408,7 +468,7 @@ public class ChatActivity extends Activity {
         addMemoryRows(e.optJSONArray("added"), "记住了", true);
         addMemoryRows(e.optJSONArray("updated"), "更新了", false);
         addMemoryRows(e.optJSONArray("removed"), "忘掉了", false);
-        scrollToEnd();
+        followEnd();
     }
 
     private void addMemoryRows(JSONArray items, String verb, boolean undoable) {
@@ -469,7 +529,7 @@ public class ChatActivity extends Activity {
         row.addView(drop);
         notes().addView(row);
         t.segments(notes);
-        scrollToEnd();
+        followEnd();
     }
 
     /** 随便问时引用到的事件，点开看详情。 */
@@ -512,8 +572,14 @@ public class ChatActivity extends Activity {
         }, "post").start();
     }
 
-    /** 滚到最底下；不用 fullScroll，它会把焦点移进列表，正在打字时键盘会被收起。 */
+    /** 滚到最底下并继续跟随；不用 fullScroll，它会把焦点移进列表，正在打字时键盘会被收起。 */
     private void scrollToEnd() {
+        follow = true;
         scroll.post(() -> scroll.smoothScrollTo(0, messages.getHeight()));
+    }
+
+    /** 新内容出来时跟着滚到底；用户往上翻着看的时候不动。 */
+    private void followEnd() {
+        if (follow) scroll.post(() -> scroll.smoothScrollTo(0, messages.getHeight()));
     }
 }

@@ -1,10 +1,13 @@
 """对话：在事件下面问（先读来源原文，回答标注出处 [1]），或者直接问自己的事件库（回答标注事件 [E12]）。
+两种都会同时联网搜索，原文和事件库里没有的用网页补充；回答里引用到的来源列在最后，点开是原网页。
+同一个问题 CACHE_HOURS 内再问，直接给上次的回答，App 上可以要求重新回答（body 带 fresh）。
 
 chat() 是生成器，逐条产出给 App 的流式消息：
   {"type": "thread", "id"}       对话编号，App 继续对话时带上
   {"type": "status", "text"}     比如“正在阅读 3 篇原文”
   {"type": "delta", "text"}      回复的增量文字
   {"type": "refs", "events"}     随便问时引用到的事件，App 显示成可点的卡片
+  {"type": "cached", "at"}       这次给的是之前的回答，at 是那次回答的时间
   {"type": "memory", ...}        这轮对话新记住 / 改写 / 删除的记忆
   {"type": "watch", "id", "text"} 暂时没有答案、之后替他留意的问题
   {"type": "done"} 或 {"type": "error", "text"}
@@ -22,7 +25,8 @@ from . import personal, reader
 from .config import Config
 from .pipeline.events import group_events
 from .sources import build_sources, source_of
-from .util import parse_time
+from .sources.deepseek import tool
+from .util import clean_text, parse_time
 
 log = logging.getLogger(__name__)
 
@@ -32,15 +36,18 @@ MAX_SOURCES = 3
 ASK_DAYS = 14
 CHAT_WAIT = 10  # 对话里最多等原文这么多秒，没读到的来源先用摘要回答
 FAIL_RETRY = timedelta(hours=6)  # 抓取失败的链接隔这么久再重试
+CACHE_HOURS = 24
+SEARCH_RESULTS = 6
+SEARCH_WAIT = 15  # 最多等联网搜索这么多秒，超时就只用已有的材料回答
 
 # 正在抓取的原文，同一进程里的预读和对话共用，避免同一个链接抓两遍；结果由等到它的线程写回缓存
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fetch")
 _lock = threading.Lock()
 _inflight: dict[str, Future] = {}
 
-EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正在看一件 AI 领域的事，下面给出这件事的简报和来源原文（编号 [1]、[2]…）。
-回答要求：中文，直接、具体，先给结论；基于来源回答，用到来源的句子末尾标注 [编号]；来源里没有的信息要说明“来源里没有提到”，
-可以补充你的背景知识但要说明是背景知识；结合用户的情况给出和他相关的判断。不要寒暄，不要复述问题，篇幅够用就好。
+EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正在看一件 AI 领域的事，下面给出这件事的简报、来源原文和网页搜索结果（编号 [1]、[2]…）。
+回答要求：中文，直接、具体，先给结论；基于来源回答，用到的句子末尾标注 [编号]；原文没写到的用网页搜索结果补充，同样标注编号；
+都没有提到的要说明没有找到，可以补充你的背景知识但要说明是背景知识；结合用户的情况给出和他相关的判断。不要寒暄，不要复述问题，篇幅够用就好。
 
 用户是谁：
 {focus}
@@ -50,15 +57,18 @@ EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正�
 来源：
 {sources}"""
 
-ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你最近两周替用户整理过的事件，每条以 [E编号] 开头。
-根据这些事件回答用户的问题：中文，直接，先给结论；提到某个事件时在句末标注 [E编号]；
-事件库里没有相关内容就直说没有，并建议他可以追踪什么。不要寒暄，不要复述问题。
+ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你最近两周替用户整理过的事件（每条以 [E编号] 开头），以及针对这个问题的网页搜索结果（编号 [1]、[2]…）。
+回答用户的问题：中文，直接，先给结论；优先用事件库，提到某个事件时在句末标注 [E编号]；事件库里没有或不够的用网页搜索结果补充，句末标注 [编号]；
+都没有相关内容就直说没有，并建议他可以追踪什么。不要寒暄，不要复述问题。
 
 用户是谁：
 {focus}
 
 事件：
-{events}"""
+{events}
+
+网页搜索结果：
+{web}"""
 
 
 def chat(config: Config, store, llm, body: dict, now: datetime):
@@ -73,6 +83,9 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
     if thread is None:
         thread = store.thread(store.new_thread(event_id, now))
     yield {"type": "thread", "id": thread["id"]}
+    if not body.get("fresh") and (prev := _asked(store, event_id, message, now)):
+        yield from _reuse(store, thread, event_id, message, prev, now)
+        return
 
     history = store.messages(thread["id"])[-HISTORY:]
     focus = personal.focus(config, store, now)
@@ -81,14 +94,25 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         brief = store.briefs([event_id]).get(event_id) or {}
         signals = store.event_signals(event_id)
         headline = brief.get("headline") or (signals[0].title if signals else "")
-        if needs_reading(store, signals, now):
-            yield {"type": "status", "text": f"正在阅读 {len(_pick(signals))} 篇原文"}
-        system = EVENT_SYSTEM.format(focus=focus, headline=headline, summary=brief.get("summary", ""),
-                                     sources=_sources(config, store, signals, now))
+        search = _pool.submit(_search, f"{headline} {message}")  # 和读原文同时进行
+        reading = f"正在阅读 {len(_pick(signals))} 篇原文、" if needs_reading(store, signals, now) else "正在"
+        yield {"type": "status", "text": reading + "搜索网页"}
+        sources = _sources(config, store, signals, now)
+        refs = [(s.title, s.url) for s in _pick(signals)]
+        found = _wait(search)
+        if found:
+            sources += "\n\n网页搜索结果：\n" + _web(found, len(refs) + 1)
+        system = EVENT_SYSTEM.format(focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
     else:
+        search = _pool.submit(_search, message)
+        yield {"type": "status", "text": "正在搜索网页"}
         candidates = _retrieve(config, store, message, now)
+        found = _wait(search)
+        refs = []
         system = ASK_SYSTEM.format(focus=focus, events="\n".join(
-            f"[E{e['id']}] {e['headline']}：{e['summary']}（{e['time'][:10]}）" for e in candidates) or "（暂无）")
+            f"[E{e['id']}] {e['headline']}：{e['summary']}（{e['time'][:10]}）" for e in candidates) or "（暂无）",
+            web=_web(found, 1) or "（没有搜到）")
+    refs += [(r["title"], r["url"]) for r in found]
     store.add_message(thread["id"], "user", message, now)
     if event_id is not None:
         store.add_action(event_id, "ask", None, now)
@@ -107,14 +131,18 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         if not reply:
             return
     answer = "".join(reply)
-    refs = []
+    footer = _footer(store, answer, refs)
+    if footer:
+        yield {"type": "delta", "text": footer}
+        answer += footer
+    events = []
     if event_id is None:
         cited = [int(i) for i in dict.fromkeys(re.findall(r"\[E(\d+)\]", answer))]
         briefs = store.briefs(cited)
-        refs = [{"id": i, "headline": briefs[i]["headline"]} for i in cited if i in briefs]
-        if refs:
-            yield {"type": "refs", "events": refs}
-    store.add_message(thread["id"], "assistant", answer, now, {"refs": refs})
+        events = [{"id": i, "headline": briefs[i]["headline"]} for i in cited if i in briefs]
+        if events:
+            yield {"type": "refs", "events": events}
+    store.add_message(thread["id"], "assistant", answer, now, {"refs": events})
 
     changes, pending = personal.extract_from_chat(store, llm, message, answer, headline, now, thread["id"], event_id)
     if any(changes.values()):
@@ -124,6 +152,76 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         qid = store.add_question(thread["id"], event_id, pending["text"], pending["keywords"], now)
         yield {"type": "watch", "id": qid, "text": pending["text"]}
     yield {"type": "done"}
+
+
+def _key(text: str) -> str:
+    """判断是不是同一个问题：去掉空白和标点再比。"""
+    return re.sub(r"[\s，,。.？?！!、]+", "", text).lower()
+
+
+def _asked(store, event_id: int | None, message: str, now: datetime) -> dict | None:
+    """CACHE_HOURS 内在同一件事下（或随便问里）问过的同一个问题和当时的回答。"""
+    since = now - timedelta(hours=CACHE_HOURS)
+    for x in store.asked_since(event_id, since):
+        generated = parse_time(x["meta"].get("generated") or x["created"])
+        if _key(x["question"]) == _key(message) and generated and generated >= since:
+            return x
+    return None
+
+
+def _reuse(store, thread: dict, event_id: int | None, message: str, prev: dict, now: datetime):
+    """同一个问题最近问过：直接给上次的回答，不再调用模型。"""
+    generated = prev["meta"].get("generated") or prev["created"]
+    yield {"type": "cached", "at": generated}
+    yield {"type": "delta", "text": prev["content"]}
+    if prev["meta"].get("refs"):
+        yield {"type": "refs", "events": prev["meta"]["refs"]}
+    if prev["thread_id"] != thread["id"]:  # 在新对话里问的：把这一问一答记进来，接着追问时有上下文
+        store.add_message(thread["id"], "user", message, now)
+        store.add_message(thread["id"], "assistant", prev["content"], now, {**prev["meta"], "generated": generated})
+    if event_id is not None:
+        store.add_action(event_id, "ask", None, now)
+    yield {"type": "done"}
+
+
+def _search(query: str) -> list[dict]:
+    """联网搜索，返回 [{title, url, site, snippet}]；失败时返回空列表，回答照样基于已有的材料。"""
+    try:
+        res = tool("search", {"query": query[:200], "count": SEARCH_RESULTS + 2})
+    except Exception as e:
+        log.info("chat search failed: %r", e)
+        return []
+    return [{"title": clean_text(r.get("title"), 120) or r["url"], "url": r["url"].strip(), "site": r.get("site_name") or "",
+             "snippet": clean_text(r.get("snippet"), 400)}
+            for r in res.get("results", []) if r.get("url") and r.get("rerank_score", 0) >= 1.0][:SEARCH_RESULTS]
+
+
+def _wait(search: Future) -> list[dict]:
+    try:
+        return search.result(timeout=SEARCH_WAIT)
+    except Exception:  # 超时
+        return []
+
+
+def _web(results: list[dict], start: int) -> str:
+    """网页搜索结果，编号接在原文后面。"""
+    return "\n\n".join(f"[{i}] {r['title']}（{r['site']}，{r['url']}）\n{r['snippet']}" for i, r in enumerate(results, start))
+
+
+def _footer(store, answer: str, refs: list[tuple[str, str]]) -> str:
+    """回答里引用到的来源列在最后，标题是中文（英文标题用译文，见 pipeline/translate.py），点开是原网页。"""
+    cited = sorted({int(n) for group in re.findall(r"\[(\d+(?:[,，]\s*\d+)*)\]", answer) for n in re.findall(r"\d+", group)})
+    cited = [n for n in cited if 1 <= n <= len(refs)]
+    if not cited:
+        return ""
+    zh = store.translations([refs[n - 1][0] for n in cited])
+    lines = []
+    for n in cited:
+        title, url = refs[n - 1]
+        title = zh.get(title, title).replace("[", "［").replace("]", "］")
+        title = title[:60] + "…" if len(title) > 60 else title
+        lines.append(f"{n}. [{title}]({url.replace(')', '%29')})")
+    return "\n\n**来源**\n" + "\n".join(lines)
 
 
 def _pick(signals) -> list:

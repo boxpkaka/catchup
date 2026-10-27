@@ -316,11 +316,15 @@ class ChatTest(unittest.TestCase):
         brief.write_briefs(self.store, group_events(self.store.recent(NOW - timedelta(days=3), NOW)), "", FakeLLM(), {},
                            NOW)
 
-    def run_chat(self, llm, body):
+    WEB = {"results": [{"url": "https://w/1", "title": "Dessa 权重已开源", "site_name": "IT之家", "snippet": "可以本地运行",
+                        "rerank_score": 2.1}]}
+
+    def run_chat(self, llm, body, now=NOW):
         from catchup import chat
         with mock.patch("catchup.reader.tool", return_value={"content": "Dessa 原文：只用语音训练。"}), \
+                mock.patch("catchup.chat.tool", return_value=self.WEB), \
                 mock.patch("catchup.personal.rebrief_async") as rebrief:
-            out = list(chat.chat(config(), self.store, llm, body, NOW))
+            out = list(chat.chat(config(), self.store, llm, body, now))
         return out, rebrief
 
     def test_event_chat_reads_sources_streams_and_remembers(self):
@@ -328,17 +332,38 @@ class ChatTest(unittest.TestCase):
         out, rebrief = self.run_chat(llm, {"event_id": self.eid, "message": "我在做全双工语音，这个能借鉴吗？"})
         types = [e["type"] for e in out]
         self.assertEqual(types[:2], ["thread", "status"])
-        self.assertEqual("".join(e["text"] for e in out if e["type"] == "delta"), llm.reply)
+        self.assertEqual("".join(e["text"] for e in out if e["type"] == "delta"),
+                         llm.reply + "\n\n**来源**\n1. [Block unveils Dessa voice model](https://a/1)")
         self.assertEqual(out[-2]["added"][0]["text"], "你在做全双工语音")
         self.assertEqual(types[-1], "done")
-        self.assertIn("Dessa 原文", llm.prompts[0])  # 回答基于抓取的原文
+        self.assertIn("Dessa 原文", llm.prompts[0])  # 回答基于抓取的原文和网页搜索结果
+        self.assertIn("[2] Dessa 权重已开源", llm.prompts[0])
         rebrief.assert_called_once()
         thread = self.store.latest_thread(self.eid)
         self.assertEqual([m["role"] for m in self.store.messages(thread["id"])], ["user", "assistant"])
         # 继续同一个对话：不再重复读原文，历史会带上
         out, _ = self.run_chat(FakeLLM(), {"thread_id": thread["id"], "message": "那延迟呢？"})
-        self.assertNotIn("status", [e["type"] for e in out])
+        self.assertEqual([e["text"] for e in out if e["type"] == "status"], ["正在搜索网页"])
         self.assertEqual(len(self.store.messages(thread["id"])), 4)
+
+    def test_same_question_reuses_the_answer_and_cites_web_pages(self):
+        llm = FakeLLM(reply="权重已经开源 [1]。")
+        answered = lambda: sum(p.startswith("你是 Catchup，用户的个人") for p in llm.prompts)  # 调了几次模型写回答
+        out, _ = self.run_chat(llm, {"message": "Dessa 能本地跑吗？"})
+        answer = "".join(e["text"] for e in out if e["type"] == "delta")
+        self.assertTrue(answer.endswith("**来源**\n1. [Dessa 权重已开源](https://w/1)"))  # 引用到的网页列在最后
+        # 换个对话再问同一个问题：直接给上次的回答，不再调用模型；要求重新回答时才重新生成
+        out, _ = self.run_chat(llm, {"message": "Dessa 能本地跑吗"}, NOW + timedelta(hours=1))
+        self.assertEqual((out[1], "".join(e["text"] for e in out if e["type"] == "delta"), answered()),
+                         ({"type": "cached", "at": to_iso(NOW)}, answer, 1))
+        thread = out[0]["id"]
+        self.assertEqual([m["role"] for m in self.store.messages(thread)], ["user", "assistant"])  # 接着追问有上下文
+        out, _ = self.run_chat(llm, {"thread_id": thread, "message": "Dessa 能本地跑吗？", "fresh": True},
+                               NOW + timedelta(hours=1))
+        self.assertNotIn("cached", [e["type"] for e in out])
+        self.assertEqual(answered(), 2)
+        out, _ = self.run_chat(llm, {"message": "Dessa 能本地跑吗？"}, NOW + timedelta(hours=30))  # 太久了就重新回答
+        self.assertNotIn("cached", [e["type"] for e in out])
 
     def test_failed_fetch_retried_later(self):
         from catchup import chat
