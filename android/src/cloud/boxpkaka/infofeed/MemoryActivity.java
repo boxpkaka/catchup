@@ -3,8 +3,8 @@ package cloud.boxpkaka.infofeed;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Intent;
-import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
@@ -69,7 +69,7 @@ public class MemoryActivity extends Activity {
         scroll.setVerticalScrollBarEnabled(false);
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(t.dp(20), t.dp(72), t.dp(20), t.dp(120));
+        body.setPadding(t.dp(12), t.dp(72), t.dp(12), t.dp(120));
         scroll.addView(body);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -80,19 +80,24 @@ public class MemoryActivity extends Activity {
         root.addView(back, bl);
 
         LinearLayout actions = new LinearLayout(this);
-        actions.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
-        actions.setBackground(t.round(t.sheet, 99));
-        actions.setElevation(t.dp(8));
-        TextView add = t.pill(this, "添加一条", false);
-        add.setBackground(t.ripple(Color.TRANSPARENT, 99));
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        TextView add = t.text(this, "添加一条", 14, t.onInv, 700);
+        add.setGravity(Gravity.CENTER);
+        t.press(add, t.inv, 99);
+        add.setElevation(t.dp(6));
         add.setOnClickListener(v -> editor(null));
-        actions.addView(add, weight());
-        TextView miss = t.pill(this, "报告漏报", true);
+        actions.addView(add, new LinearLayout.LayoutParams(0, t.dp(60), 1));
+        TextView miss = t.text(this, "报告漏报", 15, t.onLime, 800);
+        miss.setGravity(Gravity.CENTER);
+        t.press(miss, t.lime, Theme.R_L);
+        miss.setElevation(t.dp(6));
         miss.setOnClickListener(v -> reportMiss());
-        actions.addView(miss, weight());
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(120), t.dp(64));
+        ml.leftMargin = t.dp(10);
+        actions.addView(miss, ml);
         FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
-        al.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
+        al.setMargins(t.dp(12), 0, t.dp(12), t.dp(16));
         root.addView(actions, al);
 
         if (Build.VERSION.SDK_INT >= 30) {
@@ -100,7 +105,7 @@ public class MemoryActivity extends Activity {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
                 bl.topMargin = bars.top + t.dp(10);
                 back.setLayoutParams(bl);
-                body.setPadding(t.dp(20), bars.top + t.dp(72), t.dp(20), bars.bottom + t.dp(120));
+                body.setPadding(t.dp(12), bars.top + t.dp(72), t.dp(12), bars.bottom + t.dp(120));
                 al.bottomMargin = bars.bottom + t.dp(16);
                 actions.setLayoutParams(al);
                 return WindowInsets.CONSUMED;
@@ -133,12 +138,13 @@ public class MemoryActivity extends Activity {
         personalize = r.optBoolean("personalize", true);
         body.removeAllViews();
         TextView h = t.text(this, "Catchup 记得的\n关于你的事", 28, t.ink, 900);
-        h.setLineSpacing(t.dp(4), 1f);
+        h.setLineSpacing(t.dp(6), 1f);
+        h.setPadding(t.dp(10), 0, t.dp(10), 0);
         body.addView(h);
         TextView sub = t.text(this, "它们决定给你推什么、怎么写。在事件下面聊聊你在做什么，这里会自动更新；每一条都能改或删。",
                 14, t.sub, 400);
-        sub.setLineSpacing(t.dp(4), 1f);
-        sub.setPadding(0, t.dp(12), 0, t.dp(20));
+        sub.setLineSpacing(t.dp(6), 1f);
+        sub.setPadding(t.dp(10), t.dp(10), t.dp(10), t.dp(18));
         body.addView(sub);
 
         body.addView(toggleRow());
@@ -155,43 +161,64 @@ public class MemoryActivity extends Activity {
         for (Map.Entry<String, List<JSONObject>> g : groups.entrySet()) {
             if (g.getValue().isEmpty()) continue;
             any = true;
-            TextView label = t.text(this, kinds.get(g.getKey()), 13, t.sub, 700);
-            label.setPadding(0, t.dp(28), 0, t.dp(8));
-            body.addView(label);
-            for (JSONObject m : g.getValue()) body.addView(item(m));
+            body.addView(groupLabel(kinds.get(g.getKey())));
+            LinearLayout list = new LinearLayout(this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            for (JSONObject m : g.getValue()) list.addView(item(m));
+            t.segments(list);
+            body.addView(list);
         }
         if (!any) {
             TextView empty = t.text(this, "还没有记忆。\n打开任意一件事点“问一问”，聊聊你在做什么，Catchup 会记住。",
                     14, t.sub, 400);
             empty.setLineSpacing(t.dp(4), 1f);
-            empty.setPadding(0, t.dp(32), 0, 0);
+            empty.setPadding(t.dp(10), t.dp(32), t.dp(10), 0);
             body.addView(empty);
         }
         JSONArray qs = r.optJSONArray("questions");
         if (qs != null && qs.length() > 0) {
-            TextView label = t.text(this, "替你留意的问题", 13, t.sub, 700);
-            label.setPadding(0, t.dp(28), 0, t.dp(8));
-            body.addView(label);
-            for (int i = 0; i < qs.length(); i++) body.addView(question(qs.optJSONObject(i)));
+            body.addView(groupLabel("替你留意的问题"));
+            LinearLayout list = new LinearLayout(this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            for (int i = 0; i < qs.length(); i++) list.addView(question(qs.optJSONObject(i)));
+            t.segments(list);
+            body.addView(list);
         }
+    }
+
+    private TextView groupLabel(String text) {
+        TextView label = t.text(this, text, 13, t.sub, 700);
+        label.setPadding(t.dp(20), t.dp(24), t.dp(20), t.dp(8));
+        return label;
     }
 
     /** 对话里暂时没有答案的问题：还在等的可以取消；有了答案的点开回到当时的对话。 */
     private View question(JSONObject q) {
         boolean answered = "answered".equals(q.optString("status"));
         LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        row.setBackground(t.ripple(t.sheet, 16));
-        TextView text = t.text(this, q.optString("text"), 15, t.ink, 500);
+        row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
+        GradientDrawable ring = new GradientDrawable();
+        ring.setShape(GradientDrawable.OVAL);
+        if (answered) ring.setColor(t.pri);
+        else ring.setStroke(t.dp(2), t.ink);
+        View mark = new View(this);
+        mark.setBackground(ring);
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(11), t.dp(11));
+        ml.topMargin = t.dp(6);
+        ml.rightMargin = t.dp(12);
+        row.addView(mark, ml);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        row.addView(col, weight());
+        TextView text = t.text(this, q.optString("text"), 15, t.ink, 600);
         text.setLineSpacing(t.dp(3), 1f);
-        row.addView(text);
+        col.addView(text);
         if (answered) {
             TextView answer = t.text(this, q.optString("answer"), 14, t.ink, 400);
             answer.setAlpha(0.82f);
             answer.setLineSpacing(t.dp(3), 1f);
             answer.setPadding(0, t.dp(6), 0, 0);
-            row.addView(answer);
+            col.addView(answer);
         }
         LinearLayout bottom = new LinearLayout(this);
         bottom.setGravity(Gravity.CENTER_VERTICAL);
@@ -205,7 +232,7 @@ public class MemoryActivity extends Activity {
                     .putExtra(ChatActivity.EXTRA_THREAD, q.optLong("thread_id"))
                     .putExtra(ChatActivity.EXTRA_TITLE, q.optString("text"))));
         } else {
-            TextView drop = t.text(this, "不用了", 12, t.ink, 700);
+            TextView drop = t.text(this, "不用了", 12.5f, t.pri, 800);
             drop.setPadding(t.dp(10), t.dp(4), t.dp(4), t.dp(4));
             drop.setOnClickListener(v -> {
                 drop.setEnabled(false);
@@ -213,35 +240,36 @@ public class MemoryActivity extends Activity {
             });
             bottom.addView(drop);
         }
-        row.addView(bottom);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = t.dp(8);
-        row.setLayoutParams(lp);
+        col.addView(bottom);
         return row;
     }
 
     private View toggleRow() {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(2), t.dp(20), t.dp(2), t.dp(4));
+        row.setPadding(t.dp(20), t.dp(16), t.dp(16), t.dp(16));
+        row.setBackground(t.ripple(t.sheet, Theme.R_XL));
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
-        texts.addView(t.text(this, "根据记忆个性化", 15, t.ink, 600));
+        texts.addView(t.text(this, "根据记忆个性化", 15, t.ink, 700));
         TextView s = t.text(this, personalize ? "排序会参考这些记忆" : "已关闭：按通用规则排序，不使用任何个人信息",
-                12, t.sub, 400);
-        s.setPadding(0, t.dp(4), 0, 0);
+                12.5f, t.sub, 400);
+        s.setPadding(0, t.dp(3), t.dp(8), 0);
         texts.addView(s);
         row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         FrameLayout track = new FrameLayout(this);
-        track.setBackground(t.round(personalize ? t.ink : t.line, 99));
-        View knob = new View(this);
-        knob.setBackground(t.round(personalize ? t.bg : t.sheet, 99));
-        FrameLayout.LayoutParams kl = new FrameLayout.LayoutParams(t.dp(22), t.dp(22),
+        GradientDrawable tr = t.round(personalize ? t.pri : t.hi, 99);
+        if (!personalize) tr.setStroke(t.dp(2), t.line);
+        track.setBackground(tr);
+        TextView knob = t.text(this, personalize ? "✓" : "", 13, t.pri, 900);
+        knob.setGravity(Gravity.CENTER);
+        knob.setBackground(t.round(personalize ? t.onPri : t.line, 99));
+        int size = personalize ? 24 : 16;
+        FrameLayout.LayoutParams kl = new FrameLayout.LayoutParams(t.dp(size), t.dp(size),
                 Gravity.CENTER_VERTICAL | (personalize ? Gravity.END : Gravity.START));
-        kl.setMargins(t.dp(3), 0, t.dp(3), 0);
+        kl.setMargins(t.dp(personalize ? 4 : 8), 0, t.dp(4), 0);
         track.addView(knob, kl);
-        row.addView(track, new LinearLayout.LayoutParams(t.dp(48), t.dp(28)));
+        row.addView(track, new LinearLayout.LayoutParams(t.dp(52), t.dp(32)));
         row.setOnClickListener(v -> {
             boolean next = !personalize;
             v.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
@@ -252,13 +280,15 @@ public class MemoryActivity extends Activity {
 
     private View item(JSONObject m) {
         LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        row.setBackground(t.ripple(t.sheet, 16));
-        TextView text = t.text(this, m.optString("text"), 15, t.ink, 500);
+        row.setGravity(Gravity.TOP);
+        row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        row.addView(col, weight());
+        TextView text = t.text(this, m.optString("text"), 15, t.ink, 600);
         text.setLineSpacing(t.dp(3), 1f);
         if (m.optBoolean("expired")) text.setAlpha(0.45f);
-        row.addView(text);
+        col.addView(text);
         StringBuilder meta = new StringBuilder();
         String origin = m.optString("origin");
         String event = m.isNull("event") ? "" : m.optString("event");
@@ -267,16 +297,24 @@ public class MemoryActivity extends Activity {
         else meta.append("来自").append(origin.isEmpty() ? "你" : origin);
         meta.append("，").append(Theme.ago(Theme.millis(m.optString("updated"))));
         if (m.optBoolean("expired")) meta.append("，已过期，点开可续期");
-        else if (!m.isNull("days_left")) meta.append("，").append(m.optInt("days_left")).append(" 天后不再算“正在做”");
         TextView mv = t.text(this, meta.toString(), 12, t.sub, 400);
         mv.setLineSpacing(t.dp(2), 1f);
-        mv.setPadding(0, t.dp(6), 0, 0);
-        row.addView(mv);
+        mv.setPadding(0, t.dp(4), 0, 0);
+        col.addView(mv);
+        if (!m.optBoolean("expired") && !m.isNull("days_left")) {
+            LinearLayout days = new LinearLayout(this);
+            days.setOrientation(LinearLayout.VERTICAL);
+            days.setGravity(Gravity.CENTER_HORIZONTAL);
+            days.setPadding(t.dp(12), t.dp(3), 0, 0);
+            TextView n = t.text(this, String.valueOf(m.optInt("days_left")), 20, t.pri, 900);
+            n.setTypeface(Theme.flex(this, 151, 900));
+            days.addView(n);
+            TextView unit = t.text(this, "天后到期", 11, t.sub, 600);
+            unit.setPadding(0, t.dp(3), 0, 0);
+            days.addView(unit);
+            row.addView(days);
+        }
         row.setOnClickListener(v -> editor(m));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = t.dp(8);
-        row.setLayoutParams(lp);
         return row;
     }
 
@@ -318,7 +356,8 @@ public class MemoryActivity extends Activity {
         Dialog[] d = new Dialog[1];
         if (m != null) {
             TextView del = t.pill(this, "删除", false);
-            del.setTextColor(Theme.CINNABAR);
+            del.setTextColor(t.onErr);
+            del.setBackground(t.ripple(t.err, 99));
             del.setOnClickListener(v -> {
                 d[0].dismiss();
                 post("/v1/memories/" + m.optLong("id"), "{\"delete\": true}", this::load);
@@ -397,13 +436,13 @@ public class MemoryActivity extends Activity {
         e.setGravity(Gravity.TOP);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         e.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        e.setBackground(t.round(t.sheet, 16));
+        e.setBackground(t.round(t.sheet, Theme.R_M));
         return e;
     }
 
     private void styleChip(TextView c, boolean on) {
-        c.setTextColor(on ? t.bg : t.ink);
-        c.setBackground(t.round(on ? t.ink : t.chip, 99));
+        c.setTextColor(on ? t.onPri : t.ink);
+        c.setBackground(t.round(on ? t.pri : t.hi, 99));
     }
 
     private void post(String path, String json, Runnable then) {

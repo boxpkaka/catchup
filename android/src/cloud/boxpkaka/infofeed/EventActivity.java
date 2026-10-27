@@ -22,7 +22,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 事件详情：标题、概要和要点、全部来源。底部浮动操作条：有用 / 不需要 / 看原文。
+ * 事件详情：话题色的头部（标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
+ * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
 public class EventActivity extends Activity {
@@ -30,11 +31,14 @@ public class EventActivity extends Activity {
     static final String EXTRA_JSON = "json";
     static final String EXTRA_DISMISSED = "dismissed";
 
+    private static final int FOLDED_SOURCES = 4;
+
     private Theme t;
     private long id;
     private JSONObject event;
-    private LinearLayout body, sources, actions;
+    private LinearLayout page, head, body, sources, actions;
     private TextView useful, follow;
+    private int topInset;
     private String feedback;
     private boolean following;
 
@@ -76,52 +80,73 @@ public class EventActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
+        page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(0, 0, 0, t.dp(120));
+        head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        page.addView(head);
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(t.dp(22), t.dp(72), t.dp(22), t.dp(120));
-        scroll.addView(body);
+        body.setPadding(t.dp(22), t.dp(4), t.dp(22), 0);
+        page.addView(body);
+        scroll.addView(page);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView back = t.backButton(this);
         back.setElevation(t.dp(2));
-        FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(44), t.dp(44));
-        bl.setMargins(t.dp(14), t.dp(14), 0, 0);
+        FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(48), t.dp(48));
+        bl.setMargins(t.dp(12), t.dp(10), 0, 0);
         root.addView(back, bl);
 
-        follow = t.pill(this, "追踪", false);
+        follow = t.text(this, "", 14, t.ink, 800);
+        follow.setGravity(Gravity.CENTER);
+        follow.setPadding(t.dp(20), 0, t.dp(20), 0);
         follow.setElevation(t.dp(2));
+        t.press(follow, t.sheet, 99);
         follow.setOnClickListener(v -> toggleFollow());
-        FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(44),
+        FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(48),
                 Gravity.END | Gravity.TOP);
-        fl.setMargins(0, t.dp(14), t.dp(14), 0);
+        fl.setMargins(0, t.dp(10), t.dp(12), 0);
         root.addView(follow, fl);
 
+        // 悬浮工具栏：反色胶囊里放“有用 / 不需要”，问一问单独做成酸橙色的大按钮
         actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
-        actions.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
-        actions.setBackground(t.round(t.sheet, 99));
-        actions.setElevation(t.dp(8));
+        LinearLayout bar = new LinearLayout(this);
+        bar.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
+        bar.setBackground(t.round(t.inv, 99));
+        bar.setElevation(t.dp(6));
         useful = action("有用", v -> toggleUseful());
-        actions.addView(useful, weight());
-        actions.addView(action("不需要", v -> notNeeded()), weight());
-        TextView ask = action("问一问", v -> openChat(null));
-        ask.setBackground(t.ripple(t.ink, 99));
-        ask.setTextColor(t.bg);
-        actions.addView(ask, weight());
+        bar.addView(useful, weight());
+        LinearLayout.LayoutParams gap = weight();
+        gap.leftMargin = t.dp(4);
+        bar.addView(action("不需要", v -> notNeeded()), gap);
+        actions.addView(bar, weight());
+        TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
+        ask.setGravity(Gravity.CENTER);
+        t.press(ask, t.lime, Theme.R_L);
+        ask.setElevation(t.dp(6));
+        ask.setOnClickListener(v -> openChat(null));
+        LinearLayout.LayoutParams askLp = new LinearLayout.LayoutParams(t.dp(104), t.dp(64));
+        askLp.leftMargin = t.dp(10);
+        actions.addView(ask, askLp);
         FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
-        al.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
+        al.setMargins(t.dp(12), 0, t.dp(12), t.dp(16));
         root.addView(actions, al);
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                topInset = bars.top;
                 bl.topMargin = bars.top + t.dp(10);
                 back.setLayoutParams(bl);
                 fl.topMargin = bars.top + t.dp(10);
                 follow.setLayoutParams(fl);
-                body.setPadding(t.dp(22), bars.top + t.dp(72), t.dp(22), bars.bottom + t.dp(120));
+                head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
+                page.setPadding(0, 0, 0, bars.bottom + t.dp(120));
                 al.bottomMargin = bars.bottom + t.dp(16);
                 actions.setLayoutParams(al);
                 return WindowInsets.CONSUMED;
@@ -152,59 +177,27 @@ public class EventActivity extends Activity {
     private void render(JSONObject e) {
         event = e;
         feedback = e.isNull("feedback") ? null : e.optString("feedback");
+        renderHead(e);
         body.removeAllViews();
-
-        JSONArray topics = e.optJSONArray("topics");
-        if (topics != null && topics.length() > 0) {
-            LinearLayout chips = new LinearLayout(this);
-            for (int i = 0; i < Math.min(3, topics.length()); i++) {
-                TextView c = t.text(this, topics.optString(i), 12, t.ink, 600);
-                c.setPadding(t.dp(10), t.dp(5), t.dp(10), t.dp(5));
-                c.setBackground(t.round(t.chip, 99));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.rightMargin = t.dp(6);
-                chips.addView(c, lp);
-            }
-            body.addView(chips);
-        }
-
-        TextView headline = t.text(this, e.optString("headline"), 26, t.ink, 800);
-        headline.setLineSpacing(t.dp(5), 1f);
-        headline.setLetterSpacing(-0.01f);
-        headline.setPadding(0, t.dp(16), 0, 0);
-        body.addView(headline);
-
-        LinearLayout metaRow = new LinearLayout(this);
-        metaRow.setGravity(Gravity.CENTER_VERTICAL);
-        metaRow.setPadding(0, t.dp(12), 0, 0);
-        metaRow.addView(t.text(this, e.optInt("source_count") + " 个来源，最近一条 "
-                + Theme.ago(Theme.millis(e.optString("time"))), 13, t.sub, 500));
-        TextView original = t.text(this, "看原文 ↗", 13, t.ink, 700);
-        original.setPadding(t.dp(12), t.dp(4), t.dp(4), t.dp(4));
-        original.setBackground(t.ripple(Color.TRANSPARENT, 8));
-        original.setOnClickListener(v -> openUrl(e.optString("url")));
-        metaRow.addView(original);
-        body.addView(metaRow);
 
         String summary = e.optString("summary");
         if (!summary.isEmpty()) {
             TextView s = t.text(this, summary, 17, t.ink, 400);
-            s.setLineSpacing(t.dp(7), 1f);
+            s.setLineSpacing(t.dp(9), 1f);
             s.setPadding(0, t.dp(22), 0, 0);
             body.addView(s);
         }
         JSONArray points = e.optJSONArray("points"); // 简报要点：原文里的具体内容，详情接口才有
         for (int i = 0; points != null && i < points.length(); i++) {
             LinearLayout row = new LinearLayout(this);
-            row.setPadding(0, t.dp(i == 0 ? 18 : 10), 0, 0);
+            row.setPadding(0, t.dp(i == 0 ? 14 : 10), 0, 0);
             View dot = new View(this);
-            dot.setBackground(t.round(t.sub, 99));
-            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(5), t.dp(5));
-            dl.topMargin = t.dp(10);
+            dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
+            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(14), t.dp(14));
+            dl.topMargin = t.dp(5);
             row.addView(dot, dl);
             TextView p = t.text(this, points.optString(i), 15.5f, t.ink, 400);
-            p.setLineSpacing(t.dp(5), 1f);
+            p.setLineSpacing(t.dp(7), 1f);
             p.setPadding(t.dp(12), 0, 0, 0);
             row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             body.addView(row);
@@ -213,52 +206,127 @@ public class EventActivity extends Activity {
         JSONArray updates = e.optJSONArray("updates");
         if (updates != null && updates.length() > 0) {
             body.addView(sectionLabel("进展"));
-            for (int i = 0; i < updates.length(); i++) body.addView(updateRow(updates.optJSONObject(i), i == 0));
+            for (int i = 0; i < updates.length(); i++) {
+                body.addView(updateRow(updates.optJSONObject(i), i == 0, i == updates.length() - 1));
+            }
         }
 
         body.addView(askSection(e));
 
-        TextView srcLabel = t.text(this, "来源", 13, t.sub, 700);
-        srcLabel.setPadding(0, t.dp(32), 0, t.dp(4));
-        body.addView(srcLabel);
+        body.addView(sectionLabel("来源"));
         sources = new LinearLayout(this);
         sources.setOrientation(LinearLayout.VERTICAL);
         body.addView(sources);
         JSONArray signals = e.optJSONArray("signals");
         if (signals == null) {
             TextView wait = t.text(this, "正在加载来源…", 14, t.sub, 400);
-            wait.setPadding(0, t.dp(12), 0, 0);
+            wait.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
             sources.addView(wait);
         } else {
-            for (int i = 0; i < signals.length(); i++) sources.addView(sourceRow(signals.optJSONObject(i)));
+            showSources(signals, signals.length() <= FOLDED_SOURCES + 1);
         }
+        t.segments(sources);
         following = e.optBoolean("following");
         updateActions();
     }
 
+    /** 头部：话题色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和卡片一样，不跳变。 */
+    private void renderHead(JSONObject e) {
+        JSONArray topics = e.optJSONArray("topics");
+        int[] c = t.topic(topics);
+        head.removeAllViews();
+        head.setBackground(t.round(c[0], 0, 0, 44, 44));
+        head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        for (int i = 0; topics != null && i < Math.min(3, topics.length()); i++) {
+            TextView chip = t.text(this, topics.optString(i), 12, c[1], 700);
+            chip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
+            chip.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.rightMargin = t.dp(6);
+            top.addView(chip, lp);
+        }
+        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        int importance = e.optInt("importance");
+        if (importance >= 4) {
+            TextView badge = t.text(this, String.valueOf(importance), 13, c[0], 900);
+            badge.setTypeface(Theme.flex(this, 140, 900));
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(new Shapes.Blob(importance >= 5 ? Shapes.SUNNY : Shapes.CLOVER, c[1]));
+            top.addView(badge, new LinearLayout.LayoutParams(t.dp(30), t.dp(30)));
+        }
+        head.addView(top);
+
+        TextView headline = t.text(this, e.optString("headline"), 27, c[1], 900);
+        headline.setLineSpacing(t.dp(7), 1f);
+        headline.setLetterSpacing(-0.01f);
+        headline.setPadding(0, t.dp(14), 0, 0);
+        head.addView(headline);
+
+        LinearLayout metaRow = new LinearLayout(this);
+        metaRow.setGravity(Gravity.CENTER_VERTICAL);
+        metaRow.setPadding(0, t.dp(16), 0, 0);
+        TextView meta = t.text(this, e.optInt("source_count") + " 个来源   最近 "
+                + Theme.ago(Theme.millis(e.optString("time"))), 13, c[1], 700);
+        meta.setTypeface(Theme.flex(this, 92, 700));
+        metaRow.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView original = t.text(this, "看原文 ↗", 13, c[0], 700);
+        original.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        original.setBackground(t.ripple(c[1], 99));
+        original.setOnClickListener(v -> openUrl(e.optString("url")));
+        metaRow.addView(original);
+        head.addView(metaRow);
+    }
+
+    /** 来源超过 5 条时先显示 4 条，最后一行“展开全部来源”。 */
+    private void showSources(JSONArray signals, boolean all) {
+        sources.removeAllViews();
+        int n = all ? signals.length() : FOLDED_SOURCES;
+        for (int i = 0; i < n; i++) sources.addView(sourceRow(signals.optJSONObject(i)));
+        if (!all) {
+            TextView more = t.text(this, "展开全部来源", 13.5f, t.pri, 700);
+            more.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
+            more.setOnClickListener(v -> {
+                showSources(signals, true);
+                t.segments(sources);
+            });
+            sources.addView(more);
+        }
+    }
+
     private TextView sectionLabel(String text) {
-        TextView v = t.text(this, text, 13, t.sub, 700);
-        v.setPadding(0, t.dp(30), 0, t.dp(10));
+        TextView v = t.text(this, text, 18, t.ink, 800);
+        v.setPadding(0, t.dp(30), 0, t.dp(12));
         return v;
     }
 
-    /** 追踪发现的实质进展，最新的在上，最新一条用朱砂点标出。 */
-    private View updateRow(JSONObject u, boolean latest) {
-        LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, t.dp(6), 0, t.dp(10));
-        View dot = new View(this);
-        dot.setBackground(t.round(latest ? Theme.CINNABAR : t.line, 99));
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(8), t.dp(8));
-        dl.topMargin = t.dp(6);
-        row.addView(dot, dl);
+    /** 追踪发现的实质进展，最新的在上：时间线，最新一条用太阳形节点。 */
+    private View updateRow(JSONObject u, boolean latest, boolean last) {
+        FrameLayout row = new FrameLayout(this);
+        if (!last) {
+            View line = new View(this);
+            line.setBackgroundColor(t.line);
+            FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(t.dp(2), ViewGroup.LayoutParams.MATCH_PARENT);
+            ll.leftMargin = t.dp(7);
+            ll.topMargin = t.dp(20);
+            row.addView(line, ll);
+        }
+        View node = new View(this);
+        node.setBackground(new Shapes.Blob(latest ? Shapes.SUNNY : Shapes.SOFT, latest ? t.pri : t.line));
+        FrameLayout.LayoutParams nl = new FrameLayout.LayoutParams(t.dp(16), t.dp(16));
+        nl.topMargin = t.dp(3);
+        row.addView(node, nl);
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(t.dp(12), 0, 0, 0);
-        TextView text = t.text(this, u.optString("text"), 15, t.ink, 500);
-        text.setLineSpacing(t.dp(4), 1f);
+        col.setPadding(t.dp(30), 0, 0, t.dp(16));
+        TextView text = t.text(this, u.optString("text"), 15, t.ink, 600);
+        text.setLineSpacing(t.dp(5), 1f);
         col.addView(text);
         TextView time = t.text(this, Theme.ago(Theme.millis(u.optString("at"))), 12, t.sub, 400);
-        time.setPadding(0, t.dp(4), 0, 0);
+        time.setPadding(0, t.dp(3), 0, 0);
         col.addView(time);
         row.addView(col);
         return row;
@@ -271,9 +339,15 @@ public class EventActivity extends Activity {
         box.addView(sectionLabel("问一问"));
         JSONObject thread = e.optJSONObject("thread");
         if (thread != null && thread.optInt("count") > 0) {
-            TextView resume = t.text(this, "继续上次的对话（" + thread.optInt("count") + " 条）", 15, t.ink, 600);
-            resume.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
-            resume.setBackground(t.ripple(t.chip, 16));
+            LinearLayout resume = new LinearLayout(this);
+            resume.setGravity(Gravity.CENTER_VERTICAL);
+            resume.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
+            resume.setBackground(t.ripple(t.pc, 20));
+            resume.addView(t.text(this, "继续上次的对话", 15, t.onPc, 700),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            TextView count = t.text(this, thread.optInt("count") + " 条", 14, t.onPc, 700);
+            count.setTypeface(Theme.flex(this, 110, 700));
+            resume.addView(count);
             resume.setOnClickListener(v -> openChat(null));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -283,9 +357,10 @@ public class EventActivity extends Activity {
         JSONArray qs = e.optJSONArray("questions");
         for (int i = 0; qs != null && i < qs.length(); i++) {
             String q = qs.optString(i);
-            TextView chip = t.text(this, q, 15, t.ink, 500);
-            chip.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
-            chip.setBackground(t.ripple(t.sheet, 16));
+            TextView chip = t.text(this, q, 14.5f, t.ink, 600);
+            chip.setLineSpacing(t.dp(3), 1f);
+            chip.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
+            chip.setBackground(t.ripple(t.sheet, 18));
             chip.setOnClickListener(v -> openChat(q));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -295,7 +370,6 @@ public class EventActivity extends Activity {
         return box;
     }
 
-    /** “要不是 Catchup，你会错过它吗？”——衡量产品核心价值的那个问题。 */
     private void toggleFollow() {
         following = !following;
         updateActions();
@@ -314,6 +388,8 @@ public class EventActivity extends Activity {
             for (int k = 0; k < arr.length; k++) arr[k] = qs.optString(k);
             i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
         }
+        JSONArray topics = event == null ? null : event.optJSONArray("topics");
+        if (topics != null) i.putExtra(ChatActivity.EXTRA_TOPICS, topics.toString());
         if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
         startActivity(i);
         overridePendingTransition(R.anim.enter_up, R.anim.hold);
@@ -333,43 +409,43 @@ public class EventActivity extends Activity {
     private View sourceRow(JSONObject s) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(t.dp(2), t.dp(14), t.dp(2), t.dp(14));
-        row.setBackground(t.ripple(Color.TRANSPARENT, 12));
-        LinearLayout top = new LinearLayout(this);
-        top.addView(t.text(this, s.optString("label"), 12, t.sub, 600),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView time = t.text(this, Theme.ago(Theme.millis(s.optString("time"))), 12, t.sub, 400);
-        time.setFontFeatureSettings("tnum");
-        top.addView(time);
-        row.addView(top);
-        TextView title = t.text(this, s.optString("title"), 15, t.ink, 500);
+        row.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
+        row.addView(t.text(this, s.optString("label") + "，" + Theme.ago(Theme.millis(s.optString("time"))),
+                12, t.sub, 700));
+        TextView title = t.text(this, s.optString("title"), 14, t.ink, 400);
         title.setLineSpacing(t.dp(3), 1f);
-        title.setPadding(0, t.dp(6), 0, 0);
+        title.setPadding(0, t.dp(3), 0, 0);
         row.addView(title);
         row.setOnClickListener(v -> openUrl(s.optString("url")));
         return row;
     }
 
     private TextView action(String label, View.OnClickListener l) {
-        TextView a = t.text(this, label, 14, t.ink, 700);
+        TextView a = t.text(this, label, 14, t.onInv, 700);
         a.setGravity(Gravity.CENTER);
-        a.setPadding(0, t.dp(13), 0, t.dp(13));
+        a.setPadding(0, t.dp(14), 0, t.dp(14));
         a.setBackground(t.ripple(Color.TRANSPARENT, 99));
         a.setOnClickListener(l);
         return a;
+    }
+
+    private static Spring.Shape shape(View v) {
+        return (Spring.Shape) ((android.graphics.drawable.RippleDrawable) v.getBackground()).getDrawable(0);
     }
 
     private LinearLayout.LayoutParams weight() {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
     }
 
+    /** 选中的按钮换形状：“有用”的底色收成靠内侧的小圆角，追踪从胶囊变成墨色小圆角方块。 */
     private void updateActions() {
         boolean on = "useful".equals(feedback);
         useful.setText(on ? "已标记有用" : "有用");
-        useful.setBackground(t.ripple(on ? t.chip : Color.TRANSPARENT, 99));
-        follow.setText(following ? "追踪中" : "追踪");
+        useful.setBackground(t.ripple(on ? (t.onInv & 0x00FFFFFF) | 0x29000000 : Color.TRANSPARENT,
+                99, on ? Theme.R_M - 2 : 99, on ? Theme.R_M - 2 : 99, 99));
+        follow.setText(following ? "✓ 追踪中" : "+ 追踪");
         follow.setTextColor(following ? t.bg : t.ink);
-        follow.setBackground(t.ripple(following ? t.ink : t.sheet, 99));
+        shape(follow).morph(t.dp(following ? Theme.R_M : 99), following ? t.ink : t.sheet);
     }
 
     private void toggleUseful() {

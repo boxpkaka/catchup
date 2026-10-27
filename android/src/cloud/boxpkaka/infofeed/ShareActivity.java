@@ -1,17 +1,17 @@
 package cloud.boxpkaka.infofeed;
 
-import android.animation.ObjectAnimator;
-import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -28,8 +28,9 @@ public class ShareActivity extends Activity {
     private static final Pattern URL = Pattern.compile("https?://[^\\s<>\"'，。；！？、）】」]+");
 
     private Theme t;
-    private TextView title, detail, retry;
-    private ObjectAnimator pulse;
+    private TextView title, link, detail, retry;
+    private Shapes.Loader loader;
+    private View loaderBox;
     private String text, subject;
 
     @Override
@@ -52,26 +53,44 @@ public class ShareActivity extends Activity {
         TextView close = t.backButton(this);
         root.addView(close, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
 
+        // 中间一个大的加载指示器、正在读的链接和一句说明
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(t.dp(8), t.dp(40), 0, 0);
+        body.setGravity(Gravity.CENTER_VERTICAL);
+        body.setPadding(t.dp(14), 0, 0, t.dp(80));
+        FrameLayout box = new FrameLayout(this);
+        box.setBackground(t.round(t.pc, 99));
+        loader = new Shapes.Loader(this, t.pri);
+        box.addView(loader, new FrameLayout.LayoutParams(t.dp(58), t.dp(58), Gravity.CENTER));
+        loaderBox = box;
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(t.dp(96), t.dp(96));
+        bl.bottomMargin = t.dp(28);
+        body.addView(box, bl);
         body.addView(t.text(this, "分享到 Catchup", 13, t.sub, 700));
-        title = t.text(this, "", 28, t.ink, 900);
-        title.setLetterSpacing(-0.02f);
-        title.setPadding(0, t.dp(12), 0, 0);
+        title = t.text(this, "", 26, t.ink, 900);
+        title.setLineSpacing(t.dp(6), 1f);
+        title.setPadding(0, t.dp(10), 0, 0);
         body.addView(title);
-        detail = t.text(this, "", 15, t.ink, 400);
-        detail.setAlpha(0.78f);
-        detail.setLineSpacing(t.dp(5), 1f);
-        detail.setPadding(0, t.dp(14), 0, 0);
+        link = t.text(this, "", 13, t.sub, 600);
+        link.setTypeface(Theme.flex(this, 88, 600));
+        link.setSingleLine();
+        link.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        link.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+        link.setBackground(t.round(t.sheet, Theme.R_S));
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        ll.topMargin = t.dp(14);
+        body.addView(link, ll);
+        detail = t.text(this, "", 14, t.sub, 400);
+        detail.setLineSpacing(t.dp(6), 1f);
+        detail.setPadding(0, t.dp(12), 0, 0);
         body.addView(detail);
         retry = t.pill(this, "重试", true);
         retry.setOnClickListener(v -> submit());
-        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        rl.topMargin = t.dp(24);
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(56));
+        rl.topMargin = t.dp(28);
         body.addView(retry, rl);
-        root.addView(body);
+        root.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -91,9 +110,12 @@ public class ShareActivity extends Activity {
         }
         String host = Uri.parse(m.group()).getHost();
         title.setText("正在读这篇…");
-        detail.setText((host == null ? "" : host + "\n") + "读完会整理成简报。");
+        link.setText(m.group().replaceFirst("^https?://(www\\.)?", ""));
+        link.setVisibility(View.VISIBLE);
+        detail.setText("读完会整理成简报。");
         retry.setVisibility(View.GONE);
-        startPulse();
+        loaderBox.setVisibility(View.VISIBLE);
+        loader.start();
         Trace.log(this, "share.start", host == null ? "" : host);
         new Thread(() -> {
             long eventId = -1;
@@ -110,7 +132,7 @@ public class ShareActivity extends Activity {
             String error = err;
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
-                stopPulse();
+                loader.stop();
                 if (id < 0) {
                     fail("没读成", error == null ? "服务器没有返回结果，稍后再试一次。" : error, true);
                     return;
@@ -123,22 +145,10 @@ public class ShareActivity extends Activity {
     }
 
     private void fail(String head, String why, boolean canRetry) {
+        loaderBox.setVisibility(View.GONE);
+        link.setVisibility(View.GONE);
         title.setText(head);
         detail.setText(why);
         retry.setVisibility(canRetry ? View.VISIBLE : View.GONE);
-    }
-
-    private void startPulse() {
-        stopPulse();
-        pulse = ObjectAnimator.ofFloat(title, View.ALPHA, 1f, 0.4f);
-        pulse.setDuration(700);
-        pulse.setRepeatMode(ValueAnimator.REVERSE);
-        pulse.setRepeatCount(ValueAnimator.INFINITE);
-        pulse.start();
-    }
-
-    private void stopPulse() {
-        if (pulse != null) pulse.cancel();
-        title.setAlpha(1f);
     }
 }

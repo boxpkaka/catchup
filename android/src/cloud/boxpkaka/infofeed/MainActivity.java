@@ -1,9 +1,8 @@
 package cloud.boxpkaka.infofeed;
 
 import android.Manifest;
-import android.animation.ObjectAnimator;
-import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.NotificationChannel;
@@ -14,13 +13,11 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
-import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
-import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -28,10 +25,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
-import android.text.SpannableString;
-import android.text.Spanned;
 import android.text.TextUtils;
-import android.text.style.ReplacementSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -61,7 +55,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 首页：顶部一句“补课”告诉你离开期间有几件值得知道的事，下面是“值得知道”的事件卡和其余动态。
+ * 首页：“未追踪信息”入口，下面依次是追踪中、值得知道的事件卡（按话题上色）和其余动态。
  * 下拉刷新，左滑标记不需要（可撤销），点开看详情。
  */
 public class MainActivity extends Activity {
@@ -91,10 +85,11 @@ public class MainActivity extends Activity {
     private LinearLayout updateNotice, batteryNotice, notifyNotice;
     private TextView updateText, updateAction;
     private View skeleton;
-    private ValueAnimator skeletonPulse;
+    private Shapes.Loader skeletonLoader;
     private LinearLayout stateView;
     private LinearLayout undoBar;
     private TextView undoLabel, undoButton;
+    private Shapes.Wave undoCountdown;
     private final List<TextView> reasonChips = new ArrayList<>();
 
     private final List<Row> rows = new ArrayList<>();
@@ -209,26 +204,28 @@ public class MainActivity extends Activity {
 
         topBar = new LinearLayout(this);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setPadding(t.dp(20), t.dp(12), t.dp(8), t.dp(8));
+        topBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(6));
         topBar.setBackgroundColor(t.bg);
-        topBar.addView(wordmark(24), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        topBar.addView(wordmark(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView ask = t.pill(this, "问一问", false);
-        ask.setTextSize(13);
-        ask.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        ask.setTextSize(13.5f);
+        ask.setPadding(t.dp(16), t.dp(9), t.dp(16), t.dp(9));
         ask.setOnClickListener(v -> {
             startActivity(new Intent(this, ChatActivity.class));
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         });
         topBar.addView(ask);
-        TextView menu = t.text(this, "⋯", 22, t.ink, 700);
+        TextView menu = t.text(this, "⋮", 20, t.ink, 700);
         menu.setGravity(Gravity.CENTER);
         menu.setContentDescription("菜单");
-        menu.setBackground(t.ripple(Color.TRANSPARENT, 22));
+        menu.setBackground(t.ripple(Color.TRANSPARENT, 99));
         menu.setOnClickListener(v -> showMenu());
-        topBar.addView(menu, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(44), t.dp(44));
+        ml.leftMargin = t.dp(4);
+        topBar.addView(menu, ml);
         column.addView(topBar);
         topDivider = new View(this);
-        topDivider.setBackgroundColor(t.line);
+        topDivider.setBackgroundColor(t.hi);
         topDivider.setAlpha(0);
         column.addView(topDivider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1));
 
@@ -268,27 +265,27 @@ public class MainActivity extends Activity {
 
         undoBar = new LinearLayout(this);
         undoBar.setOrientation(LinearLayout.VERTICAL);
-        undoBar.setPadding(t.dp(18), t.dp(8), t.dp(10), t.dp(14));
-        undoBar.setBackground(t.round(t.ink, 18));
+        undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
+        undoBar.setBackground(t.round(t.inv, Theme.R_XL));
         undoBar.setElevation(t.dp(6));
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        undoLabel = t.text(this, "", 14, t.bg, 500);
+        undoLabel = t.text(this, "", 14, t.onInv, 600);
         head.addView(undoLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        undoButton = t.text(this, "撤销", 14, t.bg, 800);
-        undoButton.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-        undoButton.setBackground(t.ripple(Color.TRANSPARENT, 12));
+        undoButton = t.text(this, "撤销", 14, t.invPri, 800);
+        undoButton.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+        undoButton.setBackground(t.ripple(Color.TRANSPARENT, 99));
         undoButton.setOnClickListener(v -> undoDismiss());
         head.addView(undoButton);
         undoBar.addView(head);
         LinearLayout chips = new LinearLayout(this);
         for (String[] reason : REASONS) {
-            TextView chip = t.text(this, reason[1], 13, t.bg, 600);
+            TextView chip = t.text(this, reason[1], 13, t.onInv, 700);
             chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
             chip.setOnClickListener(v -> pickReason(chip, reason));
             LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
-            cl.rightMargin = t.dp(8);
+            cl.rightMargin = t.dp(3);
             chips.addView(chip, cl);
             reasonChips.add(chip);
         }
@@ -297,8 +294,12 @@ public class MainActivity extends Activity {
         chipScroll.addView(chips);
         LinearLayout.LayoutParams csl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        csl.topMargin = t.dp(2);
+        csl.topMargin = t.dp(6);
         undoBar.addView(chipScroll, csl);
+        undoCountdown = new Shapes.Wave(this, t.invPri);
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(10));
+        wl.setMargins(0, t.dp(12), t.dp(10), 0);
+        undoBar.addView(undoCountdown, wl);
         undoBar.setVisibility(View.GONE);
         FrameLayout.LayoutParams ub = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -308,8 +309,8 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-                topBar.setPadding(t.dp(20), bars.top + t.dp(12), t.dp(8), t.dp(8));
-                skeleton.setPadding(0, bars.top + t.dp(88), 0, 0);
+                topBar.setPadding(t.dp(20), bars.top + t.dp(10), t.dp(10), t.dp(6));
+                skeleton.setPadding(0, bars.top + t.dp(60), 0, 0);
                 list.setPadding(0, 0, 0, bars.bottom + t.dp(96));
                 ub.bottomMargin = bars.bottom + t.dp(16);
                 undoBar.setLayoutParams(ub);
@@ -322,46 +323,30 @@ public class MainActivity extends Activity {
     private View buildHeader() {
         header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(t.dp(20), t.dp(8), t.dp(20), t.dp(4));
+        header.setPadding(t.dp(12), t.dp(4), t.dp(12), 0);
 
-        statusChip = t.text(this, "", 12, Theme.CINNABAR, 500);
-        statusChip.setPadding(0, 0, 0, t.dp(12));
-        statusChip.setVisibility(View.GONE);
-        header.addView(statusChip);
-
-        updateNotice = notice(t.ink);
-        updateText = t.text(this, "", 14, t.bg, 600);
+        // 提醒条：更新用反色，最显眼；其余用卡片色，右边是主色容器的按钮
+        updateNotice = notice(t.inv);
+        updateText = t.text(this, "", 14.5f, t.onInv, 700);
         updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        updateAction = t.text(this, "更新", 13, t.ink, 800);
-        updateAction.setPadding(t.dp(14), t.dp(7), t.dp(14), t.dp(7));
-        updateAction.setBackground(t.round(t.bg, 99));
+        updateAction = noticeAction("更新", t.lime, t.onLime);
         updateNotice.addView(updateAction);
         updateNotice.setOnClickListener(v -> installUpdate());
         updateNotice.setVisibility(View.GONE);
         header.addView(updateNotice, noticeLp());
 
         batteryNotice = notice(t.sheet);
-        LinearLayout bt = new LinearLayout(this);
-        bt.setOrientation(LinearLayout.VERTICAL);
-        bt.addView(t.text(this, "允许后台运行", 14, t.ink, 600));
-        TextView bs = t.text(this, "关闭电池优化后，推送才不会延迟", 12, t.sub, 400);
-        bs.setPadding(0, t.dp(4), 0, 0);
-        bt.addView(bs);
-        batteryNotice.addView(bt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        batteryNotice.addView(t.text(this, "去设置", 13, t.ink, 700));
+        batteryNotice.addView(noticeText("允许后台运行", "关闭电池优化后，推送才不会延迟"),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        batteryNotice.addView(noticeAction("去设置", t.pc, t.onPc));
         batteryNotice.setOnClickListener(v -> startActivity(new Intent(
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))));
         header.addView(batteryNotice, noticeLp());
 
         notifyNotice = notice(t.sheet);
-        LinearLayout nt = new LinearLayout(this);
-        nt.setOrientation(LinearLayout.VERTICAL);
-        nt.addView(t.text(this, "推送通知被关闭了", 14, t.ink, 600));
-        TextView ns = t.text(this, "打开“新消息”通知，值得知道的事才会弹出来", 12, t.sub, 400);
-        ns.setPadding(0, t.dp(4), 0, 0);
-        nt.addView(ns);
-        notifyNotice.addView(nt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        notifyNotice.addView(t.text(this, "去打开", 13, t.ink, 700));
+        notifyNotice.addView(noticeText("推送通知被关闭了", "打开“新消息”通知，值得知道的事才会弹出来"),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        notifyNotice.addView(noticeAction("去打开", t.pc, t.onPc));
         notifyNotice.setOnClickListener(v -> startActivity(
                 new Intent(getSystemService(NotificationManager.class).areNotificationsEnabled()
                         ? Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS : Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -369,47 +354,56 @@ public class MainActivity extends Activity {
                         .putExtra(Settings.EXTRA_CHANNEL_ID, FeedService.CHANNEL_MESSAGES)));
         header.addView(notifyNotice, noticeLp());
 
-        skippedLine = t.text(this, "", 13, t.ink, 600);
-        skippedLine.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-        skippedLine.setBackground(t.ripple(t.chip, 99));
+        statusChip = t.text(this, "", 12.5f, t.onErr, 600);
+        statusChip.setPadding(t.dp(10), t.dp(6), t.dp(10), 0);
+        statusChip.setVisibility(View.GONE);
+        header.addView(statusChip);
+
+        // “未追踪信息”入口：四叶形 + 文字的胶囊
+        skippedLine = t.text(this, "未追踪信息", 13, t.ink, 600);
+        skippedLine.setGravity(Gravity.CENTER_VERTICAL);
+        skippedLine.setPadding(t.dp(10), t.dp(9), t.dp(16), t.dp(9));
+        Drawable clover = new Shapes.Blob(Shapes.CLOVER, t.sub);
+        clover.setBounds(0, 0, t.dp(22), t.dp(22));
+        skippedLine.setCompoundDrawablesRelative(clover, null, null, null);
+        skippedLine.setCompoundDrawablePadding(t.dp(8));
+        skippedLine.setBackground(t.ripple(t.sheet, 99));
         skippedLine.setOnClickListener(v -> showSkipped());
         skippedLine.setVisibility(View.GONE);
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         sl.topMargin = t.dp(8);
-        sl.bottomMargin = t.dp(10);
         header.addView(skippedLine, sl);
         return header;
     }
 
+    /** 首次加载的骨架屏：形状和真实布局一致（入口胶囊、追踪中一组、事件卡），中间是加载指示器。 */
     private View buildSkeleton() {
-        LinearLayout s = new LinearLayout(this);
-        s.setOrientation(LinearLayout.VERTICAL);
+        FrameLayout s = new FrameLayout(this);
         s.setBackgroundColor(t.bg);
-        s.setPadding(0, t.dp(88), 0, 0);
-        s.addView(bar(220, 26, 20, 10));
-        s.addView(bar(160, 26, 20, 16));
-        s.addView(bar(260, 12, 20, 28));
-        for (int i = 0; i < 3; i++) {
-            View card = new View(this);
-            card.setBackground(t.round(t.sheet, 22));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(150));
-            lp.setMargins(t.dp(16), t.dp(6), t.dp(16), t.dp(6));
-            s.addView(card, lp);
-        }
-        skeletonPulse = ObjectAnimator.ofFloat(s, View.ALPHA, 1f, 0.55f);
-        skeletonPulse.setDuration(800);
-        skeletonPulse.setRepeatMode(ValueAnimator.REVERSE);
-        skeletonPulse.setRepeatCount(ValueAnimator.INFINITE);
-        skeletonPulse.start();
+        s.setPadding(0, t.dp(60), 0, 0);
+        LinearLayout blocks = new LinearLayout(this);
+        blocks.setOrientation(LinearLayout.VERTICAL);
+        blocks.addView(block(128, 40, 99, 8));
+        blocks.addView(block(-1, 136, Theme.R_XL, 52));
+        blocks.addView(block(-1, 220, Theme.R_2XL, 62));
+        blocks.addView(block(-1, 150, Theme.R_2XL, 12));
+        s.addView(blocks, match());
+        skeletonLoader = new Shapes.Loader(this, t.pri);
+        skeletonLoader.setPadding(t.dp(11), t.dp(11), t.dp(11), t.dp(11));
+        skeletonLoader.setBackground(t.round(t.pc, 99));
+        FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(t.dp(56), t.dp(56), Gravity.CENTER);
+        s.addView(skeletonLoader, ll);
+        skeletonLoader.start();
         return s;
     }
 
-    private View bar(int widthDp, int heightDp, int leftDp, int bottomDp) {
+    private View block(int widthDp, int heightDp, float radiusDp, int topDp) {
         View v = new View(this);
-        v.setBackground(t.round(t.line, 8));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(t.dp(widthDp), t.dp(heightDp));
-        lp.setMargins(t.dp(leftDp), 0, 0, t.dp(bottomDp));
+        v.setBackground(t.round(t.hi, radiusDp));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                widthDp < 0 ? ViewGroup.LayoutParams.MATCH_PARENT : t.dp(widthDp), t.dp(heightDp));
+        lp.setMargins(t.dp(12), t.dp(topDp), t.dp(12), 0);
         v.setLayoutParams(lp);
         return v;
     }
@@ -460,37 +454,57 @@ public class MainActivity extends Activity {
 
     private void onLoadFailed(Exception e, int pendingDevice) {
         if (e instanceof Api.Failure && ((Api.Failure) e).code == 403) {
-            showState("这台手机还没被确认",
-                    "在服务器上运行下面的命令，再回来点“重新检查”：\n\npython3 -m catchup devices approve "
-                            + (pendingDevice >= 0 ? pendingDevice : "<设备编号>"));
+            showState("?", "这台手机\n还没被确认", "在服务器上运行下面的命令，再回来点“重新检查”。",
+                    "python3 -m catchup devices approve " + (pendingDevice >= 0 ? pendingDevice : "<设备编号>"));
             return;
         }
         if (feed == null) {
-            showState("连不上服务器", "检查网络后重试。\n" + reason(e));
+            showState("!", "连不上服务器", "检查网络后重试。\n" + reason(e), null);
         } else {
             statusChip.setText("刷新失败：" + reason(e));
             statusChip.setVisibility(View.VISIBLE);
         }
     }
 
-    private void showState(String title, String body) {
+    private void showState(String mark, String title, String body, String code) {
         stopSkeleton();
         stateView.removeAllViews();
-        stateView.addView(t.text(this, title, 26, t.ink, 900));
+        TextView art = t.text(this, mark, 44, t.sub, 900);
+        art.setTypeface(Theme.flex(this, 151, 900));
+        art.setGravity(Gravity.CENTER);
+        art.setBackground(new Shapes.Blob(Shapes.CLOVER, t.hi));
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(t.dp(120), t.dp(120));
+        al.bottomMargin = t.dp(26);
+        stateView.addView(art, al);
+        TextView h = t.text(this, title, 26, t.ink, 900);
+        h.setLineSpacing(t.dp(6), 1f);
+        stateView.addView(h);
         TextView b = t.text(this, body, 14, t.sub, 400);
-        b.setLineSpacing(t.dp(3), 1f);
-        b.setTextIsSelectable(true);
-        b.setPadding(0, t.dp(14), 0, t.dp(28));
+        b.setLineSpacing(t.dp(6), 1f);
+        b.setPadding(0, t.dp(12), 0, 0);
         stateView.addView(b);
-        TextView retry = t.text(this, "重新检查", 15, t.bg, 800);
+        if (code != null) {
+            TextView c = t.text(this, code, 12.5f, t.ink, 400);
+            c.setTypeface(Typeface.MONOSPACE);
+            c.setTextIsSelectable(true);
+            c.setLineSpacing(t.dp(4), 1f);
+            c.setPadding(t.dp(14), t.dp(12), t.dp(14), t.dp(12));
+            c.setBackground(t.round(t.sheet, Theme.R_M));
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            cl.topMargin = t.dp(14);
+            stateView.addView(c, cl);
+        }
+        TextView retry = t.text(this, "重新检查", 15.5f, t.onPri, 800);
         retry.setGravity(Gravity.CENTER);
-        retry.setPadding(0, t.dp(15), 0, t.dp(15));
-        retry.setBackground(t.ripple(t.ink, 99));
+        t.press(retry, t.pri, 99);
         retry.setOnClickListener(v -> {
             stateView.setVisibility(View.GONE);
             load();
         });
-        stateView.addView(retry);
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(56));
+        rl.topMargin = t.dp(28);
+        stateView.addView(retry, rl);
         stateView.setVisibility(View.VISIBLE);
     }
 
@@ -543,7 +557,7 @@ public class MainActivity extends Activity {
 
     private void stopSkeleton() {
         if (skeleton.getVisibility() == View.GONE) return;
-        skeletonPulse.cancel();
+        skeletonLoader.stop();
         skeleton.animate().alpha(0f).setDuration(200).withEndAction(() -> skeleton.setVisibility(View.GONE)).start();
     }
 
@@ -602,39 +616,42 @@ public class MainActivity extends Activity {
                 label.setText(r.label);
                 return label;
             }
+            // 追踪中和其他动态是分段列表：一组的头尾用大圆角
+            boolean first = rows.get(i - 1).type != r.type, last = i == rows.size() - 1 || rows.get(i + 1).type != r.type;
             if (r.type == 3) {
                 if (convert == null) convert = newFollowRow();
-                if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e);
-                else bindFollow((Holder) convert.getTag(), r.e);
+                if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e, first, last);
+                else bindFollow((Holder) convert.getTag(), r.e, first, last);
                 return convert;
             }
             if (convert == null) convert = r.type == 1 ? newCard() : newRow();
             Holder h = (Holder) convert.getTag();
             SwipeDismiss.reset(h.front, h.behind);
-            if (r.type == 1) bindCard(h, r.e);
-            else bindRow(h, r.e);
-            h.front.setOnClickListener(v -> open(r.e));
+            if (r.type == 1) bindCard(h, r.e, first);
+            else bindRow(h, r.e, first, last);
+            h.front.setOnClickListener(v -> open(v, r.e));
             h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
             return convert;
         }
     }
 
     private static final class Holder {
-        View front, behind, dot;
-        TextView chipA, chipB, headline, summary, meta, time;
+        View front, behind;
+        TextView label, chipA, chipB, badge, headline, summary, meta, time;
     }
 
     private TextView sectionLabel() {
-        TextView v = t.text(this, "", 13, t.sub, 700);
-        v.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(10));
+        TextView v = t.text(this, "", 20, t.ink, 800);
+        v.setPadding(t.dp(22), t.dp(26), t.dp(22), t.dp(12));
         return v;
     }
 
+    /** 可以左滑的一项：后面垫着警示色的“✕ 不需要”。 */
     private FrameLayout swipeFrame(Holder h, View front) {
         FrameLayout frame = new FrameLayout(this);
-        TextView behind = t.text(this, "不需要", 14, Theme.CINNABAR, 800);
+        TextView behind = t.text(this, "✕  不需要", 15, t.onErr, 800);
         behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        behind.setPadding(0, 0, t.dp(28), 0);
+        behind.setPadding(0, 0, t.dp(26), 0);
         behind.setVisibility(View.INVISIBLE);
         frame.addView(behind, match());
         frame.addView(front, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -645,138 +662,136 @@ public class MainActivity extends Activity {
         return frame;
     }
 
+    /** 值得知道的事件卡：底色取话题色，右上角的形状是重要性。 */
     private View newCard() {
         Holder h = new Holder();
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(16));
-        card.setBackground(t.ripple(t.sheet, 22));
+        card.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(18));
         card.setClickable(true);
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
+        h.label = newLabel("新");
+        top.addView(h.label, gapLp(6));
         h.chipA = chip();
         h.chipB = chip();
-        top.addView(h.chipA);
-        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        gap.leftMargin = t.dp(6);
-        top.addView(h.chipB, gap);
+        top.addView(h.chipA, gapLp(6));
+        top.addView(h.chipB);
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        h.dot = dot();
-        top.addView(h.dot, new LinearLayout.LayoutParams(t.dp(8), t.dp(8)));
+        h.badge = t.text(this, "", 13, t.sheet, 900);
+        h.badge.setTypeface(Theme.flex(this, 140, 900));
+        h.badge.setGravity(Gravity.CENTER);
+        top.addView(h.badge, new LinearLayout.LayoutParams(t.dp(30), t.dp(30)));
         card.addView(top);
 
-        h.headline = t.text(this, "", 18, t.ink, 700);
-        h.headline.setLineSpacing(t.dp(3), 1f);
-        h.headline.setPadding(0, t.dp(12), 0, 0);
+        h.headline = t.text(this, "", 19, t.ink, 800);
+        h.headline.setLineSpacing(t.dp(4), 1f);
+        h.headline.setPadding(0, t.dp(14), 0, 0);
         card.addView(h.headline);
         h.summary = t.text(this, "", 14.5f, t.ink, 400);
-        h.summary.setAlpha(0.78f);
-        h.summary.setLineSpacing(t.dp(4), 1f);
-        h.summary.setMaxLines(4);
+        h.summary.setAlpha(0.82f);
+        h.summary.setLineSpacing(t.dp(5), 1f);
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
         h.summary.setPadding(0, t.dp(8), 0, 0);
         card.addView(h.summary);
 
-        h.meta = t.text(this, "", 12, t.sub, 500);
-        h.meta.setFontFeatureSettings("tnum");
+        h.meta = t.text(this, "", 12.5f, t.ink, 600);
+        h.meta.setTypeface(Theme.flex(this, 88, 600));
+        h.meta.setAlpha(0.78f);
         h.meta.setPadding(0, t.dp(14), 0, 0);
         card.addView(h.meta);
 
         FrameLayout frame = swipeFrame(h, card);
-        frame.setPadding(t.dp(16), t.dp(6), t.dp(16), t.dp(6));
+        frame.setPadding(t.dp(12), t.dp(4), t.dp(12), t.dp(4));
+        h.behind.setBackground(t.round(t.err, Theme.R_2XL));
         return frame;
     }
 
+    /** 其他动态：分段列表里的一行，左边是时间，离开期间出现的时间用主色。 */
     private View newRow() {
         Holder h = new Holder();
         LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, t.dp(12), t.dp(20), t.dp(12));
-        row.setBackground(t.ripple(t.bg, 0));
+        row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
         row.setClickable(true);
 
-        FrameLayout gutter = new FrameLayout(this);
-        h.time = t.text(this, "", 12, t.sub, 500);
-        h.time.setFontFeatureSettings("tnum");
-        h.time.setGravity(Gravity.END);
-        h.time.setPadding(0, t.dp(2), t.dp(14), 0);
-        gutter.addView(h.time, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        h.dot = dot();
-        FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(t.dp(7), t.dp(7));
-        dl.leftMargin = t.dp(12);
-        dl.topMargin = t.dp(6);
-        gutter.addView(h.dot, dl);
-        row.addView(gutter, new LinearLayout.LayoutParams(t.dp(72), ViewGroup.LayoutParams.WRAP_CONTENT));
+        h.time = t.text(this, "", 13, t.sub, 800);
+        h.time.setTypeface(Theme.flex(this, 120, 800));
+        h.time.setPadding(0, t.dp(2), 0, 0);
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(t.dp(42), ViewGroup.LayoutParams.WRAP_CONTENT);
+        tl.rightMargin = t.dp(14);
+        row.addView(h.time, tl);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        h.headline = t.text(this, "", 15, t.ink, 600);
-        h.headline.setLineSpacing(t.dp(3), 1f);
+        h.headline = t.text(this, "", 15, t.ink, 700);
+        h.headline.setLineSpacing(t.dp(4), 1f);
         h.headline.setMaxLines(2);
         h.headline.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(h.headline);
-        h.summary = t.text(this, "", 13.5f, t.ink, 400); // 简报概要，不用点开也知道主要内容
-        h.summary.setAlpha(0.78f);
-        h.summary.setLineSpacing(t.dp(3), 1f);
-        h.summary.setMaxLines(3);
+        h.summary = t.text(this, "", 13.5f, t.sub, 400); // 简报概要，不用点开也知道主要内容
+        h.summary.setLineSpacing(t.dp(4), 1f);
+        h.summary.setMaxLines(2);
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(4), 0, 0);
+        h.summary.setPadding(0, t.dp(3), 0, 0);
         col.addView(h.summary);
-        h.meta = t.text(this, "", 12, t.sub, 400);
-        h.meta.setPadding(0, t.dp(6), 0, 0);
+        h.meta = t.text(this, "", 12, t.sub, 600);
+        h.meta.setPadding(0, t.dp(5), 0, 0);
         h.meta.setSingleLine();
         h.meta.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(h.meta);
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        return swipeFrame(h, row);
+        FrameLayout frame = swipeFrame(h, row);
+        frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
+        return frame;
     }
 
-    /** 追踪中的事件：标题 + 最近一条进展；上次看过之后有新进展的标朱砂点。 */
+    /** 追踪中：有了答案的问题（主色容器）和追踪的事件（卡片色）放在一组。 */
     private View newFollowRow() {
         Holder h = new Holder();
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        card.setBackground(t.ripple(t.sheet, 18));
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        h.headline = t.text(this, "", 15, t.ink, 700);
+        card.setPadding(t.dp(20), t.dp(16), t.dp(20), t.dp(16));
+        h.label = newLabel("");
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        ll.bottomMargin = t.dp(8);
+        card.addView(h.label, ll);
+        h.headline = t.text(this, "", 15.5f, t.ink, 800);
+        h.headline.setLineSpacing(t.dp(4), 1f);
         h.headline.setMaxLines(2);
         h.headline.setEllipsize(TextUtils.TruncateAt.END);
-        top.addView(h.headline, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        h.dot = dot();
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(8), t.dp(8));
-        dl.leftMargin = t.dp(10);
-        top.addView(h.dot, dl);
-        card.addView(top);
-        h.summary = t.text(this, "", 13.5f, t.ink, 400);
-        h.summary.setAlpha(0.78f);
+        card.addView(h.headline);
+        h.summary = t.text(this, "", 13.5f, t.sub, 400);
         h.summary.setLineSpacing(t.dp(3), 1f);
         h.summary.setMaxLines(2);
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(6), 0, 0);
+        h.summary.setPadding(0, t.dp(4), 0, 0);
         card.addView(h.summary);
-        h.meta = t.text(this, "", 12, t.sub, 500);
+        h.meta = t.text(this, "", 12.5f, t.sub, 600);
+        h.meta.setTypeface(Theme.flex(this, 90, 600));
         h.meta.setPadding(0, t.dp(8), 0, 0);
         card.addView(h.meta);
         h.front = card;
         FrameLayout frame = new FrameLayout(this);
-        frame.setPadding(t.dp(16), t.dp(4), t.dp(16), t.dp(4));
+        frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
         frame.addView(card);
         frame.setTag(h);
         return frame;
     }
 
-    private void bindFollow(Holder h, JSONObject f) {
+    private void bindFollow(Holder h, JSONObject f, boolean first, boolean last) {
+        h.front.setBackground(t.segment(t.sheet, first, last));
+        h.headline.setTextColor(t.ink);
+        h.summary.setTextColor(t.sub);
+        h.meta.setTextColor(t.sub);
         h.headline.setText(f.optString("headline"));
         String update = f.optString("update");
         show(h.summary, update);
         int n = f.optInt("update_count");
         h.meta.setText((n > 0 ? n + " 条进展，" : "") + "最近 " + Theme.ago(Theme.millis(f.optString("updated"))));
-        h.dot.setVisibility(n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen
-                ? View.VISIBLE : View.INVISIBLE);
+        boolean fresh = n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen;
+        show(h.label, fresh ? "新进展" : "");
         long id = f.optLong("id");
         h.front.setOnClickListener(v -> {
             startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
@@ -785,12 +800,15 @@ public class MainActivity extends Activity {
     }
 
     /** 替你留意的问题有了答案：点开回到当时的对话，答案已经写在里面。 */
-    private void bindAnswer(Holder h, JSONObject a) {
+    private void bindAnswer(Holder h, JSONObject a, boolean first, boolean last) {
+        h.front.setBackground(t.segment(t.pc, first, last));
+        h.headline.setTextColor(t.onPc);
+        h.summary.setTextColor(t.onPc);
+        h.meta.setTextColor(t.onPc);
+        show(h.label, "有了答案");
         h.headline.setText("你问过：" + a.optString("question"));
         show(h.summary, a.optString("answer"));
-        long at = Theme.millis(a.optString("answered"));
-        h.meta.setText("有了答案 · " + Theme.ago(at));
-        h.dot.setVisibility(seenAtOpen > 0 && at > seenAtOpen ? View.VISIBLE : View.INVISIBLE);
+        h.meta.setText(Theme.ago(Theme.millis(a.optString("answered"))));
         Intent chat = new Intent(this, ChatActivity.class)
                 .putExtra(ChatActivity.EXTRA_THREAD, a.optLong("thread_id"))
                 .putExtra(ChatActivity.EXTRA_EVENT, a.optLong("event_id", -1))
@@ -801,26 +819,42 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void bindCard(Holder h, JSONObject e) {
+    /** big 是“值得知道”的第一张：标题更大，概要多显示一行。 */
+    private void bindCard(Holder h, JSONObject e, boolean big) {
         JSONArray topics = e.optJSONArray("topics");
+        int[] c = t.topic(topics);
+        h.front.setBackground(t.ripple(c[0], Theme.R_2XL));
+        for (TextView v : new TextView[]{h.headline, h.summary, h.meta, h.chipA, h.chipB}) v.setTextColor(c[1]);
+        h.chipA.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
+        h.chipB.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
         show(h.chipA, topics != null && topics.length() > 0 ? topics.optString(0) : "");
         show(h.chipB, topics != null && topics.length() > 1 ? topics.optString(1) : "");
-        h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
+        h.label.setVisibility(isNew(e) ? View.VISIBLE : View.GONE);
+        int importance = e.optInt("importance");
+        h.badge.setVisibility(importance >= 4 ? View.VISIBLE : View.GONE);
+        h.badge.setText(String.valueOf(importance));
+        h.badge.setTextColor(c[0]);
+        h.badge.setBackground(new Shapes.Blob(importance >= 5 ? Shapes.SUNNY : Shapes.CLOVER, c[1]));
+        h.headline.setTextSize(big ? 22 : 19);
         h.headline.setText(e.optString("headline"));
+        h.summary.setMaxLines(big ? 4 : 3);
         show(h.summary, e.optString("summary"));
-        h.meta.setText(e.optInt("source_count") + " 个来源，" + Theme.ago(Theme.millis(e.optString("time")))
-                + (e.optBoolean("pushed") ? " · 已推送" : ""));
+        h.meta.setText(e.optInt("source_count") + " 个来源   " + Theme.ago(Theme.millis(e.optString("time")))
+                + (e.optBoolean("pushed") ? "   已推送" : ""));
     }
 
-    private void bindRow(Holder h, JSONObject e) {
+    private void bindRow(Holder h, JSONObject e, boolean first, boolean last) {
+        h.front.setBackground(t.segment(t.sheet, first, last));
+        float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
+        h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
         h.time.setText(shortTime(Theme.millis(e.optString("time"))));
-        h.dot.setVisibility(isNew(e) ? View.VISIBLE : View.INVISIBLE);
+        h.time.setTextColor(isNew(e) ? t.pri : t.sub);
         h.headline.setText(e.optString("headline"));
         show(h.summary, e.optString("summary"));
         JSONArray src = e.optJSONArray("sources");
-        String first = src != null && src.length() > 0 ? src.optString(0) : "";
+        String lead = src != null && src.length() > 0 ? src.optString(0) : "";
         int n = e.optInt("source_count");
-        h.meta.setText((n > 1 ? first + " 等 " + n + " 个来源" : first) + (e.optBoolean("pushed") ? " · 已推送" : ""));
+        h.meta.setText((n > 1 ? lead + " 等 " + n + " 个来源" : lead) + (e.optBoolean("pushed") ? " · 已推送" : ""));
     }
 
     private static String shortTime(long ms) {
@@ -837,16 +871,24 @@ public class MainActivity extends Activity {
     }
 
     private TextView chip() {
-        TextView c = t.text(this, "", 11.5f, t.ink, 600);
-        c.setPadding(t.dp(9), t.dp(4), t.dp(9), t.dp(4));
-        c.setBackground(t.round(t.chip, 99));
+        TextView c = t.text(this, "", 12, t.ink, 700);
+        c.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
         return c;
     }
 
-    private View dot() {
-        View d = new View(this);
-        d.setBackground(t.round(Theme.CINNABAR, 99));
-        return d;
+    /** 主色小标签：“新”“新进展”“有了答案”。 */
+    private TextView newLabel(String text) {
+        TextView v = t.text(this, text, 11.5f, t.onPri, 800);
+        v.setPadding(t.dp(9), t.dp(3), t.dp(9), t.dp(3));
+        v.setBackground(t.round(t.pri, 99));
+        return v;
+    }
+
+    private LinearLayout.LayoutParams gapLp(int rightDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = t.dp(rightDp);
+        return lp;
     }
 
     private static void show(TextView v, String s) {
@@ -856,12 +898,13 @@ public class MainActivity extends Activity {
 
     // ---------- 打开与移除 ----------
 
-    private void open(JSONObject e) {
+    /** 卡片展开成详情：从卡片的位置和大小揭开详情页；详情头部和卡片是同一个话题色，看起来像卡片长大了。 */
+    private void open(View from, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
                 .putExtra(EventActivity.EXTRA_JSON, e.toString());
-        startActivityForResult(i, REQ_EVENT);
-        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        startActivityForResult(i, REQ_EVENT, ActivityOptions.makeClipRevealAnimation(
+                from, 0, 0, from.getWidth(), from.getHeight()).toBundle());
     }
 
     private void dismiss(long id) {
@@ -874,11 +917,13 @@ public class MainActivity extends Activity {
         Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
         main.removeCallbacks(hideUndoLater);
         resetUndo(e == null ? "" : e.optString("source"));
+        // 撤销条从底下用弹簧升起，波浪线开始倒数，走完就提交
         undoBar.animate().cancel();
-        undoBar.setTranslationY(t.dp(24));
-        undoBar.setAlpha(0f);
+        undoBar.setTranslationY(t.dp(160));
+        undoBar.setAlpha(1f);
         undoBar.setVisibility(View.VISIBLE);
-        undoBar.animate().translationY(0).alpha(1f).setDuration(180).start();
+        undoBar.animate().translationY(0).setInterpolator(Spring.STD).setDuration(Spring.STD.duration).start();
+        undoCountdown.countdown(UNDO_MS);
         main.removeCallbacks(commitDismiss);
         main.postDelayed(commitDismiss, UNDO_MS);
     }
@@ -902,16 +947,19 @@ public class MainActivity extends Activity {
     private void resetUndo(String source) {
         undoLabel.setText("已移走，为什么不需要？");
         undoButton.setVisibility(View.VISIBLE);
+        undoCountdown.setVisibility(View.VISIBLE);
         answeredFor = -1;
         for (int i = 0; i < REASONS.length; i++) {
             reasonChips.get(i).setText("source".equals(REASONS[i][0]) && !source.isEmpty()
                     ? "不想看「" + source + "」" : REASONS[i][1]);
         }
-        for (TextView chip : reasonChips) {
+        for (int i = 0; i < reasonChips.size(); i++) {
+            TextView chip = reasonChips.get(i);
+            float l = i == 0 ? 99 : Theme.R_XS, r = i == reasonChips.size() - 1 ? 99 : Theme.R_XS;
             chip.setEnabled(true);
             chip.setAlpha(1f);
-            chip.setTextColor(t.bg);
-            chip.setBackground(t.ripple((t.bg & 0x00FFFFFF) | 0x26000000, 99));
+            chip.setTextColor(t.onInv);
+            chip.setBackground(t.ripple((t.onInv & 0x00FFFFFF) | 0x1F000000, l, r, r, l));
         }
     }
 
@@ -922,11 +970,13 @@ public class MainActivity extends Activity {
             chip.setEnabled(false);
             if (chip != picked) chip.setAlpha(0.35f);
         }
-        picked.setTextColor(t.ink);
-        picked.setBackground(t.round(t.bg, 99));
+        picked.setTextColor(t.inv);
+        picked.setBackground(t.round(t.onInv, 99));
         picked.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
         undoLabel.setText(reason[2]);
         undoButton.setVisibility(View.INVISIBLE);
+        undoCountdown.stop();
+        undoCountdown.setVisibility(View.GONE);
         Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + reason[0]);
         boolean remembers = !"known".equals(reason[0]);
         answeredFor = remembers ? pendingDismiss : -1;
@@ -966,7 +1016,8 @@ public class MainActivity extends Activity {
 
     private void hideUndo() {
         if (undoBar.getVisibility() != View.VISIBLE) return;
-        undoBar.animate().translationY(t.dp(24)).alpha(0f).setDuration(160)
+        undoCountdown.stop();
+        undoBar.animate().translationY(t.dp(24)).alpha(0f).setInterpolator(Spring.FX).setDuration(Spring.FX.duration)
                 .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
     }
 
@@ -975,32 +1026,37 @@ public class MainActivity extends Activity {
     private void showMenu() {
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(t.dp(12), 0, t.dp(12), 0);
         Dialog d = t.sheet(this, sheet);
-        sheet.addView(menuRow("记忆", "Catchup 记得的关于你的事", () -> {
+        Drawable memory = new Shapes.Blob(Shapes.SOFT, t.onPc);
+        Drawable battery = getDrawable(R.drawable.ic_battery);
+        battery.setTint(t.onPc);
+        sheet.addView(menuRow(memory, "记忆", "Catchup 记得的关于你的事", () -> {
             d.dismiss();
             startActivity(new Intent(this, MemoryActivity.class));
             overridePendingTransition(R.anim.enter_up, R.anim.hold);
         }));
-        sheet.addView(menuRow("添加链接", "从剪贴板", () -> {
+        sheet.addView(menuRow("+", "添加链接", "从剪贴板", () -> {
             d.dismiss();
             addLinkFromClipboard();
         }));
-        sheet.addView(menuRow("不需要的内容", "可以恢复", () -> {
+        sheet.addView(menuRow("↺", "不需要的内容", "可以恢复", () -> {
             d.dismiss();
             showDismissed();
         }));
-        sheet.addView(menuRow("检查更新", "当前 " + Updater.currentVersion(this), () -> {
+        sheet.addView(menuRow("↓", "检查更新", "当前 " + Updater.currentVersion(this), () -> {
             d.dismiss();
             checkUpdate(true);
         }));
-        sheet.addView(menuRow("诊断信息", "", () -> {
+        sheet.addView(menuRow("i", "诊断信息", "", () -> {
             d.dismiss();
             showDiagnostics();
         }));
-        sheet.addView(menuRow("后台运行设置", "", () -> {
+        sheet.addView(menuRow(battery, "后台运行设置", "", () -> {
             d.dismiss();
             startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
         }));
+        t.segments(sheet);
         d.show();
     }
 
@@ -1023,6 +1079,7 @@ public class MainActivity extends Activity {
                 LinearLayout items = new LinearLayout(this);
                 items.setOrientation(LinearLayout.VERTICAL);
                 for (int i = 0; i < got.length(); i++) items.addView(dismissedRow(got.optJSONObject(i)));
+                t.segments(items);
                 listSheet("不需要的内容", got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
                         : "恢复后会重新出现在首页", items).show();
             });
@@ -1033,12 +1090,12 @@ public class MainActivity extends Activity {
     private Dialog listSheet(String heading, String note, View items) {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        TextView title = t.text(this, heading, 20, t.ink, 800);
-        title.setPadding(t.dp(24), t.dp(8), t.dp(24), t.dp(4));
+        TextView title = t.text(this, heading, 22, t.ink, 800);
+        title.setPadding(t.dp(24), t.dp(6), t.dp(24), t.dp(4));
         content.addView(title);
         TextView sub = t.text(this, note, 13, t.sub, 400);
-        sub.setLineSpacing(t.dp(3), 1f);
-        sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(12));
+        sub.setLineSpacing(t.dp(4), 1f);
+        sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(14));
         content.addView(sub);
         int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
         ScrollView scroll = new ScrollView(this) {
@@ -1048,6 +1105,7 @@ public class MainActivity extends Activity {
             }
         };
         scroll.setVerticalScrollBarEnabled(false);
+        scroll.setPadding(t.dp(12), 0, t.dp(12), 0);
         scroll.addView(items);
         content.addView(scroll);
         return t.sheet(this, content);
@@ -1060,6 +1118,7 @@ public class MainActivity extends Activity {
         LinearLayout items = new LinearLayout(this);
         items.setOrientation(LinearLayout.VERTICAL);
         for (int i = 0; i < list.length(); i++) items.addView(skippedRow(list.optJSONObject(i)));
+        t.segments(items);
         listSheet("未追踪信息", "这些不会推送。觉得该看的，点“想看这类”。", items).show();
         Trace.log(this, "ui.skipped", "n=" + list.length());
     }
@@ -1067,26 +1126,22 @@ public class MainActivity extends Activity {
     private View skippedRow(JSONObject s) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(24), t.dp(12), t.dp(16), t.dp(12));
-        row.setBackground(t.ripple(Color.TRANSPARENT, 0));
+        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
         LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, s.optString("headline"), 15, t.ink, 500);
+        TextView headline = t.text(this, s.optString("headline"), 14.5f, t.ink, 600);
         headline.setLineSpacing(t.dp(3), 1f);
         headline.setMaxLines(2);
         headline.setEllipsize(TextUtils.TruncateAt.END);
         text.addView(headline);
         TextView meta = t.text(this, s.optInt("outlets") + " 家媒体报道 · " + s.optString("why"), 12, t.sub, 400);
-        meta.setPadding(0, t.dp(5), 0, 0);
+        meta.setPadding(0, t.dp(4), 0, 0);
         text.addView(meta);
-        TextView memo = t.text(this, "", 12, t.ink, 600);
-        memo.setPadding(0, t.dp(6), 0, 0);
-        memo.setVisibility(View.GONE);
-        text.addView(memo);
         row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView want = t.pill(this, "想看这类", false);
         want.setTextSize(13);
-        want.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        want.setTypeface(Theme.weight(800));
+        want.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
         LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         wl.leftMargin = t.dp(12);
@@ -1117,14 +1172,12 @@ public class MainActivity extends Activity {
                         toast("没有记下，请重试");
                         return;
                     }
-                    want.setText("已记下");
-                    want.setTextColor(t.sub);
-                    want.setBackground(null);
+                    done(want, "✓ 已记下");
                     JSONObject memory = got.optJSONObject("memory");
                     JSONArray added = memory == null ? null : memory.optJSONArray("added");
                     if (added != null && added.length() > 0) {
-                        memo.setText("记住了：" + added.optJSONObject(0).optString("text"));
-                        memo.setVisibility(View.VISIBLE);
+                        meta.setText("记住了：" + added.optJSONObject(0).optString("text"));
+                        meta.setTextColor(t.ink);
                     }
                     lastFetch = 0;
                     load(); // 记忆变了，首页按新记忆重新排
@@ -1150,10 +1203,10 @@ public class MainActivity extends Activity {
     private View dismissedRow(JSONObject e) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(24), t.dp(12), t.dp(16), t.dp(12));
+        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
         LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, e.optString("headline"), 15, t.ink, 500);
+        TextView headline = t.text(this, e.optString("headline"), 14.5f, t.ink, 600);
         headline.setLineSpacing(t.dp(3), 1f);
         headline.setMaxLines(2);
         headline.setEllipsize(TextUtils.TruncateAt.END);
@@ -1161,12 +1214,13 @@ public class MainActivity extends Activity {
         String reason = e.optString("reason");
         TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at")))
                 + (reason.isEmpty() ? "" : " · " + reason), 12, t.sub, 400);
-        when.setPadding(0, t.dp(5), 0, 0);
+        when.setPadding(0, t.dp(4), 0, 0);
         text.addView(when);
         row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView restore = t.pill(this, "恢复", false);
         restore.setTextSize(13);
-        restore.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        restore.setTypeface(Theme.weight(800));
+        restore.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         rl.leftMargin = t.dp(12);
@@ -1193,9 +1247,7 @@ public class MainActivity extends Activity {
                         toast("恢复失败，请重试");
                         return;
                     }
-                    restore.setText("已恢复");
-                    restore.setTextColor(t.sub);
-                    restore.setBackground(null);
+                    done(restore, "✓ 已恢复");
                     hidden.remove(id);
                     lastFetch = 0;
                     load();
@@ -1206,16 +1258,41 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    private View menuRow(String label, String detail, Runnable action) {
+    /** 菜单的一行：主色容器的小方块里放图标（一个字符或一个图形），右边是名称和说明。 */
+    private View menuRow(Object icon, String label, String detail, Runnable action) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(24), t.dp(16), t.dp(24), t.dp(16));
-        row.setBackground(t.ripple(Color.TRANSPARENT, 0));
-        row.addView(t.text(this, label, 16, t.ink, 500), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        if (!detail.isEmpty()) row.addView(t.text(this, detail, 13, t.sub, 400));
+        row.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
+        TextView ic = t.text(this, icon instanceof String ? (String) icon : "", 18, t.onPc, 800);
+        ic.setGravity(Gravity.CENTER);
+        ic.setBackground(t.round(t.pc, 14));
+        if (icon instanceof Drawable) {
+            Drawable d = (Drawable) icon;
+            d.setBounds(0, 0, t.dp(20), t.dp(20));
+            ic.setCompoundDrawablesRelative(d, null, null, null);
+            ic.setPadding(t.dp(10), 0, 0, 0);
+        }
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(40), t.dp(40));
+        il.rightMargin = t.dp(14);
+        row.addView(ic, il);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(t.text(this, label, 15, t.ink, 700));
+        if (!detail.isEmpty()) {
+            TextView d = t.text(this, detail, 12.5f, t.sub, 400);
+            d.setPadding(0, t.dp(2), 0, 0);
+            col.addView(d);
+        }
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> action.run());
         return row;
+    }
+
+    /** 操作完成的按钮：从胶囊变成方一点的墨色块。 */
+    private void done(TextView button, String label) {
+        button.setText(label);
+        button.setTextColor(t.bg);
+        button.setBackground(t.round(t.ink, Theme.R_S));
     }
 
     /** 显示本机最近的埋点日志，可复制；不依赖网络。 */
@@ -1315,44 +1392,48 @@ public class MainActivity extends Activity {
         return String.valueOf(e == null ? "未知错误" : e.getMessage());
     }
 
-    /** 字标：小写粗体 catchup，末尾一个落在基线上的朱砂圆点，与图标里被 C 接住的点呼应。 */
-    private TextView wordmark(int sp) {
-        TextView v = t.text(this, "", sp, t.ink, 900);
-        v.setLetterSpacing(-0.035f);
-        SpannableString s = new SpannableString("catchup.");
-        s.setSpan(new DotSpan(), 7, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        v.setText(s);
+    /** 字标：钴蓝软六边形 + 加宽的 catchup。 */
+    private TextView wordmark() {
+        TextView v = t.text(this, "catchup", 24, t.ink, 800);
+        v.setTypeface(Theme.flex(this, 125, 800));
+        v.setLetterSpacing(-0.02f);
+        Drawable mark = new Shapes.Blob(Shapes.SOFT, t.pri);
+        mark.setBounds(0, 0, t.dp(18), t.dp(18));
+        v.setCompoundDrawablesRelative(mark, null, null, null);
+        v.setCompoundDrawablePadding(t.dp(6));
+        v.setGravity(Gravity.CENTER_VERTICAL);
         return v;
-    }
-
-    private static final class DotSpan extends ReplacementSpan {
-        @Override
-        public int getSize(Paint p, CharSequence text, int start, int end, Paint.FontMetricsInt fm) {
-            return Math.round(p.getTextSize() * 0.26f);
-        }
-
-        @Override
-        public void draw(Canvas c, CharSequence text, int start, int end, float x, int top, int y, int bottom, Paint p) {
-            float r = p.getTextSize() * 0.095f;
-            int old = p.getColor();
-            p.setColor(Theme.CINNABAR);
-            c.drawCircle(x + p.getTextSize() * 0.06f + r, y - r, r, p);
-            p.setColor(old);
-        }
     }
 
     private LinearLayout notice(int color) {
         LinearLayout n = new LinearLayout(this);
         n.setGravity(Gravity.CENTER_VERTICAL);
-        n.setPadding(t.dp(16), t.dp(14), t.dp(14), t.dp(14));
-        n.setBackground(t.ripple(color, 18));
+        n.setPadding(t.dp(20), t.dp(14), t.dp(14), t.dp(14));
+        n.setBackground(t.ripple(color, Theme.R_XL));
         return n;
+    }
+
+    private View noticeText(String title, String detail) {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.addView(t.text(this, title, 14.5f, t.ink, 700));
+        TextView d = t.text(this, detail, 12.5f, t.sub, 400);
+        d.setPadding(0, t.dp(3), t.dp(8), 0);
+        col.addView(d);
+        return col;
+    }
+
+    private TextView noticeAction(String label, int color, int textColor) {
+        TextView a = t.text(this, label, 13, textColor, 800);
+        a.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
+        a.setBackground(t.round(color, 99));
+        return a;
     }
 
     private LinearLayout.LayoutParams noticeLp() {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = t.dp(10);
+        lp.topMargin = t.dp(8);
         return lp;
     }
 
