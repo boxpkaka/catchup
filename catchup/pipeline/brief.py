@@ -28,6 +28,11 @@ MERGE_SYSTEM = """下面是若干 AI 领域的新闻事件，每行一个，格�
 找出报道的是同一件事的编号，分组输出。只合并确定是同一件事的（同一次发布、同一篇论文、同一个产品更新），
 同一家公司的不同新闻不要合并。输出 JSON：{"groups": [[编号, 编号], ...]}，没有可合并的就输出 {"groups": []}。"""
 
+TOPIC_SYSTEM = """给下面每件 AI 领域的事选一个主话题，只能从这几个里选：{names}。
+看这件事主要讲什么，不要因为顺带提到某个词就归过去：比如世界模型顺带能生成音频，主话题不是 AI 语音；都不太沾边的选“其他”。
+每行是“编号: 标题：概要”。输出 JSON：{{"topics": {{"编号": "话题"}}}}"""
+TOPIC_BATCH = 40
+
 IMPORTANCE_WEIGHT = {1: 0.3, 2: 0.6, 3: 1.0, 4: 1.4, 5: 1.8}
 UNBRIEFED_WEIGHT = 0.8
 READ_WAIT = 120  # 采集后写简报时最多等原文这么多秒；没等到的先用摘要写，下一轮读到原文再重写
@@ -75,6 +80,27 @@ def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source]
         log.info("merged events %s into %d", ids[1:], ids[0])
     store.commit()
     return merged
+
+
+def assign_topics(store, events: list[Event], llm, names: list[str]) -> int:
+    """给写好简报、还没有主话题的事件选一个主话题（names 是配置里的兴趣名，另加“其他”），App 按它给卡片上色。
+    关键词匹配会因为顺带提到的词误判，这里让模型看整件事判断。返回选了几件；漏掉的下一轮再选。"""
+    briefs = store.briefs(e.id for e in events)
+    pending = [i for i, b in briefs.items() if not b["topic"]]
+    allowed = names + ["其他"]
+    done = 0
+    for n in range(0, len(pending), TOPIC_BATCH):
+        batch = pending[n:n + TOPIC_BATCH]
+        lines = "\n".join(f"{i}: {briefs[i]['headline']}：{briefs[i]['summary']}" for i in batch)
+        try:
+            raw = llm.json(TOPIC_SYSTEM.format(names="、".join(allowed)), lines, max_tokens=800).get("topics") or {}
+        except Exception as e:
+            log.warning("topics failed: %r", e)
+            continue
+        picked = {i: raw[str(i)] if raw[str(i)] in allowed else "其他" for i in batch if str(i) in raw}
+        store.save_topics(picked)
+        done += len(picked)
+    return done
 
 
 def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str, Source],

@@ -286,6 +286,7 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
         "summary": brief["summary"] if brief else zh(lead.summary[:translate.SUMMARY_CHARS]),
         "why": brief["why"] if brief else "",
         "importance": brief["importance"] if brief else None,
+        "topic": brief["topic"] if brief else None,  # 主话题，App 按它给卡片上色；topics 是排序命中的兴趣和记忆
         "ai": brief is not None,
         "highlight": bool(brief and brief["importance"] >= 4),
         "score": final_score(e, brief),

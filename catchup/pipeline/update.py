@@ -43,7 +43,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0, "reports": 0, "translated": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "translated": 0}
     _, events = ranked(config, store, now)
     updates = []
     if llm:
@@ -63,6 +63,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         push.deliver_answers(config.push, store, now)
         reports.deliver(config.push, store, now)
     if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报下一轮推送
+        stats["topics"] = brief.assign_topics(store, events, llm, [i["name"] for i in config.interests])
         stats["reports"] = len(reports.run(config, store, llm, now))
         stats["translated"] = translate.run(store, llm, events)
     log.info("update: %s", stats)

@@ -25,7 +25,7 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -77,28 +77,26 @@ final class Theme {
     }
 
     /**
-     * 话题色 {底色, 文字色}：取 topics 里第一个认识的兴趣；没认识的用两种预留色之一（按名字固定），
-     * 没有话题用灰色。现在只有三个兴趣，兴趣多了合并，不再加颜色。
+     * 话题色 {底色, 文字色}：按事件的主话题（服务器让模型判断，见 catchup/pipeline/brief.py 的 assign_topics），
+     * “其他”和还没判断的用灰色。现在只有三个兴趣，兴趣多了合并，不再加颜色。
      */
-    int[] topic(JSONArray topics) {
-        String first = topics == null ? "" : topics.optString(0);
-        for (int i = 0; topics != null && i < topics.length(); i++) {
-            switch (topics.optString(i)) {
-                case "大模型":
-                    return night ? new int[]{0xFF283180, 0xFFDCE0FF} : new int[]{0xFFDCE0FF, 0xFF0E1C8F};
-                case "AI 语音":
-                    return night ? new int[]{0xFF6A2246, 0xFFFFD8E8} : new int[]{0xFFFFD8E8, 0xFF6A0F3D};
-                case "Agent":
-                    return night ? new int[]{0xFF6B3D10, 0xFFFFDDB8} : new int[]{0xFFFFDDB8, 0xFF5A2E00};
-                default:
-                    break;
-            }
+    int[] topic(String topic) {
+        switch (topic) {
+            case "大模型":
+                return night ? new int[]{0xFF283180, 0xFFDCE0FF} : new int[]{0xFFDCE0FF, 0xFF0E1C8F};
+            case "AI 语音":
+                return night ? new int[]{0xFF6A2246, 0xFFFFD8E8} : new int[]{0xFFFFD8E8, 0xFF6A0F3D};
+            case "Agent":
+                return night ? new int[]{0xFF6B3D10, 0xFFFFDDB8} : new int[]{0xFFFFDDB8, 0xFF5A2E00};
+            default:
+                return new int[]{hi, ink};
         }
-        if (first.isEmpty()) return new int[]{hi, ink};
-        if ((first.hashCode() & 1) == 0) {
-            return night ? new int[]{0xFF0F5040, 0xFFC6F0E2} : new int[]{0xFFC6F0E2, 0xFF003828};
-        }
-        return night ? new int[]{0xFF4A2A7A, 0xFFEBDDFF} : new int[]{0xFFEBDDFF, 0xFF2F0F5C};
+    }
+
+    /** 事件的主话题；“其他”和还没判断的返回空串，此时不显示话题标签、用灰色。 */
+    static String topicOf(JSONObject e) {
+        String s = e == null || e.isNull("topic") ? "" : e.optString("topic");
+        return "其他".equals(s) ? "" : s;
     }
 
     int dp(float v) {

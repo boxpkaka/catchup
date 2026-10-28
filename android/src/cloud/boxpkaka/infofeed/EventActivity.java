@@ -243,31 +243,26 @@ public class EventActivity extends Activity {
 
     /** 头部：话题色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和卡片一样，不跳变。 */
     private void renderHead(JSONObject e) {
-        JSONArray topics = e.optJSONArray("topics");
-        int[] c = t.topic(topics);
+        String topic = Theme.topicOf(e);
+        int[] c = t.topic(topic);
         head.removeAllViews();
         head.setBackground(t.round(c[0], 0, 0, 44, 44));
         head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        for (int i = 0; topics != null && i < Math.min(3, topics.length()); i++) {
-            TextView chip = t.text(this, topics.optString(i), 12, c[1], 700);
+        if (!topic.isEmpty()) { // 主话题标签，和首页卡片一致
+            TextView chip = t.text(this, topic, 12, c[1], 700);
             chip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
             chip.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.rightMargin = t.dp(6);
-            top.addView(chip, lp);
+            top.addView(chip);
         }
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        int importance = e.optInt("importance");
-        if (importance >= 4) {
-            TextView badge = t.text(this, String.valueOf(importance), 13, c[0], 900);
-            badge.setTypeface(Theme.flex(this, 140, 900));
-            badge.setGravity(Gravity.CENTER);
-            badge.setBackground(new Shapes.Blob(importance >= 5 ? Shapes.SUNNY : Shapes.CLOVER, c[1]));
-            top.addView(badge, new LinearLayout.LayoutParams(t.dp(30), t.dp(30)));
+        if (e.optInt("importance") >= 5) {
+            TextView badge = t.text(this, "要闻", 12, t.onPri, 800);
+            badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
+            badge.setBackground(t.round(t.pri, 99));
+            top.addView(badge);
         }
         head.addView(top);
 
@@ -399,8 +394,7 @@ public class EventActivity extends Activity {
             for (int k = 0; k < arr.length; k++) arr[k] = qs.optString(k);
             i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
         }
-        JSONArray topics = event == null ? null : event.optJSONArray("topics");
-        if (topics != null) i.putExtra(ChatActivity.EXTRA_TOPICS, topics.toString());
+        i.putExtra(ChatActivity.EXTRA_TOPIC, Theme.topicOf(event));
         if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
         startActivity(i);
         overridePendingTransition(R.anim.enter_up, R.anim.hold);
