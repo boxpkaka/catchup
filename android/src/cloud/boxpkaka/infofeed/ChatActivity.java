@@ -40,7 +40,7 @@ public class ChatActivity extends Activity {
     static final String EXTRA_QUESTIONS = "questions";
     static final String EXTRA_ASK = "ask";
     static final String EXTRA_THREAD = "thread";
-    static final String EXTRA_TOPICS = "topics"; // 事件的 topics（JSON 数组），标题栏用它的话题色
+    static final String EXTRA_TOPIC = "topic"; // 事件的主话题，标题栏用它的话题色
 
     private Theme t;
     private long eventId;
@@ -98,14 +98,8 @@ public class ChatActivity extends Activity {
 
         // 标题栏：在事件下提问时带着事件的话题色，延伸到状态栏下面；随便问时用中性的底色
         int[] c = {t.bg, t.ink};
-        String topics = getIntent().getStringExtra(EXTRA_TOPICS);
-        if (eventId > 0 && topics != null) {
-            try {
-                c = t.topic(new JSONArray(topics));
-            } catch (Exception ignored) {
-                // 话题坏了就用中性色
-            }
-        }
+        String topic = getIntent().getStringExtra(EXTRA_TOPIC);
+        if (eventId > 0 && topic != null && !topic.isEmpty()) c = t.topic(topic);
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(t.dp(12), t.dp(12), t.dp(16), t.dp(14));

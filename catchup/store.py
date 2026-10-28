@@ -88,6 +88,8 @@ MIGRATIONS = [
         kind text not null, period text not null, created text not null, content text not null,
         notified integer not null default 1, primary key (kind, period));
     """,
+    # 简报的主话题：配置里的兴趣名或“其他”，App 按它给卡片上色；简报重写后为 NULL，下一轮重新判断（brief.assign_topics）
+    "alter table briefs add column topic text;",
 ]
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
@@ -200,7 +202,7 @@ class Store:
     def briefs(self, ids: Iterable[int]) -> dict[int, dict]:
         ids = list(ids)
         rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance, "
-                                f"memory_rev, questions, points from briefs where event_id in ({','.join('?' * len(ids))})",
+                                f"memory_rev, questions, points, topic from briefs where event_id in ({','.join('?' * len(ids))})",
                                 ids)
         keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance", "memory_rev")
         out = {}
@@ -208,7 +210,12 @@ class Store:
             out[r[0]] = dict(zip(keys, r[1:9]))
             out[r[0]]["questions"] = json.loads(r[9] or "[]")
             out[r[0]]["points"] = None if r[10] is None else json.loads(r[10])
+            out[r[0]]["topic"] = r[11]
         return out
+
+    def save_topics(self, topics: dict[int, str]) -> None:
+        self.con.executemany("update briefs set topic = ? where event_id = ?", [(t, i) for i, t in topics.items()])
+        self.con.commit()
 
     def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict,
                    memory_rev: int = 0) -> None:

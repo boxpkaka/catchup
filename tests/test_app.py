@@ -42,6 +42,9 @@ class FakeLLM:
                     "sections": [{"name": "AI 语音", "items": [{"event": f"E{first}", "text": "只用语音训练"}]}]}
         if "分组" in system:
             return {"groups": self.groups}
+        if system.startswith("给下面每件 AI 领域的事选一个主话题"):  # 第一件给个不在列表里的，应当记成“其他”
+            ids = re.findall(r"^(\d+):", user, re.M)
+            return {"topics": {i: "AI 语音" if n else "体育" for n, i in enumerate(ids)}}
         if system.startswith("用户把下面这条内容标为“不需要”"):  # 让用户选的几类；来源名不该出现在关键词里
             return {"options": [{"text": "语音模型", "keywords": ["voice model", "News"]}, {"text": "", "keywords": ["x"]}]}
         if system.startswith("为下面这条"):
@@ -521,6 +524,15 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual(ids(), [dessa["id"]])  # 判定为边缘信息的不显示
         self.store.record_push(uk.id, NOW)
         self.assertEqual(ids(), [dessa["id"], uk.id])  # 推送过的一定在信息流里，方便划掉
+
+    def test_main_topic_is_picked_by_the_model(self):
+        self.store.add([sig("https://a/2", "Moshi 2 speech model released", hours_ago=2)], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        brief.write_briefs(self.store, events, "", FakeLLM(), {}, NOW)
+        self.assertEqual(brief.assign_topics(self.store, events, FakeLLM(), ["AI 语音", "大模型"]), 2)
+        self.assertEqual(brief.assign_topics(self.store, events, FakeLLM(), ["AI 语音", "大模型"]), 0)  # 选过的不再选
+        self.assertEqual(sorted(e["topic"] for e in self.call("GET", "/v1/feed")[1]["events"]), ["AI 语音", "其他"])
 
     def test_dismiss_reason_is_picked_not_guessed(self):
         from catchup import personal
