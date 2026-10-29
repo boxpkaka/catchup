@@ -22,7 +22,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 事件详情：话题色的头部（标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
+ * 事件详情：卡片色的头部（标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
  * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
@@ -93,7 +93,7 @@ public class EventActivity extends Activity {
         scroll.addView(page);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        // 按钮下面垫渐隐底，不用阴影：顶部的等话题色页头滚出去才出现，免得盖住页头
+        // 按钮下面垫渐隐底，不用阴影：顶部的等页头滚出去才出现，免得盖住页头
         View topFade = t.fade(this, false);
         topFade.setAlpha(0f);
         FrameLayout.LayoutParams tfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(80));
@@ -241,32 +241,31 @@ public class EventActivity extends Activity {
         updateActions();
     }
 
-    /** 头部：话题色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和卡片一样，不跳变。 */
+    /** 头部：卡片色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和列表项一样，不跳变。 */
     private void renderHead(JSONObject e) {
         String topic = Theme.topicOf(e);
-        int[] c = t.topic(topic);
         head.removeAllViews();
-        head.setBackground(t.round(c[0], 0, 0, 44, 44));
+        head.setBackground(t.round(t.sheet, 0, 0, 44, 44));
         head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        if (!topic.isEmpty()) { // 主话题标签，和首页卡片一致
-            TextView chip = t.text(this, topic, 12, c[1], 700);
+        if (!topic.isEmpty()) { // 主话题，中性的标签，不上色
+            TextView chip = t.text(this, topic, 12, t.ink, 700);
             chip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
-            chip.setBackground(t.round((c[1] & 0x00FFFFFF) | 0x1C000000, 99));
+            chip.setBackground(t.round(t.chip, 99));
             top.addView(chip);
         }
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        if (e.optInt("importance") >= 5) {
-            TextView badge = t.text(this, "要闻", 12, t.onPri, 800);
+        if (e.optInt("importance") >= 5) { // 和首页一样是墨色反白
+            TextView badge = t.text(this, "要闻", 12, t.onInv, 800);
             badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
-            badge.setBackground(t.round(t.pri, 99));
+            badge.setBackground(t.round(t.inv, Theme.R_XS));
             top.addView(badge);
         }
         head.addView(top);
 
-        TextView headline = t.text(this, e.optString("headline"), 27, c[1], 900);
+        TextView headline = t.text(this, e.optString("headline"), 27, t.ink, 900);
         headline.setLineSpacing(t.dp(7), 1f);
         headline.setLetterSpacing(-0.01f);
         headline.setPadding(0, t.dp(14), 0, 0);
@@ -276,12 +275,12 @@ public class EventActivity extends Activity {
         metaRow.setGravity(Gravity.CENTER_VERTICAL);
         metaRow.setPadding(0, t.dp(16), 0, 0);
         TextView meta = t.text(this, e.optInt("source_count") + " 个来源   最近 "
-                + Theme.ago(Theme.millis(e.optString("time"))), 13, c[1], 700);
+                + Theme.ago(Theme.millis(e.optString("time"))), 13, t.sub, 700);
         meta.setTypeface(Theme.flex(this, 92, 700));
         metaRow.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView original = t.text(this, "看原文 ↗", 13, c[0], 700);
+        TextView original = t.text(this, "看原文 ↗", 13, t.onInv, 700);
         original.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-        original.setBackground(t.ripple(c[1], 99));
+        original.setBackground(t.ripple(t.inv, 99));
         original.setOnClickListener(v -> openUrl(e.optString("url")));
         metaRow.addView(original);
         head.addView(metaRow);
@@ -394,7 +393,6 @@ public class EventActivity extends Activity {
             for (int k = 0; k < arr.length; k++) arr[k] = qs.optString(k);
             i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
         }
-        i.putExtra(ChatActivity.EXTRA_TOPIC, Theme.topicOf(event));
         if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
         startActivity(i);
         overridePendingTransition(R.anim.enter_up, R.anim.hold);
