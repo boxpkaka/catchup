@@ -37,7 +37,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 视觉规范（律动）：钴蓝是主色，酸橙只给“问一问”和发送；事件按话题上色；颜色一律按用途取，深浅色各一套。
+ * 视觉规范（律动）：钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色反白给“要闻”和选中的标签；
+ * 事件不按话题上色，话题写成文字。颜色一律按用途取，深浅色各一套。
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
  */
@@ -77,23 +78,9 @@ final class Theme {
     }
 
     /**
-     * 话题色 {底色, 文字色}：按事件的主话题（服务器让模型判断，见 catchup/pipeline/brief.py 的 assign_topics），
-     * “其他”和还没判断的用灰色。现在只有三个兴趣，兴趣多了合并，不再加颜色。
+     * 事件的主话题（服务器让模型判断，见 catchup/pipeline/brief.py 的 assign_topics）；“其他”和还没判断的返回空串，
+     * 此时不写话题。
      */
-    int[] topic(String topic) {
-        switch (topic) {
-            case "大模型":
-                return night ? new int[]{0xFF283180, 0xFFDCE0FF} : new int[]{0xFFDCE0FF, 0xFF0E1C8F};
-            case "AI 语音":
-                return night ? new int[]{0xFF6A2246, 0xFFFFD8E8} : new int[]{0xFFFFD8E8, 0xFF6A0F3D};
-            case "Agent":
-                return night ? new int[]{0xFF6B3D10, 0xFFFFDDB8} : new int[]{0xFFFFDDB8, 0xFF5A2E00};
-            default:
-                return new int[]{hi, ink};
-        }
-    }
-
-    /** 事件的主话题；“其他”和还没判断的返回空串，此时不显示话题标签、用灰色。 */
     static String topicOf(JSONObject e) {
         String s = e == null || e.isNull("topic") ? "" : e.optString("topic");
         return "其他".equals(s) ? "" : s;

@@ -40,7 +40,6 @@ public class ChatActivity extends Activity {
     static final String EXTRA_QUESTIONS = "questions";
     static final String EXTRA_ASK = "ask";
     static final String EXTRA_THREAD = "thread";
-    static final String EXTRA_TOPIC = "topic"; // 事件的主话题，标题栏用它的话题色
 
     private Theme t;
     private long eventId;
@@ -96,24 +95,21 @@ public class ChatActivity extends Activity {
         root.addView(column, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 标题栏：在事件下提问时带着事件的话题色，延伸到状态栏下面；随便问时用中性的底色
-        int[] c = {t.bg, t.ink};
-        String topic = getIntent().getStringExtra(EXTRA_TOPIC);
-        if (eventId > 0 && topic != null && !topic.isEmpty()) c = t.topic(topic);
+        // 标题栏：延伸到状态栏下面，中性的底色，不按话题上色
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(t.dp(12), t.dp(12), t.dp(16), t.dp(14));
-        top.setBackground(t.round(c[0], 0, 0, Theme.R_XL, Theme.R_XL));
+        top.setBackground(t.round(t.bg, 0, 0, Theme.R_XL, Theme.R_XL));
         top.addView(t.backButton(this), new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
         titles.setPadding(t.dp(12), 0, 0, 0);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
-        TextView h = t.text(this, eventId > 0 && title != null ? title : "问 Catchup", 16, c[1], 800);
+        TextView h = t.text(this, eventId > 0 && title != null ? title : "问 Catchup", 16, t.ink, 800);
         h.setSingleLine();
         h.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titles.addView(h);
-        TextView sub = t.text(this, eventId > 0 ? "基于原文和网页搜索回答" : "基于你的事件库和网页搜索回答", 12, c[1], 400);
+        TextView sub = t.text(this, eventId > 0 ? "基于原文和网页搜索回答" : "基于你的事件库和网页搜索回答", 12, t.ink, 400);
         sub.setAlpha(0.78f);
         sub.setPadding(0, t.dp(3), 0, 0);
         titles.addView(sub);
