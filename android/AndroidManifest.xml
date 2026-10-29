@@ -26,13 +26,14 @@
             </intent-filter>
         </activity>
 
-        <activity android:name=".EventActivity" android:exported="false" />
-        <activity android:name=".TopicActivity" android:exported="false" />
-        <activity android:name=".ChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".MemoryActivity" android:exported="false" />
+        <activity android:name=".EventActivity" android:exported="false" android:theme="@style/Page" />
+        <activity android:name=".TopicActivity" android:exported="false" android:theme="@style/Page" />
+        <activity android:name=".ChatActivity" android:exported="false" android:theme="@style/Page"
+            android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".MemoryActivity" android:exported="false" android:theme="@style/Page" />
         <!-- 系统分享：在别的 App 里把链接分享给 Catchup -->
         <activity android:name=".ShareActivity" android:exported="true" android:label="Catchup"
-            android:excludeFromRecents="true">
+            android:theme="@style/Page" android:excludeFromRecents="true">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

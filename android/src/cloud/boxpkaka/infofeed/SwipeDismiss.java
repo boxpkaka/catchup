@@ -10,8 +10,9 @@ import android.view.View;
 import android.view.ViewConfiguration;
 
 /**
- * 左滑移除：横向拖动时内容跟手，圆角随距离收到一半、略微缩小，背后露出“不需要”；
+ * 右滑移除：横向拖动时内容跟手，圆角随距离收到一半、略微缩小，背后露出“不需要”；
  * 超过 35% 宽度（或快速甩动）松手即用弹簧飞出，跨过阈值时震一下。没开始横向拖动前不消费事件，点按和纵向滚动照常。
+ * 只认右滑：左滑留给首页翻到下一页（见 Swipe）。
  */
 final class SwipeDismiss implements View.OnTouchListener {
     interface Callback {
@@ -48,7 +49,7 @@ final class SwipeDismiss implements View.OnTouchListener {
             case MotionEvent.ACTION_MOVE: {
                 if (velocity != null) velocity.addMovement(e);
                 float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
-                if (!swiping && dx < -slop && Math.abs(dx) > Math.abs(dy) * 1.5f) {
+                if (!swiping && dx > slop && Math.abs(dx) > Math.abs(dy) * 1.5f) {
                     swiping = true;
                     v.setPressed(false);
                     v.getParent().requestDisallowInterceptTouchEvent(true);
@@ -56,9 +57,9 @@ final class SwipeDismiss implements View.OnTouchListener {
                     grabShape(v);
                 }
                 if (!swiping) return false;
-                float x = Math.min(0, dx);
+                float x = Math.max(0, dx);
                 follow(v, x);
-                boolean over = -x > v.getWidth() * 0.35f;
+                boolean over = x > v.getWidth() * 0.35f;
                 if (over != armed) {
                     armed = over;
                     if (over) v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
@@ -80,9 +81,9 @@ final class SwipeDismiss implements View.OnTouchListener {
                     vx = velocity.getXVelocity();
                 }
                 recycle();
-                boolean dismiss = e.getActionMasked() == MotionEvent.ACTION_UP && (armed || vx < -minFling);
+                boolean dismiss = e.getActionMasked() == MotionEvent.ACTION_UP && (armed || vx > minFling);
                 // 用 ViewPropertyAnimator：列表复用这一行时 reset() 能把它取消掉
-                v.animate().translationX(dismiss ? -v.getWidth() * 1.15f : 0)
+                v.animate().translationX(dismiss ? v.getWidth() * 1.15f : 0)
                         .setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
                         .setUpdateListener(an -> morph(v, v.getTranslationX()))
                         .withEndAction(() -> {
@@ -112,7 +113,7 @@ final class SwipeDismiss implements View.OnTouchListener {
 
     /** 跟着位移改样子：离开得越远，圆角越小（最多收到一半），整体越小（最多 3%）。 */
     private void morph(View v, float x) {
-        float p = Math.min(1f, -x / Math.max(1f, v.getWidth() * 0.35f));
+        float p = Math.min(1f, x / Math.max(1f, v.getWidth() * 0.35f));
         v.setScaleX(1 - 0.03f * p);
         v.setScaleY(1 - 0.03f * p);
         if (radii == null) return;

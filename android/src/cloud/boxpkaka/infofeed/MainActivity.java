@@ -64,7 +64,7 @@ import java.util.Set;
  * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
  * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗、带一行概要，其他只有标题。不按话题上色，话题写在来源前面；
  * 颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
- * 滑到底继续加载更早的。下拉刷新，左滑标记不需要（可撤销），点开看详情。
+ * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销），点开看详情。三页之间左右滑切换（左滑下一页），也可以点标签。
  * 专题页见 TopicsView，报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
@@ -126,6 +126,7 @@ public class MainActivity extends Activity {
     private TopicsView topics;
     private ReportView reports;
     private int tab = FEED;
+    private boolean paging; // 松手后正在翻页，翻完之前不接新的滑动
     private final List<JSONObject> olderEvents = new ArrayList<>(); // 往前翻页加载的，接在第一页后面
     private String olderCursor; // 下一页的 before，到开始采集为止
     private boolean loadingOlder;
@@ -189,7 +190,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        // 在详情页点了“不需要”：回到首页后和左滑一样移除并给出撤销
+        // 在详情页点了“不需要”：回到首页后和右滑一样移除并给出撤销
         if (request == REQ_EVENT && result == RESULT_OK && data != null) {
             dismiss(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
         }
@@ -292,7 +293,7 @@ public class MainActivity extends Activity {
         });
         pull = new PullLayout(this, t, list);
         pull.setOnRefresh(this::load);
-        FrameLayout content = new FrameLayout(this);
+        Swipe content = new Swipe(this, homePages);
         content.addView(pull, match());
         topics = new TopicsView(this, t, this::openTopic);
         topics.setVisibility(View.GONE);
@@ -394,6 +395,47 @@ public class MainActivity extends Activity {
         }
         styleTabs();
         return tabs;
+    }
+
+    /** 三页之间左右滑：当前页跟手移开，相邻的一页从旁边跟进来，松手后停在哪页就切到哪页。 */
+    private final Swipe.Pages homePages = new Swipe.Pages() {
+        @Override
+        public boolean has(int dir) {
+            return !paging && tab + dir >= 0 && tab + dir < TABS.length;
+        }
+
+        @Override
+        public void drag(int dir, float dx) {
+            View from = page(tab), to = page(tab + dir);
+            if (to.getVisibility() != View.VISIBLE) {
+                to.setVisibility(View.VISIBLE);
+                if (to == topics) topics.refreshIfStale();
+            }
+            from.setTranslationX(dx);
+            to.setTranslationX(dx + dir * from.getWidth());
+        }
+
+        @Override
+        public void release(int dir, boolean go) {
+            int target = tab + dir;
+            View from = page(tab), to = page(target);
+            float w = from.getWidth();
+            paging = true;
+            from.animate().translationX(go ? -dir * w : 0).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
+                    .start();
+            to.animate().translationX(go ? 0 : dir * w).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
+                    .withEndAction(() -> {
+                        paging = false;
+                        from.setTranslationX(0);
+                        if (go) selectTab(target);
+                        else to.setVisibility(View.GONE);
+                    })
+                    .start();
+        }
+    };
+
+    private View page(int which) {
+        return which == FEED ? pull : which == TOPICS ? topics : reports;
     }
 
     private void styleTabs() {
@@ -772,7 +814,7 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean isEnabled(int i) {
-            return false; // 点击由每一行自己处理，便于和左滑共存
+            return false; // 点击由每一行自己处理，便于和右滑共存
         }
 
         @Override
@@ -825,12 +867,12 @@ public class MainActivity extends Activity {
         return v;
     }
 
-    /** 可以左滑的一项：后面垫着警示色的“✕ 不需要”。 */
+    /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”，从左边露出来。 */
     private FrameLayout swipeFrame(Holder h, View front) {
         FrameLayout frame = new FrameLayout(this);
         TextView behind = t.text(this, "✕  不需要", 15, t.onErr, 800);
-        behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        behind.setPadding(0, 0, t.dp(26), 0);
+        behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        behind.setPadding(t.dp(26), 0, 0, 0);
         behind.setVisibility(View.INVISIBLE);
         frame.addView(behind, match());
         frame.addView(front, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,

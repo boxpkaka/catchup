@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 二级页面：窗口半透明，右滑返回时能看到下面的页面（见 Swipe.Back）；平时窗口底色由 Theme.applyWindow 设成页面底色 -->
+    <style name="Page" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+</resources>

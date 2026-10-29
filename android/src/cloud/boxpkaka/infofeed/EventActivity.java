@@ -49,7 +49,7 @@ public class EventActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         id = getIntent().getLongExtra(EXTRA_ID, -1);
-        setContentView(build());
+        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
         if (cached != null) {
             try {
