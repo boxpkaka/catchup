@@ -41,7 +41,7 @@ public class ShareActivity extends Activity {
         t.applyWindow(this);
         text = getIntent().getStringExtra(Intent.EXTRA_TEXT);
         subject = getIntent().getStringExtra(Intent.EXTRA_SUBJECT);
-        setContentView(build());
+        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
         submit();
     }
 

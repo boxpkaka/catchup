@@ -72,7 +72,7 @@ final class Theme {
         inv = night ? 0xFFE6E6EF : 0xFF2C2D36; // 底部工具栏、撤销条、更新提示
         onInv = night ? 0xFF22232B : 0xFFF1F1F6;
         invPri = night ? 0xFF3443F5 : 0xFFB9C0FF;
-        err = night ? 0xFF6E1F14 : 0xFFFFDAD5; // 左滑“不需要”、连接断开
+        err = night ? 0xFF6E1F14 : 0xFFFFDAD5; // 右滑“不需要”、连接断开
         onErr = night ? 0xFFFFDAD5 : 0xFF5C0C02;
         density = c.getResources().getDisplayMetrics().density;
     }
@@ -243,12 +243,11 @@ final class Theme {
         return back;
     }
 
-    /** 底部弹出的面板：顶部圆角、拖动条、背景压暗。content 是面板里的内容。 */
+    /** 底部弹出的面板：顶部圆角、拖动条、背景压暗，按住往下拉可以收起（见 Swipe.Sheet）。content 是面板里的内容。 */
     Dialog sheet(Activity a, View content) {
         Dialog d = new Dialog(a);
         d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout box = new LinearLayout(a);
-        box.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout box = new Swipe.Sheet(a, d);
         box.setPadding(0, dp(10), 0, dp(24));
         box.setBackground(round(bg, R_2XL, R_2XL, 0, 0));
         View grab = new View(a);

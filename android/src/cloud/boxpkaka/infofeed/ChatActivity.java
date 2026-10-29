@@ -63,7 +63,7 @@ public class ChatActivity extends Activity {
         t.applyWindow(this);
         eventId = getIntent().getLongExtra(EXTRA_EVENT, -1);
         threadId = getIntent().getLongExtra(EXTRA_THREAD, -1);
-        setContentView(build());
+        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
         pendingAsk = getIntent().getStringExtra(EXTRA_ASK);
         if (threadId > 0 || eventId > 0) {
             loadHistory();

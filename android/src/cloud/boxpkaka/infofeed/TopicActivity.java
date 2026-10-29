@@ -38,7 +38,8 @@ import java.util.Locale;
 /**
  * 一个专题。标题栏是专题卡片的颜色和放大的徽记，从卡片的位置揭开，看起来像卡片长大了。
  * 话题专题按天列这个话题的事件（和信息流的时间线一样），下面是“榜单上的”这个话题的条目；
- * 榜单专题按名次列全部条目，可以切换几个榜、只看和你相关的。点有事件的条目进事件详情，没有的弹出简介和“问一问”。
+ * 榜单专题按名次列全部条目，几个榜之间左右滑切换（也可以点标签），可以只看和你相关的。点有事件的条目进事件详情，
+ * 没有的弹出简介和“问一问”。右滑返回：榜单专题在第一个榜上再右滑。
  * 数据见服务器的 /v1/topics/<key>。
  */
 public class TopicActivity extends Activity {
@@ -49,6 +50,7 @@ public class TopicActivity extends Activity {
     private String key;
     private int[] z;
     private LinearLayout head, body, tabs;
+    private ScrollView scroll;
     private HorizontalScrollView tabScroll;
     private TextView sub;
     private JSONObject data;
@@ -78,7 +80,7 @@ public class TopicActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         LinearLayout page = new LinearLayout(this);
@@ -141,7 +143,45 @@ public class TopicActivity extends Activity {
                 return WindowInsets.CONSUMED;
             });
         }
-        return root;
+        Swipe.Back backSwipe = new Swipe.Back(this, root, t.bg);
+        Swipe swipe = new Swipe(this, new Swipe.Pages() {
+            @Override
+            public boolean has(int dir) {
+                return dir < 0 || turns(dir);
+            }
+
+            @Override
+            public void drag(int dir, float dx) {
+                if (turns(dir)) Swipe.follow(body, dx);
+                else backSwipe.drag(dx);
+            }
+
+            @Override
+            public void release(int dir, boolean go) {
+                if (!turns(dir)) {
+                    backSwipe.release(go);
+                    return;
+                }
+                int to = channel + dir;
+                Swipe.turn(body, dir, go, () -> pick(to));
+            }
+        });
+        swipe.addView(root);
+        return swipe;
+    }
+
+    /** 往 dir 方向还有没有别的榜（1 是下一个）。 */
+    private boolean turns(int dir) {
+        JSONArray channels = data == null || !"board".equals(data.optString("kind")) ? null : data.optJSONArray("channels");
+        int to = channel + dir;
+        return channels != null && channels.length() > 1 && to >= 0 && to < channels.length();
+    }
+
+    /** 换到第 index 个榜；已经往下翻过标签栏的，回到标签栏，从新榜的第一名看起。 */
+    private void pick(int index) {
+        channel = index;
+        renderBoard();
+        if (scroll.getScrollY() > tabScroll.getTop()) scroll.scrollTo(0, tabScroll.getTop());
     }
 
     private void load() {
@@ -274,6 +314,7 @@ public class TopicActivity extends Activity {
         int n = channels == null ? 0 : channels.length();
         sub.setText(n > 1 ? n + " 个" + ("hf_models".equals(key) ? "分类" : "榜") + " · " + updated : updated);
         tabs.removeAllViews();
+        TextView selected = null;
         for (int i = 0; i < n && n > 1; i++) {
             int index = i;
             TextView tab = t.text(this, channels.optJSONObject(i).optString("name"), 14, t.sub, 800);
@@ -281,10 +322,8 @@ public class TopicActivity extends Activity {
             boolean on = i == channel;
             tab.setTextColor(on ? (t.night ? z[0] : Color.WHITE) : t.sub);
             tab.setBackground(t.ripple(on ? z[2] : Color.TRANSPARENT, 99));
-            tab.setOnClickListener(v -> {
-                channel = index;
-                renderBoard();
-            });
+            tab.setOnClickListener(v -> pick(index));
+            if (on) selected = tab;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.rightMargin = t.dp(4);
@@ -304,6 +343,12 @@ public class TopicActivity extends Activity {
         ol.leftMargin = t.dp(n > 1 ? 8 : 0);
         tabs.addView(only, ol);
         tabScroll.setVisibility(View.VISIBLE);
+        TextView sel = selected;
+        if (sel != null) tabScroll.post(() -> { // 滑到的榜在标签栏外面时，把它带进来
+            int x = tabScroll.getScrollX(), w = tabScroll.getWidth();
+            if (sel.getLeft() < x) tabScroll.smoothScrollTo(sel.getLeft() - t.dp(12), 0);
+            else if (sel.getRight() > x + w) tabScroll.smoothScrollTo(sel.getRight() - w + t.dp(12), 0);
+        });
 
         body.removeAllViews();
         JSONArray items = n == 0 ? null : channels.optJSONObject(Math.min(channel, n - 1)).optJSONArray("items");

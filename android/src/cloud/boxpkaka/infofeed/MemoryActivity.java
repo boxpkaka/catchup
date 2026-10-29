@@ -51,7 +51,7 @@ public class MemoryActivity extends Activity {
         kinds.put("source", "偏好的来源");
         kinds.put("avoid_source", "不想看的来源");
         kinds.put("style", "希望怎么写");
-        setContentView(build());
+        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
         load();
     }
 

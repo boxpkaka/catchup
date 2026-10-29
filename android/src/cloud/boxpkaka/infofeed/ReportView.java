@@ -14,7 +14,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 首页的“报告”页：日报、周报、月报切换，‹ › 翻看往期。要点、趋势、持续发展的事和分领域的条目点开进事件详情。
+ * 首页的“报告”页：日报、周报、月报左右滑切换（也可以点），‹ › 翻看往期。要点、趋势、持续发展的事和分领域的条目点开进事件详情。
  * 报告由服务器在每个时间段结束后写好（见 catchup/pipeline/reports.py），这里只负责读和显示。
  */
 final class ReportView extends FrameLayout {
@@ -28,7 +28,7 @@ final class ReportView extends FrameLayout {
     private final Theme t;
     private final OnOpen onOpen;
     private final ScrollView scroll;
-    private final LinearLayout body;
+    private final LinearLayout content, body; // content 是期数导航和正文，切换类型时一起滑
     private final TextView[] kindTabs = new TextView[KINDS.length];
     private final TextView prev, next, label;
     private String kind = "daily";
@@ -59,6 +59,9 @@ final class ReportView extends FrameLayout {
             kindTabs[i] = tab;
         }
         column.addView(kinds);
+        content = new LinearLayout(a);
+        content.setOrientation(LinearLayout.VERTICAL);
+        column.addView(content);
 
         LinearLayout nav = new LinearLayout(a);
         nav.setGravity(Gravity.CENTER_VERTICAL);
@@ -70,20 +73,45 @@ final class ReportView extends FrameLayout {
         nav.addView(prev, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
         nav.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         nav.addView(next, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
-        column.addView(nav);
+        content.addView(nav);
 
         body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
-        column.addView(body);
+        content.addView(body);
 
         scroll = new ScrollView(a);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setPadding(0, 0, 0, t.dp(96));
         scroll.addView(column);
-        addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+        Swipe pager = new Swipe(a, new Swipe.Pages() {
+            @Override
+            public boolean has(int dir) {
+                int i = index() + dir;
+                return i >= 0 && i < KINDS.length;
+            }
+
+            @Override
+            public void drag(int dir, float dx) {
+                Swipe.follow(content, dx);
+            }
+
+            @Override
+            public void release(int dir, boolean go) {
+                String to = KINDS[index() + dir][0];
+                Swipe.turn(content, dir, go, () -> show(to, null));
+            }
+        });
+        pager.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        addView(pager, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         styleTabs();
+    }
+
+    private int index() {
+        for (int i = 0; i < KINDS.length; i++) if (KINDS[i][0].equals(kind)) return i;
+        return 0;
     }
 
     void setBottomInset(int px) {
