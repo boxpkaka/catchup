@@ -1,9 +1,14 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
@@ -12,7 +17,9 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 /**
  * 横向滑动翻页：左滑去下一页，右滑回上一页（没有上一页时是返回）。手指横向移动超过 touch slop、且明显比纵向多时接管，
@@ -229,6 +236,94 @@ final class Swipe extends FrameLayout {
         });
         s.addView(page, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         return s;
+    }
+
+    // ---------- 跟着翻页滑的胶囊标签 ----------
+
+    /**
+     * 一排胶囊标签，选中的胶囊画在标签后面，可以停在两个标签之间：翻页时跟着手指从这个标签滑向下一个，文字颜色跟着交接。
+     * 放在横向滚动的标签栏里时，胶囊跑到外面就把它带进来。只管前 count 个子控件，后面的（如“只看相关”）不动。
+     */
+    static final class Tabs extends LinearLayout {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF pill = new RectF();
+        private final ArgbEvaluator argb = new ArgbEvaluator();
+        private final int on, off;
+        private int count, target;
+        private float pos;
+        private ValueAnimator anim;
+
+        Tabs(Context c, int fill, int on, int off) {
+            super(c);
+            paint.setColor(fill);
+            this.on = on;
+            this.off = off;
+            setWillNotDraw(false);
+        }
+
+        void setCount(int count) {
+            this.count = count;
+        }
+
+        /** 马上停在 pos：1.5 是第二、三个标签正中间。 */
+        void at(float pos) {
+            if (anim != null) anim.cancel();
+            move(pos);
+        }
+
+        /** 用和翻页一样的弹簧滑到第 to 个；已经在往那里滑就不打断。 */
+        void slide(int to) {
+            if (anim != null && anim.isRunning() && target == to) return;
+            if (anim != null) anim.cancel();
+            target = to;
+            if (pos == to) {
+                move(to); // 标签刚重建时也要上色
+                return;
+            }
+            anim = ValueAnimator.ofFloat(pos, to);
+            anim.setDuration(Spring.STD.duration);
+            anim.setInterpolator(Spring.STD);
+            anim.addUpdateListener(a -> move((float) a.getAnimatedValue()));
+            anim.start();
+        }
+
+        private void move(float p) {
+            pos = p;
+            for (int i = 0; i < count && i < getChildCount(); i++) {
+                float near = Math.max(0f, 1 - Math.abs(p - i));
+                ((TextView) getChildAt(i)).setTextColor((int) argb.evaluate(near, off, on));
+            }
+            reveal();
+            invalidate();
+        }
+
+        /** 胶囊现在的位置：前后两个标签的边界按 pos 的小数部分插值。 */
+        private boolean place() {
+            if (count == 0 || getChildCount() < count) return false;
+            float p = Math.max(0, Math.min(count - 1, pos));
+            int i = (int) p;
+            float f = p - i;
+            View a = getChildAt(i), b = getChildAt(Math.min(i + 1, count - 1));
+            pill.set(a.getLeft() + (b.getLeft() - a.getLeft()) * f, a.getTop(),
+                    a.getRight() + (b.getRight() - a.getRight()) * f, a.getBottom());
+            return true;
+        }
+
+        private void reveal() {
+            if (!(getParent() instanceof HorizontalScrollView) || isLayoutRequested() || !place()) return;
+            HorizontalScrollView s = (HorizontalScrollView) getParent();
+            int x = s.getScrollX(), w = s.getWidth(), m = getPaddingLeft();
+            if (pill.left - m < x) s.scrollTo(Math.round(pill.left - m), 0);
+            else if (pill.right + m > x + w) s.scrollTo(Math.round(pill.right + m - w), 0);
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            if (!place()) return;
+            float r = pill.height() / 2;
+            c.drawRoundRect(pill, r, r, paint);
+        }
     }
 
     // ---------- 底部面板下拉关闭 ----------
