@@ -38,7 +38,7 @@ import java.util.Map;
 
 /**
  * 视觉规范（律动）：钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色反白给“要闻”和选中的标签；
- * 事件不按话题上色，话题写成文字。颜色一律按用途取，深浅色各一套。
+ * 事件不按话题上色，话题写成文字；专题页的几张卡片才有专题色（zone），帮你认路。颜色一律按用途取，深浅色各一套。
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
  */
@@ -84,6 +84,29 @@ final class Theme {
     static String topicOf(JSONObject e) {
         String s = e == null || e.isNull("topic") ? "" : e.optString("topic");
         return "其他".equals(s) ? "" : s;
+    }
+
+    /**
+     * 专题的颜色 {底色, 文字色, 形状色}，按专题的 key（兴趣名或榜单来源名）。只用在专题页的卡片和专题标题栏上，
+     * 信息流和列表行里不出现；避开了钴蓝（新）、酸橙（问一问）和红色（不需要）。没登记的专题用卡片色。
+     */
+    int[] zone(String key) {
+        switch (key) {
+            case "AI 语音":
+                return night ? new int[]{0xFF5B1F3C, 0xFFFFD9E6, 0xFFFF8AB4} : new int[]{0xFFFFD9E6, 0xFF5A0B33, 0xFFE5487F};
+            case "大模型":
+                return night ? new int[]{0xFF3A2B78, 0xFFE9DFFF, 0xFFB7A2FF} : new int[]{0xFFE9DFFF, 0xFF2C186B, 0xFF7D5CF6};
+            case "Agent":
+                return night ? new int[]{0xFF5A3710, 0xFFFFE2BF, 0xFFFFB45A} : new int[]{0xFFFFE2BF, 0xFF4A2800, 0xFFF08A12};
+            case "github_trending":
+                return night ? new int[]{0xFF0E4836, 0xFFCBF1E0, 0xFF5FD9AA} : new int[]{0xFFCBF1E0, 0xFF003828, 0xFF18A877};
+            case "hf_models":
+                return night ? new int[]{0xFF4A3D00, 0xFFFFF0AE, 0xFFF2CC3D} : new int[]{0xFFFFF0AE, 0xFF3A2E00, 0xFFD9AA00};
+            case "product_hunt":
+                return night ? new int[]{0xFF0D3D57, 0xFFD2ECFF, 0xFF6CC4F2} : new int[]{0xFFD2ECFF, 0xFF00324A, 0xFF1E9BD7};
+            default:
+                return new int[]{sheet, ink, sub};
+        }
     }
 
     int dp(float v) {

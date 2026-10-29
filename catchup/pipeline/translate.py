@@ -32,9 +32,9 @@ def originals(store, events: list[Event], briefs: dict) -> list[str]:
     return out
 
 
-def run(store, llm, events: list[Event]) -> int:
-    """翻译还没有译文的英文原文，返回新翻的条数。"""
-    texts = [t for t in dict.fromkeys(originals(store, events, store.briefs(e.id for e in events)))
+def run(store, llm, events: list[Event], extra: list[str] = ()) -> int:
+    """翻译还没有译文的英文原文，返回新翻的条数。extra 是事件之外 App 上会显示的原文（专题里的榜单简介），排在事件后面。"""
+    texts = [t for t in dict.fromkeys(originals(store, events, store.briefs(e.id for e in events)) + list(extra))
              if t.strip() and not CJK.search(t)]
     done = store.translations(texts)
     pending = [t for t in texts if t not in done][:LIMIT]

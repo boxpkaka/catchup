@@ -12,6 +12,7 @@ import hashlib
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote
 
 from .. import chat, personal, share
 from ..config import Config
@@ -20,12 +21,22 @@ from ..models import Event
 from ..pipeline import push, reports, translate
 from ..pipeline.brief import candidates, final_score, hot
 from ..pipeline.events import group_events
+from ..pipeline.ranking import Ranker
 from ..pipeline.update import ranked
 from ..sources import Source, build_sources, source_of
 from ..store import Store
 from ..util import parse_time, to_iso
 
 MAX_PENDING_DEVICES = 10
+# 榜单专题：来源类型和显示名，按这个顺序排在话题专题后面。GitHub Trending、HF 模型热榜按名次（Source.board），
+# Product Hunt 不记名次，列最近 LAUNCH_DAYS 天上架的
+BOARD_TOPICS = {"github_trending": "GitHub Trending", "hf_models": "HF 模型热榜", "product_hunt": "Product Hunt"}
+LAUNCH_DAYS = 3
+HF_TOP = 2  # 话题专题里 HF 每个分类只列前两名
+# 榜（channel）的显示名和顺序：GitHub Trending 的总榜和语言榜，HF 的任务分类
+CHANNELS = {"全部": "全部", "python": "Python", "text-generation": "文本生成", "image-text-to-text": "图文理解",
+            "any-to-any": "全模态", "audio-text-to-text": "音频理解", "automatic-speech-recognition": "语音识别",
+            "text-to-speech": "语音合成", "audio-to-audio": "音频处理"}
 # 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS），不想看这类时带上从 /reasons 里选的那一类；
 # 在“未追踪信息”里点“想看这类”是 useful + topic
 FEEDBACK_REASONS = {"not_needed": {None, *personal.REASONS}, "useful": {None, "topic"}, None: {None}}
@@ -57,6 +68,11 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         return (200, out) if out else (404, {"error": "not found"})
     if method == "GET" and path == "/v1/dismissed":
         return 200, {"events": dismissed(store, now)}
+    if method == "GET" and path == "/v1/topics":
+        return 200, topics(config, store, now)
+    if method == "GET" and (m := re.fullmatch(r"/v1/topics/([^/]+)", path)):
+        out = topic(config, store, unquote(m.group(1)), now)
+        return (200, out) if out else (404, {"error": "not found"})
     if method == "POST" and path == "/v1/chat":
         llm = from_config(config.llm)
         if llm is None:
@@ -305,6 +321,135 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
         "pushed_at": pushed_at,  # App 把离开期间推送过的事件也算作新的
         "following": following,
     }
+
+
+# ---------- 专题 ----------
+
+def topics(config: Config, store: Store, now: datetime) -> dict:
+    """专题页的卡片：话题专题（配置里的兴趣）今天几件、最新两件、榜单上还有几个；榜单专题有几条、和你相关的几条、
+    第一个榜的前三名。专题的颜色和形状由 App 按 key 决定。"""
+    sources = build_sources(config.sources)
+    events, boards = _topic_events(config, store, now, sources), _boards(config, store, now, sources)
+    listed = {e["id"] for e in events}
+    today = reports.local_now(config.push, now).date()
+    out = []
+    for i in config.interests:
+        mine = [e for e in events if e["topic"] == i["name"]]
+        out.append({"key": i["name"], "kind": "topic", "title": i["name"],
+                    "today": sum(reports.local_now(config.push, parse_time(e["time"])).date() == today for e in mine),
+                    "latest": [{k: e[k] for k in ("id", "headline", "time")} for e in mine[:2]],
+                    "on_boards": len(_on_boards(sources, boards, i["name"], listed))})
+    runs = store.last_runs()
+    for name, items in boards.items():
+        first = [x for x in items if x["channel"] == items[0]["channel"]] if items else []
+        out.append({"key": name, "kind": "board", "title": BOARD_TOPICS[sources[name].type],
+                    "count": len({x["url"] for x in items}), "related": len({x["url"] for x in items if x["topic"]}),
+                    "channels": len({x["channel"] for x in items}), "updated": (runs.get(name) or {}).get("started"),
+                    "top": first[:3]})
+    return {"generated": to_iso(now), "topics": out}
+
+
+def topic(config: Config, store: Store, key: str, now: datetime) -> dict | None:
+    """一个专题的完整列表。话题专题：这个话题的事件（按见报时间从新到旧），加上榜单上这个话题、还没作为事件列出的条目；
+    榜单专题：每个榜按名次的全部条目。"""
+    sources = build_sources(config.sources)
+    if key in {i["name"] for i in config.interests}:
+        events = [e for e in _topic_events(config, store, now, sources) if e["topic"] == key]
+        boards = _boards(config, store, now, sources)
+        items = _on_boards(sources, boards, key, {e["id"] for e in events})
+        return {"key": key, "kind": "topic", "title": key, "events": events,
+                "boards": [{"key": name, "title": BOARD_TOPICS[sources[name].type],
+                            "items": [x for x in items if x["board"] == name]} for name in boards
+                           if any(x["board"] == name for x in items)]}
+    if key not in sources or sources[key].type not in BOARD_TOPICS:
+        return None
+    items = _boards(config, store, now, {key: sources[key]})[key]
+    channels = list(dict.fromkeys(x["channel"] for x in items))
+    return {"key": key, "kind": "board", "title": BOARD_TOPICS[sources[key].type],
+            "updated": (store.last_runs().get(key) or {}).get("started"),
+            "channels": [{"key": c, "name": CHANNELS.get(c, c) if c else f"最近 {LAUNCH_DAYS} 天",
+                          "items": [x for x in items if x["channel"] == c]} for c in channels]}
+
+
+def _topic_events(config: Config, store: Store, now: datetime, sources) -> list[dict]:
+    """话题专题收的事件：时间窗里模型判断的主话题是某个兴趣、重要性够一般门槛（只出现在榜单上的也算，信息流里它们要更重要）
+    或推送过的，没标不需要的；按见报时间从新到旧，格式和信息流相同。"""
+    _, events = ranked(config, store, now)
+    briefs, feedback, pushed = store.briefs(e.id for e in events), store.feedback(), store.pushed()
+    bar = config.push.get("min_importance", push.DEFAULTS["min_importance"])
+    names = {i["name"] for i in config.interests}
+    kept = [e for e in events if e.id in briefs and briefs[e.id]["topic"] in names and feedback.get(e.id) != "not_needed"
+            and (e.id in pushed or briefs[e.id]["importance"] >= bar)]
+    follows, created = {f["event_id"] for f in store.follows()}, store.event_created(e.id for e in kept)
+    out = [_event(e, briefs[e.id], feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, lambda t: t,
+                  e.id in follows) for e in kept]
+    return sorted(out, key=lambda e: e["time"], reverse=True)
+
+
+def _boards(config: Config, store: Store, now: datetime, sources) -> dict[str, list[dict]]:
+    """各榜单专题的条目，按 BOARD_TOPICS 的顺序；每个榜单里按榜（CHANNELS 的顺序）和名次排，Product Hunt 按上架时间从新到旧。
+    条目带上话题（_item_topic）、对应的事件和它的重要性、在榜上第几天（名次从开始记录那天算，那天的不标“新”）。"""
+    names = [n for t in BOARD_TOPICS for n, s in sources.items() if s.type == t]
+
+    def local(iso):
+        return reports.local_now(config.push, parse_time(iso)).date()
+
+    today = local(to_iso(now))
+    interests = Ranker.from_config(config.interests, {}).interests
+    order = list(CHANNELS)
+    out = {}
+    for name in names:
+        if sources[name].board:
+            rows = sorted(store.board(name), key=lambda r: (order.index(r["channel"]) if r["channel"] in order
+                                                             else len(order), r["channel"], r["rank"]))
+        else:
+            rows, seen = [], set()
+            for s in sorted(store.recent(now - timedelta(days=LAUNCH_DAYS), now + timedelta(hours=1)),
+                            key=lambda s: s.published, reverse=True):
+                if s.source == name and s.title not in seen:  # 同一个产品换过链接时只列一次
+                    seen.add(s.title)
+                    rows.append({"channel": "", "rank": None, "url": s.url, "title": s.title, "summary": s.summary,
+                                 "extra": s.extra, "first_seen": to_iso(s.published)})
+        ids = {r["url"]: store.signal_event(r["url"]) for r in rows}
+        briefs = store.briefs(i for i in ids.values() if i)
+        zh = _zh(store, [r["summary"][:translate.SUMMARY_CHARS] for r in rows])
+        started = min((local(r["first_seen"]) for r in rows), default=today)
+        items = []
+        for r in rows:
+            b, days = briefs.get(ids[r["url"]]), (today - local(r["first_seen"])).days + 1
+            # 简介用条目自己的（译文），不用事件标题：同一事件里可能被合并进了别的仓库
+            items.append({"board": name, "channel": r["channel"], "rank": r["rank"], "url": r["url"], "name": r["title"],
+                          "summary": zh((r["summary"] or "")[:translate.SUMMARY_CHARS]),
+                          "topic": _item_topic(b, interests, f"{r['title']} {r['summary']} {r['channel']}"),
+                          "event_id": ids[r["url"]], "importance": b["importance"] if b else None,
+                          "time": r["first_seen"], "days": days, "new": days == 1 and started < today,
+                          "task": CHANNELS.get(r["channel"], "") if sources[name].type == "hf_models" else "",
+                          "extra": r["extra"]})
+        out[name] = items
+    return out
+
+
+def _item_topic(brief: dict | None, interests, text: str) -> str:
+    """榜单条目的话题：有简报的用模型判断的主话题，没有的按兴趣关键词（和排序同一套）命中最多的；都不是时为空串。"""
+    if brief and brief.get("topic"):
+        return "" if brief["topic"] == "其他" else brief["topic"]
+    text = text.lower()
+    hits = [(len(i.hits(text)), -n, i.name) for n, i in enumerate(interests) if i.hits(text)]
+    return max(hits)[2] if hits else ""
+
+
+def _on_boards(sources, boards: dict[str, list[dict]], key: str, listed: set[int]) -> list[dict]:
+    """话题专题下面“榜单上的”：话题是它、还没作为事件列出来的条目；同一条在几个榜上只列一次，HF 每个分类只取前 HF_TOP 名。"""
+    out, seen = [], set()
+    for name, items in boards.items():
+        for x in items:
+            if x["topic"] != key or x["event_id"] in listed or x["url"] in seen:
+                continue
+            if sources[name].type == "hf_models" and x["rank"] > HF_TOP:
+                continue
+            seen.add(x["url"])
+            out.append(x)
+    return out
 
 
 def report(config: Config, store: Store, kind: str, period: str | None, now: datetime) -> dict | None:

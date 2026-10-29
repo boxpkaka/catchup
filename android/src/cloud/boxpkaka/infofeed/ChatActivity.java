@@ -70,7 +70,7 @@ public class ChatActivity extends Activity {
         } else if (pendingAsk != null && !pendingAsk.isEmpty()) {
             sendMessage(pendingAsk);
         } else {
-            showSuggestions(null);
+            showSuggestions(getIntent().getStringArrayExtra(EXTRA_QUESTIONS));
         }
         Trace.log(this, "ui.chat", "event=" + eventId);
     }
