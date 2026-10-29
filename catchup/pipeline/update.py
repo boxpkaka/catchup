@@ -57,8 +57,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
         _, events = ranked(config, store, now)
+    boards = {name for name, s in sources.items() if s.board}
     if deliver:
-        boards = {name for name, s in sources.items() if s.board}
         stats["pushed"] = push.deliver(store, push.select(config.push, store, events, now, boards), now, config.push)
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)
@@ -66,6 +66,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报下一轮推送
         stats["topics"] = brief.assign_topics(store, events, llm, [i["name"] for i in config.interests])
         stats["reports"] = len(reports.run(config, store, llm, now))
-        stats["translated"] = translate.run(store, llm, events)
+        stats["translated"] = translate.run(store, llm, events, [
+            x["summary"][:translate.SUMMARY_CHARS] for name in boards for x in store.board(name)])
     log.info("update: %s", stats)
     return stats

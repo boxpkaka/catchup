@@ -61,11 +61,11 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * 首页，分“信息流”和“报告”两页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
+ * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
  * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗、带一行概要，其他只有标题。不按话题上色，话题写在来源前面；
  * 颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
  * 滑到底继续加载更早的。下拉刷新，左滑标记不需要（可撤销），点开看详情。
- * 报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
+ * 专题页见 TopicsView，报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
     static final String EXTRA_REPORT = "report"; // 如 weekly/2026-10-19，见 FeedService
@@ -74,6 +74,8 @@ public class MainActivity extends Activity {
     private static final long UNDO_MS = 10_000;
     private static final double TOP_RATIO = 0.7; // 最值得看：分数不低于当天第一名的七成
     private static final int TOP_MAX = 5;
+    private static final String[] TABS = {"信息流", "专题", "报告"};
+    private static final int FEED = 0, TOPICS = 1, REPORT = 2;
     /**
      * “不需要”的固定原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。
      * 上面一行“不想看这类”的几个候选从服务器取（/reasons），选中哪类就记哪类；“其他”先存档，攒几条再一起判断。
@@ -120,9 +122,10 @@ public class MainActivity extends Activity {
     private final Runnable commitDismiss = () -> commitDismiss(null);
     private final Runnable hideUndoLater = this::hideUndo;
     private Updater.Release release;
-    private TextView tabFeed, tabReport;
+    private final TextView[] tabViews = new TextView[TABS.length];
+    private TopicsView topics;
     private ReportView reports;
-    private boolean reportTab;
+    private int tab = FEED;
     private final List<JSONObject> olderEvents = new ArrayList<>(); // 往前翻页加载的，接在第一页后面
     private String olderCursor; // 下一页的 before，到开始采集为止
     private boolean loadingOlder;
@@ -179,7 +182,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (reportTab) selectTab(false);
+        if (tab != FEED) selectTab(FEED);
         else super.onBackPressed();
     }
 
@@ -291,6 +294,9 @@ public class MainActivity extends Activity {
         pull.setOnRefresh(this::load);
         FrameLayout content = new FrameLayout(this);
         content.addView(pull, match());
+        topics = new TopicsView(this, t, this::openTopic);
+        topics.setVisibility(View.GONE);
+        content.addView(topics, match());
         reports = new ReportView(this, t, this::openEvent);
         reports.setVisibility(View.GONE);
         content.addView(reports, match());
@@ -363,6 +369,7 @@ public class MainActivity extends Activity {
                 topBar.setPadding(t.dp(20), bars.top + t.dp(10), t.dp(10), t.dp(6));
                 skeleton.setPadding(0, bars.top + t.dp(60), 0, 0);
                 list.setPadding(0, 0, 0, bars.bottom + t.dp(96));
+                topics.setBottomInset(bars.bottom + t.dp(96));
                 reports.setBottomInset(bars.bottom + t.dp(96));
                 ub.bottomMargin = bars.bottom + t.dp(16);
                 undoBar.setLayoutParams(ub);
@@ -372,42 +379,40 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    /** 信息流 / 报告：顶栏下面两个胶囊标签，选中的是墨色反白。 */
+    /** 信息流 / 专题 / 报告：顶栏下面三个胶囊标签，选中的是墨色反白。 */
     private View buildTabs() {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setPadding(t.dp(16), t.dp(2), t.dp(16), t.dp(8));
         tabs.setBackgroundColor(t.bg);
-        tabFeed = tab("信息流", false);
-        tabReport = tab("报告", true);
-        tabs.addView(tabFeed, gapLp(6));
-        tabs.addView(tabReport);
+        for (int i = 0; i < TABS.length; i++) {
+            int index = i;
+            TextView v = t.text(this, TABS[i], 15, t.ink, 800);
+            v.setPadding(t.dp(18), t.dp(8), t.dp(18), t.dp(8));
+            v.setOnClickListener(x -> selectTab(index));
+            tabs.addView(v, gapLp(i < TABS.length - 1 ? 6 : 0));
+            tabViews[i] = v;
+        }
         styleTabs();
         return tabs;
     }
 
-    private TextView tab(String label, boolean report) {
-        TextView v = t.text(this, label, 15, t.ink, 800);
-        v.setPadding(t.dp(18), t.dp(8), t.dp(18), t.dp(8));
-        v.setOnClickListener(x -> selectTab(report));
-        return v;
-    }
-
     private void styleTabs() {
-        for (TextView v : new TextView[]{tabFeed, tabReport}) {
-            boolean on = (v == tabReport) == reportTab;
-            v.setTextColor(on ? t.onInv : t.sub);
-            v.setBackground(t.ripple(on ? t.inv : Color.TRANSPARENT, 99));
+        for (int i = 0; i < TABS.length; i++) {
+            tabViews[i].setTextColor(i == tab ? t.onInv : t.sub);
+            tabViews[i].setBackground(t.ripple(i == tab ? t.inv : Color.TRANSPARENT, 99));
         }
     }
 
-    private void selectTab(boolean report) {
-        if (report != reportTab) Trace.log(this, "ui.tab", report ? "report" : "feed");
-        reportTab = report;
+    private void selectTab(int which) {
+        if (which != tab) Trace.log(this, "ui.tab", which == TOPICS ? "topics" : which == REPORT ? "report" : "feed");
+        tab = which;
         styleTabs();
-        pull.setVisibility(report ? View.GONE : View.VISIBLE);
-        reports.setVisibility(report ? View.VISIBLE : View.GONE);
+        pull.setVisibility(which == FEED ? View.VISIBLE : View.GONE);
+        topics.setVisibility(which == TOPICS ? View.VISIBLE : View.GONE);
+        reports.setVisibility(which == REPORT ? View.VISIBLE : View.GONE);
         topDivider.setAlpha(0f);
-        if (report) reports.showIfEmpty();
+        if (which == TOPICS) topics.refreshIfStale();
+        if (which == REPORT) reports.showIfEmpty();
     }
 
     /** 推送的周报、月报点开：进报告页并显示那一份。 */
@@ -416,8 +421,17 @@ public class MainActivity extends Activity {
         if (r == null) return;
         intent.removeExtra(EXTRA_REPORT); // 转屏重建时不再重复打开
         String[] parts = r.split("/", 2);
-        selectTab(true);
+        selectTab(REPORT);
         reports.show(parts[0], parts.length > 1 ? parts[1] : null);
+    }
+
+    /** 从专题卡片的位置揭开专题页，标题栏和卡片同色，看起来像卡片长大了。 */
+    private void openTopic(View from, JSONObject topic) {
+        Intent i = new Intent(this, TopicActivity.class)
+                .putExtra(TopicActivity.EXTRA_KEY, topic.optString("key"))
+                .putExtra(TopicActivity.EXTRA_TITLE, topic.optString("title"));
+        startActivity(i, ActivityOptions.makeClipRevealAnimation(from, 0, 0, from.getWidth(), from.getHeight())
+                .toBundle());
     }
 
     private void openEvent(long id) {
@@ -668,7 +682,7 @@ public class MainActivity extends Activity {
 
     /** 一天：标题，最值得看的几件，其余按时间从新到旧。 */
     private void addDay(List<JSONObject> list) {
-        rows.add(new Row(0, dayTitle(Theme.millis(list.get(0).optString("time"))), null));
+        rows.add(new Row(0, dayTitle(this, t, Theme.millis(list.get(0).optString("time"))), null));
         List<JSONObject> top = top(list);
         if (!top.isEmpty()) rows.add(new Row(4, "最值得看", null));
         for (int i = 0; i < top.size(); i++) rows.add(new Row(1, String.format(Locale.ROOT, "%02d", i + 1), top.get(i)));
@@ -1031,12 +1045,12 @@ public class MainActivity extends Activity {
         return n > 1 ? lead + " 等 " + n + " 家" : lead;
     }
 
-    private static String clock(long ms) {
+    static String clock(long ms) {
         return new SimpleDateFormat("HH:mm", Locale.CHINA).format(new Date(ms));
     }
 
     /** 信息流按天分组：今天、昨天，更早的写日期和星期。 */
-    private static String dayLabel(long ms) {
+    static String dayLabel(long ms) {
         Calendar today = Calendar.getInstance();
         today.set(Calendar.HOUR_OF_DAY, 0);
         today.set(Calendar.MINUTE, 0);
@@ -1048,8 +1062,8 @@ public class MainActivity extends Activity {
         return new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
     }
 
-    /** 每天的标题：今天、昨天后面用小字跟上日期。 */
-    private CharSequence dayTitle(long ms) {
+    /** 每天的标题：今天、昨天后面用小字跟上日期。专题页也用。 */
+    static CharSequence dayTitle(Context c, Theme t, long ms) {
         String day = dayLabel(ms);
         if (!day.equals("今天") && !day.equals("昨天")) return day;
         String date = new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
@@ -1057,7 +1071,7 @@ public class MainActivity extends Activity {
         int from = day.length();
         s.setSpan(new AbsoluteSizeSpan(13, true), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         s.setSpan(new ForegroundColorSpan(t.sub), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        s.setSpan(new TypefaceSpan(Theme.flex(this, 100, 650)), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new TypefaceSpan(Theme.flex(c, 100, 650)), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         return s;
     }
 

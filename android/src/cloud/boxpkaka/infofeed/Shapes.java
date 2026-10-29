@@ -15,7 +15,8 @@ import android.view.animation.PathInterpolator;
 
 /**
  * 形状：都由 r(θ) = r0·(1 + amp·cos kθ) 取同样多的点生成，所以任意两个之间可以逐点插值变形。
- * 每种形状只表达一件事：波浪是图标，太阳是重要性 5，四叶是重要性 4 和“未追踪信息”，软六边形是字标和要点。
+ * 每种形状只表达一件事：波浪是图标，太阳是重要性 5，四叶是重要性 4 和“未追踪信息”，软六边形是字标和要点；
+ * 专题各有一种（见 Emblem），不和这些重复。
  */
 final class Shapes {
     static final float[] COOKIE = {12, 0.075f}, SUNNY = {8, 0.1f}, CLOVER = {4, 0.2f}, SOFT = {6, 0.09f};
@@ -139,6 +140,121 @@ final class Shapes {
             c.save();
             c.rotate(spin, box.exactCenterX(), box.exactCenterY());
             c.drawPath(path, paint);
+            c.restore();
+        }
+    }
+
+    /**
+     * 专题的徽记：专题色的形状，中间是专题的图形（挖空成底色）。形状平时慢慢转，48 秒一圈，看不见或系统关闭了动画时不转。
+     * 图形在 24×24 的格子里画，和设计稿的 SVG 一致。
+     */
+    static final class Emblem extends View {
+        static final int WAVE = 0, SPARK = 1, ARROW = 2, TREND = 3, HEART = 4, UP = 5;
+        private final Paint shape = new Paint(Paint.ANTI_ALIAS_FLAG), mark = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path(), glyphPath = new Path();
+        private final Rect box = new Rect();
+        private final float[] pts;
+        private final int glyph;
+        private ValueAnimator anim;
+        private float spin;
+
+        Emblem(Context c, float[] form, int glyph, int color, int hole) {
+            super(c);
+            pts = points(form);
+            this.glyph = glyph;
+            shape.setColor(color);
+            mark.setColor(hole);
+            mark.setStrokeCap(Paint.Cap.ROUND);
+            mark.setStrokeJoin(Paint.Join.ROUND);
+            buildGlyph();
+        }
+
+        private void buildGlyph() {
+            Path p = glyphPath;
+            switch (glyph) {
+                case WAVE: // 四根高低不同的竖条
+                    float[][] bars = {{3.5f, 9, 15}, {8, 5, 19}, {12.5f, 2.5f, 21.5f}, {17, 7, 17}};
+                    for (float[] b : bars) p.addRoundRect(b[0], b[1], b[0] + 3, b[2], 1.5f, 1.5f, Path.Direction.CW);
+                    break;
+                case SPARK: // 四角星
+                    p.moveTo(12, 1.5f);
+                    p.cubicTo(12.7f, 7.1f, 15.9f, 10.9f, 22.5f, 12);
+                    p.cubicTo(15.9f, 13.1f, 12.7f, 16.9f, 12, 22.5f);
+                    p.cubicTo(11.3f, 16.9f, 8.1f, 13.1f, 1.5f, 12);
+                    p.cubicTo(8.1f, 10.9f, 11.3f, 7.1f, 12, 1.5f);
+                    p.close();
+                    break;
+                case ARROW: // 右上箭头，描边
+                    p.moveTo(6, 18);
+                    p.lineTo(18, 6);
+                    p.moveTo(9, 6);
+                    p.lineTo(18, 6);
+                    p.lineTo(18, 15);
+                    break;
+                case TREND: // 上升的折线，描边
+                    p.moveTo(3, 17.5f);
+                    p.lineTo(9, 11.5f);
+                    p.lineTo(13, 15.5f);
+                    p.lineTo(21, 7.5f);
+                    p.moveTo(15, 7.5f);
+                    p.lineTo(21, 7.5f);
+                    p.lineTo(21, 13.5f);
+                    break;
+                case HEART: // 两段 4.8 半径的圆弧做心形的上半
+                    p.moveTo(12, 21);
+                    p.cubicTo(12, 21, 3.5f, 15.8f, 3.5f, 9.8f);
+                    p.arcTo(3.49f, 5.25f, 13.09f, 14.85f, 183, 137.6f, false);
+                    p.arcTo(10.91f, 5.25f, 20.51f, 14.85f, 219.4f, 137.6f, false);
+                    p.cubicTo(20.5f, 15.8f, 12, 21, 12, 21);
+                    p.close();
+                    break;
+                default: // UP：圆角三角形
+                    p.moveTo(12, 4.5f);
+                    p.lineTo(20.5f, 18.5f);
+                    p.lineTo(3.5f, 18.5f);
+                    p.close();
+            }
+            boolean stroke = glyph == ARROW || glyph == TREND;
+            mark.setStyle(stroke ? Paint.Style.STROKE : glyph == UP ? Paint.Style.FILL_AND_STROKE : Paint.Style.FILL);
+            mark.setStrokeWidth(glyph == ARROW ? 3.2f : glyph == TREND ? 3 : 2.4f);
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldW, int oldH) {
+            box.set(0, 0, w, h);
+            trace(path, pts, pts, 0, box);
+        }
+
+        @Override
+        public void onVisibilityAggregated(boolean visible) {
+            super.onVisibilityAggregated(visible);
+            if (visible && anim == null && ValueAnimator.areAnimatorsEnabled()) {
+                anim = ValueAnimator.ofFloat(0, 360);
+                anim.setDuration(48_000);
+                anim.setRepeatCount(ValueAnimator.INFINITE);
+                anim.setInterpolator(new LinearInterpolator());
+                anim.addUpdateListener(a -> {
+                    spin = (float) a.getAnimatedValue();
+                    invalidate();
+                });
+                anim.start();
+            } else if (!visible && anim != null) {
+                anim.cancel();
+                anim = null;
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            c.save();
+            c.rotate(spin, box.exactCenterX(), box.exactCenterY());
+            c.drawPath(path, shape);
+            c.restore();
+            float size = Math.min(box.width(), box.height()) * 0.46f;
+            c.save();
+            c.translate(box.exactCenterX() - size / 2, box.exactCenterY() - size / 2);
+            c.scale(size / 24, size / 24);
+            c.drawPath(glyphPath, mark);
             c.restore();
         }
     }

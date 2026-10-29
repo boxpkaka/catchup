@@ -27,6 +27,7 @@
         </activity>
 
         <activity android:name=".EventActivity" android:exported="false" />
+        <activity android:name=".TopicActivity" android:exported="false" />
         <activity android:name=".ChatActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MemoryActivity" android:exported="false" />
         <!-- 系统分享：在别的 App 里把链接分享给 Catchup -->

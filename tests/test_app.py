@@ -543,6 +543,30 @@ class AppApiMoreTest(unittest.TestCase):
         self.store.con.execute("update briefs set importance = 4 where event_id = ?", (repo.id,))
         self.assertIn(repo.id, ids())
 
+    def test_topics_hold_topic_events_and_whole_boards(self):
+        self.store.con.execute("update briefs set topic = 'AI 语音'")
+        dessa = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        repos = [Signal(url=f"https://github.com/acme/{n}", title=f"acme/{n}", summary=s, source="trending",
+                        channel="全部", published=NOW) for n, s in (("voice", "Local TTS server"), ("kit", "Web toolkit"))]
+        self.store.add(repos, now=NOW)
+        self.store.update_board("trending", repos, NOW)
+        [voice, trending] = self.call("GET", "/v1/topics")[1]["topics"]
+        self.assertEqual((voice["today"], [e["id"] for e in voice["latest"]], voice["on_boards"]), (1, [dessa], 1))
+        self.assertEqual((trending["count"], trending["related"], [x["name"] for x in trending["top"]]),
+                         (2, 1, ["acme/voice", "acme/kit"]))
+        # 话题专题：这个话题的事件，加上榜单上按兴趣关键词命中、还没成为事件的条目；key 在路径里是转义过的
+        status, t = self.call("GET", "/v1/topics/AI%20%E8%AF%AD%E9%9F%B3")
+        self.assertEqual((status, [e["id"] for e in t["events"]]), (200, [dessa]))
+        self.assertEqual([(b["key"], [x["name"] for x in b["items"]]) for b in t["boards"]], [("trending", ["acme/voice"])])
+        # 榜单专题：整个榜按名次，和你无关的也在
+        [ch] = self.call("GET", "/v1/topics/trending")[1]["channels"]
+        self.assertEqual([(x["rank"], x["topic"]) for x in ch["items"]], [(1, "AI 语音"), (2, "")])
+        self.assertEqual(self.call("GET", "/v1/topics/news")[0], 404)
+        # 榜单简介不属于任何事件，也要翻译
+        self.assertEqual(translate.run(self.store, FakeLLM(), [], ["Local TTS server"]), 1)
+        self.assertEqual(self.call("GET", "/v1/topics/trending")[1]["channels"][0]["items"][0]["summary"],
+                         "译：Local TTS server")
+
     def test_main_topic_is_picked_by_the_model(self):
         self.store.add([sig("https://a/2", "Moshi 2 speech model released", hours_ago=2)], now=NOW)
         assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
