@@ -17,6 +17,7 @@ class HFModels(Source):
     default_tier = "primary"
     default_kind = "模型"
     label_format = "HF 模型"
+    board = True
 
     def fetch(self):
         limit = self.options.get("limit", 20)

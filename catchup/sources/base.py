@@ -26,6 +26,7 @@ class Source:
     default_tier: ClassVar[str] = "signal"
     default_kind: ClassVar[str] = "资讯"
     label_format: ClassVar[str] = "{channel}"   # 页面上显示的来源名，可用 {channel} 和 {title}
+    board: ClassVar[bool] = False  # 榜单：fetch 按名次返回，另记名次和上榜时间（Store.update_board）
 
     def __init__(self, name: str, options: dict):
         self.name = name

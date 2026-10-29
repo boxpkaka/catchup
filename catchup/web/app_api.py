@@ -189,12 +189,14 @@ def feed(config: Config, store: Store, now: datetime, before: datetime | None = 
     briefs, feedback, pushed = store.briefs(e.id for e in events), store.feedback(), store.pushed()
     follows = {f["event_id"]: f for f in store.follows()}
     bar = config.push.get("min_importance", push.DEFAULTS["min_importance"])
+    boards = {name for name, s in sources.items() if s.board}
     pending = {e.id for e in candidates(events, config.llm.get("brief_top", 25), sources) if e.id not in briefs}
     published = store.event_published(e.id for e in events)
     zh = _zh(store, [t for e in events if e.id not in briefs
                      for t in (e.lead.title, e.lead.summary[:translate.SUMMARY_CHARS])])
     shown = [e for e in events if feedback.get(e.id) != "not_needed" and since <= published[e.id] < until
-             and (e.id in pushed or e.id in pending or briefs.get(e.id, {}).get("importance", 0) >= bar)]
+             and (e.id in pushed or e.id in pending
+                  or briefs.get(e.id, {}).get("importance", 0) >= push.min_importance(config.push, e, boards))]
     shown.sort(key=lambda e: published[e.id], reverse=True)
     created = store.event_created(e.id for e in shown)
     started = store.first_fetched()

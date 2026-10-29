@@ -113,12 +113,22 @@
       "days": 7,
       "min_stars": 50
     },
+    "github_trending": {
+      "type": "github_trending",
+      "title": "GitHub Trending",
+      "interval": 60,
+      "languages": [
+        "",
+        "python"
+      ]
+    },
     "hf_models": {
       "type": "hf_models",
       "title": "HF 模型",
       "interval": 120,
       "pipeline_tags": [
         "text-generation",
+        "image-text-to-text",
         "any-to-any",
         "audio-text-to-text",
         "automatic-speech-recognition",
@@ -231,6 +241,12 @@
           "url": "https://www.qbitai.com/feed"
         }
       ]
+    },
+    "product_hunt": {
+      "type": "product_hunt",
+      "title": "Product Hunt",
+      "interval": 60,
+      "category": "artificial-intelligence"
     },
     "google_news": {
       "type": "google_news",
