@@ -122,7 +122,7 @@ public class MainActivity extends Activity {
     private final Runnable commitDismiss = () -> commitDismiss(null);
     private final Runnable hideUndoLater = this::hideUndo;
     private Updater.Release release;
-    private final TextView[] tabViews = new TextView[TABS.length];
+    private Swipe.Tabs tabBar;
     private TopicsView topics;
     private ReportView reports;
     private int tab = FEED;
@@ -380,21 +380,22 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    /** 信息流 / 专题 / 报告：顶栏下面三个胶囊标签，选中的是墨色反白。 */
+    /** 信息流 / 专题 / 报告：顶栏下面三个胶囊标签，选中的是墨色反白，左右滑翻页时胶囊跟着手指走。 */
     private View buildTabs() {
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setPadding(t.dp(16), t.dp(2), t.dp(16), t.dp(8));
-        tabs.setBackgroundColor(t.bg);
+        tabBar = new Swipe.Tabs(this, t.inv, t.onInv, t.sub);
+        tabBar.setPadding(t.dp(16), t.dp(2), t.dp(16), t.dp(8));
+        tabBar.setBackgroundColor(t.bg);
         for (int i = 0; i < TABS.length; i++) {
             int index = i;
             TextView v = t.text(this, TABS[i], 15, t.ink, 800);
             v.setPadding(t.dp(18), t.dp(8), t.dp(18), t.dp(8));
+            v.setBackground(t.ripple(Color.TRANSPARENT, 99));
             v.setOnClickListener(x -> selectTab(index));
-            tabs.addView(v, gapLp(i < TABS.length - 1 ? 6 : 0));
-            tabViews[i] = v;
+            tabBar.addView(v, gapLp(i < TABS.length - 1 ? 6 : 0));
         }
-        styleTabs();
-        return tabs;
+        tabBar.setCount(TABS.length);
+        tabBar.at(tab);
+        return tabBar;
     }
 
     /** 三页之间左右滑：当前页跟手移开，相邻的一页从旁边跟进来，松手后停在哪页就切到哪页。 */
@@ -413,6 +414,7 @@ public class MainActivity extends Activity {
             }
             from.setTranslationX(dx);
             to.setTranslationX(dx + dir * from.getWidth());
+            tabBar.at(tab - dx / Math.max(1, from.getWidth()));
         }
 
         @Override
@@ -421,6 +423,7 @@ public class MainActivity extends Activity {
             View from = page(tab), to = page(target);
             float w = from.getWidth();
             paging = true;
+            tabBar.slide(go ? target : tab);
             from.animate().translationX(go ? -dir * w : 0).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
                     .start();
             to.animate().translationX(go ? 0 : dir * w).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
@@ -438,17 +441,10 @@ public class MainActivity extends Activity {
         return which == FEED ? pull : which == TOPICS ? topics : reports;
     }
 
-    private void styleTabs() {
-        for (int i = 0; i < TABS.length; i++) {
-            tabViews[i].setTextColor(i == tab ? t.onInv : t.sub);
-            tabViews[i].setBackground(t.ripple(i == tab ? t.inv : Color.TRANSPARENT, 99));
-        }
-    }
-
     private void selectTab(int which) {
         if (which != tab) Trace.log(this, "ui.tab", which == TOPICS ? "topics" : which == REPORT ? "report" : "feed");
         tab = which;
-        styleTabs();
+        tabBar.slide(which);
         pull.setVisibility(which == FEED ? View.VISIBLE : View.GONE);
         topics.setVisibility(which == TOPICS ? View.VISIBLE : View.GONE);
         reports.setVisibility(which == REPORT ? View.VISIBLE : View.GONE);
@@ -900,8 +896,7 @@ public class MainActivity extends Activity {
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout tags = new LinearLayout(this);
-        tags.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout tags = new LinearLayout(this); // 不要垂直居中：居中时标签的下边距会把它往上推，顶部被裁掉
         h.label = newLabel("新");
         LinearLayout.LayoutParams ll = gapLp(6);
         ll.bottomMargin = t.dp(8);

@@ -49,7 +49,8 @@ public class TopicActivity extends Activity {
     private Theme t;
     private String key;
     private int[] z;
-    private LinearLayout head, body, tabs;
+    private LinearLayout head, body;
+    private Swipe.Tabs tabs;
     private ScrollView scroll;
     private HorizontalScrollView tabScroll;
     private TextView sub;
@@ -114,7 +115,7 @@ public class TopicActivity extends Activity {
         page.addView(bar);
 
         // 榜单专题：几个榜之间切换，右边是“只看相关”
-        tabs = new LinearLayout(this);
+        tabs = new Swipe.Tabs(this, z[2], t.night ? z[0] : Color.WHITE, t.sub);
         tabs.setGravity(Gravity.CENTER_VERTICAL);
         tabs.setPadding(t.dp(12), t.dp(14), t.dp(12), t.dp(6));
         tabScroll = new HorizontalScrollView(this);
@@ -152,8 +153,12 @@ public class TopicActivity extends Activity {
 
             @Override
             public void drag(int dir, float dx) {
-                if (turns(dir)) Swipe.follow(body, dx);
-                else backSwipe.drag(dx);
+                if (turns(dir)) {
+                    Swipe.follow(body, dx);
+                    tabs.at(channel - dx / Math.max(1, body.getWidth()));
+                } else {
+                    backSwipe.drag(dx);
+                }
             }
 
             @Override
@@ -163,6 +168,7 @@ public class TopicActivity extends Activity {
                     return;
                 }
                 int to = channel + dir;
+                tabs.slide(go ? to : channel);
                 Swipe.turn(body, dir, go, () -> pick(to));
             }
         });
@@ -314,16 +320,12 @@ public class TopicActivity extends Activity {
         int n = channels == null ? 0 : channels.length();
         sub.setText(n > 1 ? n + " 个" + ("hf_models".equals(key) ? "分类" : "榜") + " · " + updated : updated);
         tabs.removeAllViews();
-        TextView selected = null;
         for (int i = 0; i < n && n > 1; i++) {
             int index = i;
             TextView tab = t.text(this, channels.optJSONObject(i).optString("name"), 14, t.sub, 800);
             tab.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-            boolean on = i == channel;
-            tab.setTextColor(on ? (t.night ? z[0] : Color.WHITE) : t.sub);
-            tab.setBackground(t.ripple(on ? z[2] : Color.TRANSPARENT, 99));
+            tab.setBackground(t.ripple(Color.TRANSPARENT, 99));
             tab.setOnClickListener(v -> pick(index));
-            if (on) selected = tab;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.rightMargin = t.dp(4);
@@ -342,13 +344,9 @@ public class TopicActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         ol.leftMargin = t.dp(n > 1 ? 8 : 0);
         tabs.addView(only, ol);
+        tabs.setCount(n > 1 ? n : 0);
+        tabs.slide(channel); // 胶囊滑到这个榜，在标签栏外面时顺带把它带进来
         tabScroll.setVisibility(View.VISIBLE);
-        TextView sel = selected;
-        if (sel != null) tabScroll.post(() -> { // 滑到的榜在标签栏外面时，把它带进来
-            int x = tabScroll.getScrollX(), w = tabScroll.getWidth();
-            if (sel.getLeft() < x) tabScroll.smoothScrollTo(sel.getLeft() - t.dp(12), 0);
-            else if (sel.getRight() > x + w) tabScroll.smoothScrollTo(sel.getRight() - w + t.dp(12), 0);
-        });
 
         body.removeAllViews();
         JSONArray items = n == 0 ? null : channels.optJSONObject(Math.min(channel, n - 1)).optJSONArray("items");
