@@ -59,7 +59,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         _, events = ranked(config, store, now)
     boards = {name for name, s in sources.items() if s.board}
     if deliver:
-        stats["pushed"] = push.deliver(store, push.select(config.push, store, events, now, boards), now, config.push)
+        picked = push.select(config.push, store, events, now, push.strict_sources(sources))
+        stats["pushed"] = push.deliver(store, picked, now, config.push)
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)
         reports.deliver(config.push, store, now)

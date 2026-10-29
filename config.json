@@ -75,6 +75,32 @@
         "claude code",
         "智能体"
       ]
+    },
+    {
+      "name": "AI 创投",
+      "weight": 1.0,
+      "keywords": [
+        "融资",
+        "估值",
+        "并购",
+        "收购",
+        "领投",
+        "种子轮",
+        "天使轮",
+        "招股书",
+        "递表",
+        "创投",
+        "风投",
+        "ipo",
+        "funding",
+        "seed round",
+        "series a",
+        "series b",
+        "series c",
+        "valuation",
+        "acquires",
+        "venture capital"
+      ]
     }
   ],
   "sources": {
@@ -239,6 +265,31 @@
         {
           "name": "量子位",
           "url": "https://www.qbitai.com/feed"
+        }
+      ]
+    },
+    "venture": {
+      "type": "feed",
+      "title": "创投媒体",
+      "interval": 30,
+      "kind": "新闻",
+      "important_only": true,
+      "feeds": [
+        {
+          "name": "TechCrunch Venture",
+          "url": "https://techcrunch.com/category/venture/feed/"
+        },
+        {
+          "name": "Crunchbase News",
+          "url": "https://news.crunchbase.com/sections/ai/feed/"
+        },
+        {
+          "name": "The Information",
+          "url": "https://www.theinformation.com/feed"
+        },
+        {
+          "name": "极客公园",
+          "url": "https://www.geekpark.net/rss"
         }
       ]
     },
