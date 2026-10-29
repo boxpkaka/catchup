@@ -18,7 +18,7 @@ from catchup.util import to_iso
 
 NOW = datetime(2026, 10, 24, 4, tzinfo=timezone.utc)  # 北京时间 12:00，不在免打扰时段
 INTERESTS = [{"name": "AI 语音", "weight": 3, "keywords": ["tts", "voice"]}]
-SOURCES = {"news": {"type": "feed", "title": "News", "feeds": []}}
+SOURCES = {"news": {"type": "feed", "title": "News", "feeds": []}, "trending": {"type": "github_trending"}}
 
 
 def sig(url, title, hours_ago=1, source="news"):
@@ -141,6 +141,14 @@ class PushTest(unittest.TestCase):
     def test_low_importance_is_not_pushed(self):
         self.store.con.execute("update briefs set importance = 2")  # 边缘信息不推，一般动态就推
         self.assertEqual(push.select({}, self.store, self.events, NOW), [])
+
+    def test_board_only_events_need_higher_importance(self):
+        boards = {self.events[0].signals[0].source}
+        self.store.con.execute("update briefs set importance = 3")
+        self.assertEqual(push.select({}, self.store, self.events, NOW, boards), [])  # 只在榜单上的一般动态不推
+        self.assertEqual(len(push.select({}, self.store, self.events, NOW)), 5)
+        self.store.con.execute("update briefs set importance = 4")
+        self.assertEqual(len(push.select({}, self.store, self.events, NOW, boards)), 5)
 
     def test_deliver_records_only_successes(self):
         with mock.patch.dict("os.environ", {"FEED_URL": "http://hub/publish", "FEED_TOKEN": "t"}), \
@@ -524,6 +532,16 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual(ids(), [dessa["id"]])  # 判定为边缘信息的不显示
         self.store.record_push(uk.id, NOW)
         self.assertEqual(ids(), [dessa["id"], uk.id])  # 推送过的一定在信息流里，方便划掉
+
+    def test_board_only_events_need_to_be_important_for_the_feed(self):
+        self.store.add([sig("https://github.com/acme/voice", "acme/voice local TTS", source="trending")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        repo = next(e for e in group_events(self.store.recent(NOW - timedelta(days=3), NOW)) if e.lead.source == "trending")
+        brief.write_briefs(self.store, [repo], "", FakeLLM(importance=3), {}, NOW)
+        ids = lambda: [e["id"] for e in self.call("GET", "/v1/feed")[1]["events"]]
+        self.assertNotIn(repo.id, ids())  # 只在榜单上的一般动态不进信息流，留给专题
+        self.store.con.execute("update briefs set importance = 4 where event_id = ?", (repo.id,))
+        self.assertIn(repo.id, ids())
 
     def test_main_topic_is_picked_by_the_model(self):
         self.store.add([sig("https://a/2", "Moshi 2 speech model released", hours_ago=2)], now=NOW)

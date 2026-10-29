@@ -124,3 +124,22 @@ class Techmeme(Source):
                                        author=byline.split("/")[-1].strip(), published=e["published"],
                                        extra={"techmeme": e["url"]}))
         return signals
+
+
+@register
+class ProductHunt(Source):
+    """Product Hunt 某个分类新上架的产品。条目链接是产品页，同一个产品每次上新都一样，按 URL 去重会漏掉后来的发布，
+    所以用每次发布独有的跳转链接（/r/p/<编号>，跳到产品官网），产品页记在 extra；摘要末尾的“Discussion | Link”去掉。"""
+    type = "product_hunt"
+    default_kind = "产品"
+    label_format = "Product Hunt"
+
+    def fetch(self):
+        url = f"https://www.producthunt.com/feed?category={self.options.get('category', 'artificial-intelligence')}"
+        signals = []
+        for e in parse_feed(http.get(url)):
+            post = re.search(r"https://www\.producthunt\.com/r/p/\d+", e["summary"])
+            summary = re.sub(r"<a [^>]*>Discussion</a>\s*\|\s*<a [^>]*>Link</a>", "", e["summary"])
+            signals.append(self.signal(post.group(0) if post else e["url"], e["title"], summary,
+                                       published=e["published"], extra={"product": e["url"]}))
+        return signals

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -90,7 +90,15 @@ MIGRATIONS = [
     """,
     # 简报的主话题：配置里的兴趣名或“其他”，App 按它给卡片上色；简报重写后为 NULL，下一轮重新判断（brief.assign_topics）
     "alter table briefs add column topic text;",
+    # 榜单来源（Source.board）的名次：每个榜（channel）最近一次抓到的才是当前榜单；first_seen 是这一轮上榜的开始
+    """
+    create table board_items (
+        source text not null, channel text not null, url text not null, rank integer not null, title text,
+        summary text, extra text, first_seen text not null, last_seen text not null,
+        primary key (source, channel, url));
+    """,
 ]
+BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
 
@@ -504,6 +512,34 @@ class Store:
     def touch_device(self, device_id: int, now: datetime) -> None:
         self.con.execute("update devices set last_seen = ? where id = ?", (to_iso(now), device_id))
         self.con.commit()
+
+    # ---------- 榜单 ----------
+
+    def update_board(self, source: str, signals: list[Signal], now: datetime) -> None:
+        """榜单来源这次抓到的名次：同一个榜（channel）里按返回顺序排名。信号表按 URL 只记第一次，
+        连续几天上榜、名次变化记在这里。"""
+        ranks: dict[str, int] = {}
+        rows = []
+        for s in signals:
+            ranks[s.channel] = ranks.get(s.channel, 0) + 1
+            rows.append((source, s.channel, s.url, ranks[s.channel], s.title, s.summary,
+                         json.dumps(s.extra, ensure_ascii=False), to_iso(now), to_iso(now - BOARD_GAP)))
+        self.con.executemany(
+            "insert into board_items (source, channel, url, rank, title, summary, extra, first_seen, last_seen) "
+            "values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) on conflict (source, channel, url) do update set "
+            "rank = excluded.rank, title = excluded.title, summary = excluded.summary, extra = excluded.extra, "
+            "first_seen = case when last_seen < ?9 then excluded.first_seen else first_seen end, "
+            "last_seen = excluded.last_seen", rows)
+        self.con.commit()
+
+    def board(self, source: str) -> list[dict]:
+        """榜单来源每个榜最近一次抓到的名次，按榜和名次排；first_seen 用来看新上榜、连续上榜了多久。"""
+        rows = self.con.execute(
+            "select channel, rank, url, title, summary, extra, first_seen from board_items b where source = ? "
+            "and last_seen = (select max(last_seen) from board_items where source = b.source and channel = b.channel) "
+            "order by channel, rank", (source,)).fetchall()
+        return [{"channel": r[0], "rank": r[1], "url": r[2], "title": r[3], "summary": r[4],
+                 "extra": json.loads(r[5] or "{}"), "first_seen": r[6]} for r in rows]
 
     def record_run(self, source: str, started: datetime, fetched: int, new: int, error: str | None = None) -> None:
         self.con.execute("insert into runs (started, source, fetched, new, error) values (?, ?, ?, ?, ?)",

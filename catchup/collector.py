@@ -32,6 +32,8 @@ def collect(sources: dict[str, Source], store: Store) -> bool:
             store.record_run(name, started, 0, 0, repr(e))
             continue
         new = store.add(signals)
+        if source.board:
+            store.update_board(name, signals, started)
         store.record_run(name, started, len(signals), new)
         log.info("[%s] %d items, %d new", name, len(signals), new)
     return ok
