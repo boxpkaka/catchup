@@ -196,8 +196,9 @@ def dismissed(store: Store, now: datetime) -> list[dict]:
 
 def feed(config: Config, store: Store, now: datetime, before: datetime | None = None) -> dict:
     """信息流：模型判定为新闻（重要性够推送门槛）的事件和推送过的事件，按见报时间从新到旧。还没写简报的前排和热门事件
-    先显示，写完简报再按重要性决定去留。一页是一个时间窗（window_hours）里见报的事件，before 为空时是最新一页，
-    older 是下一页的 before，到开始采集为止；追踪中、未追踪信息只在第一页。"""
+    先显示，写完简报再按重要性决定去留；只来自榜单、创投媒体的（push.strict_sources）要等模型判为重要才显示。
+    一页是一个时间窗（window_hours）里见报的事件，before 为空时是最新一页，older 是下一页的 before，到开始采集为止；
+    追踪中、未追踪信息只在第一页。"""
     sources = build_sources(config.sources)
     until = before or now
     since = until - timedelta(hours=config.ranking.get("window_hours", 72))
@@ -205,14 +206,15 @@ def feed(config: Config, store: Store, now: datetime, before: datetime | None = 
     briefs, feedback, pushed = store.briefs(e.id for e in events), store.feedback(), store.pushed()
     follows = {f["event_id"]: f for f in store.follows()}
     bar = config.push.get("min_importance", push.DEFAULTS["min_importance"])
-    boards = {name for name, s in sources.items() if s.board}
-    pending = {e.id for e in candidates(events, config.llm.get("brief_top", 25), sources) if e.id not in briefs}
+    strict = push.strict_sources(sources)
+    pending = {e.id for e in candidates(events, config.llm.get("brief_top", 25), sources)
+               if e.id not in briefs and not all(s.source in strict for s in e.signals)}
     published = store.event_published(e.id for e in events)
     zh = _zh(store, [t for e in events if e.id not in briefs
                      for t in (e.lead.title, e.lead.summary[:translate.SUMMARY_CHARS])])
     shown = [e for e in events if feedback.get(e.id) != "not_needed" and since <= published[e.id] < until
              and (e.id in pushed or e.id in pending
-                  or briefs.get(e.id, {}).get("importance", 0) >= push.min_importance(config.push, e, boards))]
+                  or briefs.get(e.id, {}).get("importance", 0) >= push.min_importance(config.push, e, strict))]
     shown.sort(key=lambda e: published[e.id], reverse=True)
     created = store.event_created(e.id for e in shown)
     started = store.first_fetched()
@@ -372,7 +374,7 @@ def topic(config: Config, store: Store, key: str, now: datetime) -> dict | None:
 
 
 def _topic_events(config: Config, store: Store, now: datetime, sources) -> list[dict]:
-    """话题专题收的事件：时间窗里模型判断的主话题是某个兴趣、重要性够一般门槛（只出现在榜单上的也算，信息流里它们要更重要）
+    """话题专题收的事件：时间窗里模型判断的主话题是某个兴趣、重要性够一般门槛（只出现在榜单、创投媒体上的也算，信息流里它们要更重要）
     或推送过的，没标不需要的；按见报时间从新到旧，格式和信息流相同。"""
     _, events = ranked(config, store, now)
     briefs, feedback, pushed = store.briefs(e.id for e in events), store.feedback(), store.pushed()

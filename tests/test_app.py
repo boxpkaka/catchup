@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from catchup.config import Config
-from catchup.models import Signal
+from catchup.models import Event, Signal
 from catchup.pipeline import brief, push, reports, translate
 from catchup.pipeline.events import assign_events, group_events
 from catchup.pipeline.ranking import Ranker
@@ -18,7 +18,8 @@ from catchup.util import to_iso
 
 NOW = datetime(2026, 10, 24, 4, tzinfo=timezone.utc)  # 北京时间 12:00，不在免打扰时段
 INTERESTS = [{"name": "AI 语音", "weight": 3, "keywords": ["tts", "voice"]}]
-SOURCES = {"news": {"type": "feed", "title": "News", "feeds": []}, "trending": {"type": "github_trending"}}
+SOURCES = {"news": {"type": "feed", "title": "News", "feeds": []}, "trending": {"type": "github_trending"},
+           "venture": {"type": "feed", "title": "创投媒体", "important_only": True, "feeds": []}}
 
 
 def sig(url, title, hours_ago=1, source="news"):
@@ -542,6 +543,35 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertNotIn(repo.id, ids())  # 只在榜单上的一般动态不进信息流，留给专题
         self.store.con.execute("update briefs set importance = 4 where event_id = ?", (repo.id,))
         self.assertIn(repo.id, ids())
+
+    def test_venture_news_is_judged_then_kept_for_its_topic_unless_important(self):
+        from catchup.pipeline.update import ranked
+        cfg = config()
+        cfg.interests = INTERESTS + [{"name": "AI 创投", "keywords": ["series a"]}]
+        self.store.add([sig("https://v/1", "Acme raises $20M Series A", source="venture")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        events = ranked(cfg, self.store, NOW)[1]
+        deal = next(e for e in events if e.lead.source == "venture")
+        sources = build_sources(SOURCES)
+        self.assertEqual(push.strict_sources(sources), {"trending", "venture"})  # 榜单默认只推重要的，创投媒体靠配置
+        self.assertIn(deal.id, [e.id for e in brief.candidates(events, 0, sources)])  # 排不进前面也要模型判断
+        ids = lambda: [e["id"] for e in app_api.feed(cfg, self.store, NOW)["events"]]
+        self.assertNotIn(deal.id, ids())  # 还没判断的不先进信息流
+        brief.write_briefs(self.store, [deal], "", FakeLLM(importance=3), {}, NOW)
+        self.store.save_topics({deal.id: "AI 创投"})
+        pushed = lambda: [e.id for e in push.select({}, self.store, events, NOW, push.strict_sources(sources))]
+        self.assertNotIn(deal.id, ids())  # 一般的不进信息流、不推送，留在专题里
+        self.assertNotIn(deal.id, pushed())
+        self.assertEqual([e["id"] for e in app_api.topic(cfg, self.store, "AI 创投", NOW)["events"]], [deal.id])
+        card = next(t for t in app_api.topics(cfg, self.store, NOW)["topics"] if t["key"] == "AI 创投")
+        self.assertEqual([e["id"] for e in card["latest"]], [deal.id])
+        self.store.con.execute("update briefs set importance = 4 where event_id = ?", (deal.id,))
+        self.assertIn(deal.id, ids())
+        self.assertIn(deal.id, pushed())
+        # 普通来源也报道了的，按普通门槛
+        both = Event("k", [sig("https://v/2", "Acme", source="venture"), sig("https://n/2", "Acme", source="news")])
+        self.assertEqual((push.min_importance({}, both, {"venture"}), push.min_importance({}, both, {"venture", "news"})),
+                         (3, 4))
 
     def test_topics_hold_topic_events_and_whole_boards(self):
         self.store.con.execute("update briefs set topic = 'AI 语音'")

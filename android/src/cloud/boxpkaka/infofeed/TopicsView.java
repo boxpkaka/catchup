@@ -95,6 +95,10 @@ final class TopicsView extends FrameLayout {
                 form = new float[]{2, 0.09f};
                 glyph = Shapes.Emblem.UP;
                 break;
+            case "AI 创投":
+                form = new float[]{6, 0.1f};
+                glyph = Shapes.Emblem.YUAN;
+                break;
             default:
                 form = new float[]{11, 0.06f};
                 glyph = Shapes.Emblem.SPARK;

@@ -149,7 +149,7 @@ final class Shapes {
      * 图形在 24×24 的格子里画，和设计稿的 SVG 一致。
      */
     static final class Emblem extends View {
-        static final int WAVE = 0, SPARK = 1, ARROW = 2, TREND = 3, HEART = 4, UP = 5;
+        static final int WAVE = 0, SPARK = 1, ARROW = 2, TREND = 3, HEART = 4, UP = 5, YUAN = 6;
         private final Paint shape = new Paint(Paint.ANTI_ALIAS_FLAG), mark = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path(), glyphPath = new Path();
         private final Rect box = new Rect();
@@ -208,15 +208,26 @@ final class Shapes {
                     p.cubicTo(20.5f, 15.8f, 12, 21, 12, 21);
                     p.close();
                     break;
+                case YUAN: // ¥，描边
+                    p.moveTo(7, 4.5f);
+                    p.lineTo(12, 11.5f);
+                    p.lineTo(17, 4.5f);
+                    p.moveTo(12, 11.5f);
+                    p.lineTo(12, 20);
+                    p.moveTo(7.5f, 12.5f);
+                    p.lineTo(16.5f, 12.5f);
+                    p.moveTo(7.5f, 16.5f);
+                    p.lineTo(16.5f, 16.5f);
+                    break;
                 default: // UP：圆角三角形
                     p.moveTo(12, 4.5f);
                     p.lineTo(20.5f, 18.5f);
                     p.lineTo(3.5f, 18.5f);
                     p.close();
             }
-            boolean stroke = glyph == ARROW || glyph == TREND;
+            boolean stroke = glyph == ARROW || glyph == TREND || glyph == YUAN;
             mark.setStyle(stroke ? Paint.Style.STROKE : glyph == UP ? Paint.Style.FILL_AND_STROKE : Paint.Style.FILL);
-            mark.setStrokeWidth(glyph == ARROW ? 3.2f : glyph == TREND ? 3 : 2.4f);
+            mark.setStrokeWidth(glyph == ARROW ? 3.2f : glyph == TREND || glyph == YUAN ? 3 : 2.4f);
         }
 
         @Override

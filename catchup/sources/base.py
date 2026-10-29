@@ -35,6 +35,9 @@ class Source:
         self.tier = options.get("tier", self.default_tier)
         self.kind = options.get("kind", self.default_kind)
         self.interval = options.get("interval", 60)  # 采样间隔（分钟），见 collector.due
+        # 只推重要的：只来自这类来源的事件要模型判为“重要”才推送、进信息流（push.min_importance），一般的留在专题里。
+        # 榜单默认如此；其他来源（创投媒体等）在配置里设 important_only，每件都写简报、选主话题（brief.candidates）
+        self.important_only = options.get("important_only", self.board)
 
     def fetch(self) -> Iterable[Signal]:
         raise NotImplementedError

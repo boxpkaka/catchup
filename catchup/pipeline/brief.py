@@ -50,9 +50,12 @@ def hot(event: Event, sources: dict[str, Source]) -> bool:
 
 
 def candidates(events: list[Event], top: int, sources: dict[str, Source]) -> list[Event]:
-    """要让模型看的事件：排名前 top 的，加上排在后面但正热门的。热门新闻不论和读者的关注有没有关，
-    都先判断重要性、查重，够格就推；不感兴趣的由读者划掉。"""
-    return events[:top] + [e for e in events[top:] if hot(e, sources)]
+    """要让模型看的事件：排名前 top 的，加上排在后面但正热门的，和来自只推重要的非榜单来源（创投媒体等）的。
+    热门新闻不论和读者的关注有没有关，都先判断重要性、查重，够格就推；不感兴趣的由读者划掉。
+    创投媒体量不大、多数排不进前面，每件都要模型判断重要性和主话题，一般的才能留在专题里；
+    榜单在榜单专题里按名次全列，不用逐条判断。"""
+    judged = {name for name, s in sources.items() if s.important_only and not s.board}
+    return events[:top] + [e for e in events[top:] if hot(e, sources) or any(s.source in judged for s in e.signals)]
 
 
 def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source], top: int = 40) -> int:
