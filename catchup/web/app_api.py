@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote
 
 from .. import chat, personal, share
+from ..collector import health
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
@@ -198,7 +199,7 @@ def feed(config: Config, store: Store, now: datetime, before: datetime | None = 
     """信息流：模型判定为新闻（重要性够推送门槛）的事件和推送过的事件，按见报时间从新到旧。还没写简报的前排和热门事件
     先显示，写完简报再按重要性决定去留；只来自榜单、创投媒体的（push.strict_sources）要等模型判为重要才显示。
     一页是一个时间窗（window_hours）里见报的事件，before 为空时是最新一页，older 是下一页的 before，到开始采集为止；
-    追踪中、未追踪信息只在第一页。"""
+    追踪中、未追踪信息和疑似故障的提示（health，正常时为空）只在第一页。"""
     sources = build_sources(config.sources)
     until = before or now
     since = until - timedelta(hours=config.ranking.get("window_hours", 72))
@@ -225,7 +226,8 @@ def feed(config: Config, store: Store, now: datetime, before: datetime | None = 
     if before is None:
         events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
         out.update(following=following(config, store, follows, now), answers=answers(store, now),
-                   skipped=skipped(events, briefs, feedback, sources, zh, bar), personalize=personal.personalized(store))
+                   skipped=skipped(events, briefs, feedback, sources, zh, bar), personalize=personal.personalized(store),
+                   health=health(sources, store, now))
     return out
 
 
