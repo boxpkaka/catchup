@@ -35,10 +35,11 @@ import java.util.Map;
  */
 public class MemoryActivity extends Activity {
     private Theme t;
-    private Push push;
+    private Nav nav;
     private LinearLayout body;
     private final Map<String, String> kinds = new LinkedHashMap<>();
     private boolean personalize = true;
+    private boolean shown; // 第一次画出来时整页淡入
 
     @Override
     protected void onCreate(Bundle state) {
@@ -52,14 +53,14 @@ public class MemoryActivity extends Activity {
         kinds.put("source", "偏好的来源");
         kinds.put("avoid_source", "不想看的来源");
         kinds.put("style", "希望怎么写");
-        push = new Push(this, build(), t.bg);
-        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
+        nav = Nav.of(this, build(), t.bg);
+        setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         load();
     }
 
     @Override
     public void finish() {
-        push.finish(super::finish); // 先滑出去再关
+        nav.finish(super::finish); // 先收回卡片或滑出去再关
     }
 
     private View build() {
@@ -141,6 +142,11 @@ public class MemoryActivity extends Activity {
 
     private void render(JSONObject r) {
         personalize = r.optBoolean("personalize", true);
+        if (!shown) {
+            shown = true;
+            body.setAlpha(0f);
+            body.animate().alpha(1f).setDuration(220).start();
+        }
         body.removeAllViews();
         TextView h = t.text(this, "Catchup 记得的\n关于你的事", 28, t.ink, 900);
         h.setLineSpacing(t.dp(6), 1f);
@@ -169,8 +175,11 @@ public class MemoryActivity extends Activity {
             body.addView(groupLabel(kinds.get(g.getKey())));
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
-            for (JSONObject m : g.getValue()) list.addView(item(m));
-            t.segments(list);
+            for (JSONObject m : g.getValue()) {
+                list.addView(deletable(item(m), "删除",
+                        () -> post("/v1/memories/" + m.optLong("id"), "{\"delete\": true}", this::load)));
+            }
+            deletableSegments(list);
             body.addView(list);
         }
         if (!any) {
@@ -185,9 +194,51 @@ public class MemoryActivity extends Activity {
             body.addView(groupLabel("替你留意的问题"));
             LinearLayout list = new LinearLayout(this);
             list.setOrientation(LinearLayout.VERTICAL);
-            for (int i = 0; i < qs.length(); i++) list.addView(question(qs.optJSONObject(i)));
-            t.segments(list);
+            for (int i = 0; i < qs.length(); i++) {
+                JSONObject q = qs.optJSONObject(i);
+                View row = question(q);
+                if ("answered".equals(q.optString("status"))) list.addView(row);
+                else list.addView(deletable(row, "不用了",
+                        () -> post("/v1/questions/" + q.optLong("id"), "{\"drop\": true}", this::load)));
+            }
+            deletableSegments(list);
             body.addView(list);
+        }
+    }
+
+    /**
+     * 左滑删除的一行（右滑留给返回）：后面垫着警示色的 label，滑过去这一行飞出、平滑收起，再去删；
+     * 删完重新加载，列表和收起后的样子一样，不会再跳。
+     */
+    private View deletable(View row, String label, Runnable delete) {
+        FrameLayout frame = new FrameLayout(this);
+        TextView behind = t.text(this, label + "  ✕", 15, t.onErr, 800);
+        behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        behind.setPadding(0, 0, t.dp(26), 0);
+        behind.setVisibility(View.INVISIBLE);
+        behind.setAlpha(0.45f);
+        frame.addView(behind, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        frame.addView(row, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.setClickable(true); // 不接按下就收不到后面的滑动
+        row.setOnTouchListener(new SwipeDismiss(row, behind, v -> SwipeDismiss.collapse(frame, delete), -1));
+        frame.setTag(new View[]{row, behind});
+        return frame;
+    }
+
+    /** 分段排好以后，卡片色底换到跟手移动的那一层，警示色垫在后面。 */
+    private void deletableSegments(LinearLayout list) {
+        t.segments(list);
+        int n = list.getChildCount();
+        for (int i = 0; i < n; i++) {
+            View frame = list.getChildAt(i);
+            if (!(frame.getTag() instanceof View[])) continue;
+            View[] parts = (View[]) frame.getTag();
+            parts[0].setBackground(frame.getBackground());
+            frame.setBackground(null);
+            float top = i == 0 ? Theme.R_XL : Theme.R_XS, bottom = i == n - 1 ? Theme.R_XL : Theme.R_XS;
+            parts[1].setBackground(t.round(t.err, top, top, bottom, bottom));
         }
     }
 

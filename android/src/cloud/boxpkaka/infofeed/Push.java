@@ -21,11 +21,9 @@ import java.util.List;
  * 像 iOS 的导航：页面从右边推进来，下面那页往左退三成、压暗；右滑时整页跟手，下面那页跟着回来，松手带着手指的速度
  * 滑出去（返回）或弹回，弹回的途中按住还能接着拖。返回键、返回按钮和代码里的 finish() 也走同一套滑出。
  * 能看到下面那页是因为这些页面的窗口是半透明的（AndroidManifest 里的 @style/Page）；平时窗口底色就是页面底色，
- * 动的时候换成压暗的遮罩。下面那页由 Stack 记着。
- * 用法：onCreate 里 push = new Push(this, 页面, 底色)，setContentView(push.wrap(state == null))；
- * finish() 里调用 push.finish(super::finish)。打开这些页面用 Push.open，不要系统的切换动画。
+ * 动的时候换成压暗的遮罩。下面那页由 Stack 记着。用法见 Nav；不是从卡片点开的页面用 Push.open 打开。
  */
-final class Push {
+final class Push implements Nav {
     private static final float PARALLAX = 0.3f;
     private static final int SCRIM = 0x33;
 
@@ -55,8 +53,8 @@ final class Push {
         from.overridePendingTransition(0, 0);
     }
 
-    /** 只能右滑返回的页面：整页包起来；fresh（不是转屏之类的重建）时从右边推进来。 */
-    Swipe wrap(boolean fresh) {
+    @Override
+    public Swipe wrap(boolean fresh) {
         Swipe s = new Swipe(a, new Swipe.Pages() {
             @Override
             public boolean has(int dir) {
@@ -85,7 +83,8 @@ final class Push {
     }
 
     /** 从右边推进来。等第一帧要画的时候再开始，免得开头几帧被建页面的工作吃掉。 */
-    void enter() {
+    @Override
+    public void enter() {
         if (Build.VERSION.SDK_INT >= 34) {
             a.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_OPEN, 0, 0);
             a.overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, 0, 0);
@@ -103,33 +102,36 @@ final class Push {
         });
     }
 
-    /** 还能不能右滑返回：已经在滑出去了就不行。 */
-    boolean can() {
+    @Override
+    public boolean can() {
         return !leaving;
     }
 
     // 拖着的时候页面被别处关掉（返回键之类）就不再跟手，让滑出走完
 
-    void grab() {
+    @Override
+    public void grab() {
         if (leaving) return;
         if (motion != null) motion.cancel();
         from = page.getTranslationX();
     }
 
-    void drag(float dx) {
+    @Override
+    public void drag(float dx) {
         if (!leaving) place(Math.max(0, from + dx));
     }
 
     /** 过半或者往右甩一下就返回，否则弹回。 */
-    void release(float vx) {
+    @Override
+    public void release(float vx) {
         if (leaving) return;
         boolean go = vx > minFling || page.getTranslationX() > width() / 2 && vx > -minFling;
         if (go) out(vx, a::onBackPressed);
         else settle(0, vx, this::rest);
     }
 
-    /** 在 Activity.finish() 里调用，done 是 super.finish()：已经滑出去了就直接关，否则先滑出去再关。 */
-    void finish(Runnable done) {
+    @Override
+    public void finish(Runnable done) {
         if (gone) {
             done.run();
             a.overridePendingTransition(0, 0);
@@ -138,8 +140,8 @@ final class Push {
         if (!leaving) out(0, () -> finish(done));
     }
 
-    /** 下一页已经从右边盖上来了，这一页直接关，不用再滑出去。 */
-    void replaced() {
+    @Override
+    public void replaced() {
         gone = true;
     }
 
@@ -204,11 +206,12 @@ final class Push {
             }
         }
 
-        /** 保险：回到前台的页面一定在原位，万一上面那页没滑完就没了，也不会一直歪着。 */
+        /** 保险：回到前台的页面一定在原位、藏起来的卡片放回来，万一上面那页没动完就没了，也不会一直歪着、缺一块。 */
         @Override
         public void onActivityResumed(Activity a) {
             View content = a.findViewById(android.R.id.content);
             if (content != null) content.setTranslationX(0);
+            Card.restore();
         }
 
         @Override

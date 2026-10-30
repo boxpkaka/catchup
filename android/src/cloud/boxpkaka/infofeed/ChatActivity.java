@@ -42,7 +42,7 @@ public class ChatActivity extends Activity {
     static final String EXTRA_THREAD = "thread";
 
     private Theme t;
-    private Push push;
+    private Nav nav;
     private long eventId;
     private long threadId = -1;
     private boolean busy;
@@ -64,8 +64,8 @@ public class ChatActivity extends Activity {
         t.applyWindow(this);
         eventId = getIntent().getLongExtra(EXTRA_EVENT, -1);
         threadId = getIntent().getLongExtra(EXTRA_THREAD, -1);
-        push = new Push(this, build(), t.bg);
-        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
+        nav = Nav.of(this, build(), t.bg);
+        setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         pendingAsk = getIntent().getStringExtra(EXTRA_ASK);
         if (threadId > 0 || eventId > 0) {
             loadHistory();
@@ -79,7 +79,7 @@ public class ChatActivity extends Activity {
 
     @Override
     public void finish() {
-        push.finish(super::finish); // 先滑出去再关
+        nav.finish(super::finish); // 先收回卡片或滑出去再关
     }
 
     @Override
@@ -537,7 +537,7 @@ public class ChatActivity extends Activity {
                     new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             row.addView(t.text(this, "↗", 14, t.pri, 800));
             long id = e.optLong("id");
-            row.setOnClickListener(v -> openEvent(id));
+            row.setOnClickListener(v -> openEvent(v, id));
             list.addView(row);
         }
         t.segments(list);
@@ -547,6 +547,11 @@ public class ChatActivity extends Activity {
         messages.addView(list, lp);
     }
 
+    private void openEvent(View from, long id) {
+        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+    }
+
+    /** 回答正文里的事件链接：不是卡片，从右边推进来。 */
     private void openEvent(long id) {
         Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
     }

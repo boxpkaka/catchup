@@ -34,11 +34,13 @@ public class EventActivity extends Activity {
     private static final int FOLDED_SOURCES = 4;
 
     private Theme t;
-    private Push push;
+    private Nav nav;
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
-    private TextView useful, follow;
+    private LinearLayout points, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
+    private TextView useful, follow, summary, topicChip, badge, headline, meta, original;
+    private String shownPoints, shownUpdates, shownAsk, shownSignals;
     private int topInset;
     private String feedback;
     private boolean following;
@@ -50,8 +52,8 @@ public class EventActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         id = getIntent().getLongExtra(EXTRA_ID, -1);
-        push = new Push(this, build(), t.bg);
-        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
+        nav = Nav.of(this, build(), t.bg);
+        setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
         if (cached != null) {
             try {
@@ -66,7 +68,7 @@ public class EventActivity extends Activity {
 
     @Override
     public void finish() {
-        push.finish(super::finish); // 先滑出去再关
+        nav.finish(super::finish); // 先收回卡片或滑出去再关
     }
 
     @Override
@@ -186,87 +188,130 @@ public class EventActivity extends Activity {
         }, "event-load").start();
     }
 
+    /**
+     * 列表里的数据先画一次，服务器的完整数据回来再画一次：第二次只改变了的部分，新出现的淡入、下面的平滑让位，
+     * 不整页清空重建，免得卡片刚展开内容就跳一下。
+     */
     private void render(JSONObject e) {
         event = e;
         feedback = e.isNull("feedback") ? null : e.optString("feedback");
         renderHead(e);
-        body.removeAllViews();
+        if (summary == null) buildBody();
 
-        String summary = e.optString("summary");
-        if (!summary.isEmpty()) {
-            TextView s = t.text(this, summary, 17, t.ink, 400);
-            s.setLineSpacing(t.dp(9), 1f);
-            s.setPadding(0, t.dp(22), 0, 0);
-            body.addView(s);
-        }
-        JSONArray points = e.optJSONArray("points"); // 简报要点：原文里的具体内容，详情接口才有
-        for (int i = 0; points != null && i < points.length(); i++) {
-            LinearLayout row = new LinearLayout(this);
-            row.setPadding(0, t.dp(i == 0 ? 14 : 10), 0, 0);
-            View dot = new View(this);
-            dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
-            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(14), t.dp(14));
-            dl.topMargin = t.dp(5);
-            row.addView(dot, dl);
-            TextView p = t.text(this, points.optString(i), 15.5f, t.ink, 400);
-            p.setLineSpacing(t.dp(7), 1f);
-            p.setPadding(t.dp(12), 0, 0, 0);
-            row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            body.addView(row);
+        String s = e.optString("summary");
+        if (!s.contentEquals(summary.getText())) summary.setText(s);
+        summary.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
+
+        JSONArray ps = e.optJSONArray("points"); // 简报要点：原文里的具体内容，详情接口才有
+        if (!String.valueOf(ps).equals(shownPoints)) {
+            shownPoints = String.valueOf(ps);
+            points.removeAllViews();
+            for (int i = 0; ps != null && i < ps.length(); i++) points.addView(pointRow(ps.optString(i), i == 0));
         }
 
-        JSONArray updates = e.optJSONArray("updates");
-        if (updates != null && updates.length() > 0) {
-            body.addView(sectionLabel("进展"));
-            for (int i = 0; i < updates.length(); i++) {
-                body.addView(updateRow(updates.optJSONObject(i), i == 0, i == updates.length() - 1));
+        JSONArray us = e.optJSONArray("updates");
+        if (!String.valueOf(us).equals(shownUpdates)) {
+            shownUpdates = String.valueOf(us);
+            updates.removeAllViews();
+            if (us != null && us.length() > 0) {
+                updates.addView(sectionLabel("进展"));
+                for (int i = 0; i < us.length(); i++) {
+                    updates.addView(updateRow(us.optJSONObject(i), i == 0, i == us.length() - 1));
+                }
             }
         }
 
-        body.addView(askSection(e));
-
-        body.addView(sectionLabel("来源"));
-        sources = new LinearLayout(this);
-        sources.setOrientation(LinearLayout.VERTICAL);
-        body.addView(sources);
-        JSONArray signals = e.optJSONArray("signals");
-        if (signals == null) {
-            TextView wait = t.text(this, "正在加载来源…", 14, t.sub, 400);
-            wait.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-            sources.addView(wait);
-        } else {
-            showSources(signals, signals.length() <= FOLDED_SOURCES + 1);
+        String a = String.valueOf(e.optJSONObject("thread")) + e.optJSONArray("questions");
+        if (!a.equals(shownAsk)) {
+            shownAsk = a;
+            ask.removeAllViews();
+            askSection(e);
         }
-        t.segments(sources);
+
+        JSONArray signals = e.optJSONArray("signals");
+        if (!String.valueOf(signals).equals(shownSignals)) {
+            shownSignals = String.valueOf(signals);
+            if (signals == null) {
+                sources.removeAllViews();
+                TextView wait = t.text(this, "正在加载来源…", 14, t.sub, 400);
+                wait.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
+                sources.addView(wait);
+            } else {
+                showSources(signals, signals.length() <= FOLDED_SOURCES + 1);
+            }
+            t.segments(sources);
+        }
         following = e.optBoolean("following");
         updateActions();
     }
 
-    /** 头部：卡片色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和列表项一样，不跳变。 */
+    /** 正文的骨架：概要、要点、进展、问一问、来源，各块只建一次。 */
+    private void buildBody() {
+        summary = t.text(this, "", 17, t.ink, 400);
+        summary.setLineSpacing(t.dp(9), 1f);
+        summary.setPadding(0, t.dp(22), 0, 0);
+        body.addView(summary);
+        points = column();
+        updates = column();
+        body.addView(sectionLabel("问一问"));
+        ask = column();
+        body.addView(sectionLabel("来源"));
+        sources = column();
+        Theme.smooth(body, points, updates, ask, sources);
+    }
+
+    private LinearLayout column() {
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.VERTICAL);
+        body.addView(v);
+        return v;
+    }
+
+    private View pointRow(String text, boolean first) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, t.dp(first ? 14 : 10), 0, 0);
+        View dot = new View(this);
+        dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(14), t.dp(14));
+        dl.topMargin = t.dp(5);
+        row.addView(dot, dl);
+        TextView p = t.text(this, text, 15.5f, t.ink, 400);
+        p.setLineSpacing(t.dp(7), 1f);
+        p.setPadding(t.dp(12), 0, 0, 0);
+        row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        return row;
+    }
+
+    /** 头部：卡片色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和列表项一样，不跳变。控件只建一次，之后只改字。 */
     private void renderHead(JSONObject e) {
+        if (headline == null) buildHead();
         String topic = Theme.topicOf(e);
-        head.removeAllViews();
+        topicChip.setText(topic); // 主话题，中性的标签，不上色
+        topicChip.setVisibility(topic.isEmpty() ? View.GONE : View.VISIBLE);
+        badge.setVisibility(e.optInt("importance") >= 5 ? View.VISIBLE : View.GONE);
+        if (!e.optString("headline").contentEquals(headline.getText())) headline.setText(e.optString("headline"));
+        meta.setText(e.optInt("source_count") + " 个来源   最近 " + Theme.ago(Theme.millis(e.optString("time"))));
+        original.setOnClickListener(v -> openUrl(e.optString("url")));
+    }
+
+    private void buildHead() {
         head.setBackground(t.round(t.sheet, 0, 0, 44, 44));
         head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        if (!topic.isEmpty()) { // 主话题，中性的标签，不上色
-            TextView chip = t.text(this, topic, 12, t.ink, 700);
-            chip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
-            chip.setBackground(t.round(t.chip, 99));
-            top.addView(chip);
-        }
+        topicChip = t.text(this, "", 12, t.ink, 700);
+        topicChip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
+        topicChip.setBackground(t.round(t.chip, 99));
+        top.addView(topicChip);
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        if (e.optInt("importance") >= 5) { // 和首页一样是墨色反白
-            TextView badge = t.text(this, "要闻", 12, t.onInv, 800);
-            badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
-            badge.setBackground(t.round(t.inv, Theme.R_XS));
-            top.addView(badge);
-        }
+        badge = t.text(this, "要闻", 12, t.onInv, 800); // 和首页一样是墨色反白
+        badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
+        badge.setBackground(t.round(t.inv, Theme.R_XS));
+        top.addView(badge);
         head.addView(top);
 
-        TextView headline = t.text(this, e.optString("headline"), 27, t.ink, 900);
+        headline = t.text(this, "", 27, t.ink, 900);
         headline.setLineSpacing(t.dp(7), 1f);
         headline.setLetterSpacing(-0.01f);
         headline.setPadding(0, t.dp(14), 0, 0);
@@ -275,16 +320,15 @@ public class EventActivity extends Activity {
         LinearLayout metaRow = new LinearLayout(this);
         metaRow.setGravity(Gravity.CENTER_VERTICAL);
         metaRow.setPadding(0, t.dp(16), 0, 0);
-        TextView meta = t.text(this, e.optInt("source_count") + " 个来源   最近 "
-                + Theme.ago(Theme.millis(e.optString("time"))), 13, t.sub, 700);
+        meta = t.text(this, "", 13, t.sub, 700);
         meta.setTypeface(Theme.flex(this, 92, 700));
         metaRow.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView original = t.text(this, "看原文 ↗", 13, t.onInv, 700);
+        original = t.text(this, "看原文 ↗", 13, t.onInv, 700);
         original.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
         original.setBackground(t.ripple(t.inv, 99));
-        original.setOnClickListener(v -> openUrl(e.optString("url")));
         metaRow.addView(original);
         head.addView(metaRow);
+        Theme.smooth(head, top);
     }
 
     /** 来源超过 5 条时先显示 4 条，最后一行“展开全部来源”。 */
@@ -338,11 +382,9 @@ public class EventActivity extends Activity {
         return row;
     }
 
-    /** 问一问：建议问题直接发出；有过对话的可以接着聊。 */
-    private View askSection(JSONObject e) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.addView(sectionLabel("问一问"));
+    /** 问一问：建议问题直接发出；有过对话的可以接着聊。放进 ask 里，标题在外面不动。 */
+    private void askSection(JSONObject e) {
+        LinearLayout box = ask;
         JSONObject thread = e.optJSONObject("thread");
         if (thread != null && thread.optInt("count") > 0) {
             LinearLayout resume = new LinearLayout(this);
@@ -373,7 +415,6 @@ public class EventActivity extends Activity {
             lp.bottomMargin = t.dp(8);
             box.addView(chip, lp);
         }
-        return box;
     }
 
     private void toggleFollow() {

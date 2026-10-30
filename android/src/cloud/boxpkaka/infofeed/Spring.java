@@ -21,6 +21,8 @@ final class Spring implements TimeInterpolator {
     static final Spring FX = new Spring(900, 1);
     /** 翻页、推入推出、松手归位：接着手指的速度走，几乎不回弹。 */
     static final Spring PAGE = new Spring(380, 0.95);
+    /** 卡片展开、收拢，面板弹出：比翻页软一点，到位时有一丝回弹。 */
+    static final Spring CARD = new Spring(260, 0.84);
 
     interface Step {
         void at(float x);
