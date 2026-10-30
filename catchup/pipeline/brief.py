@@ -2,7 +2,8 @@
 
 规则版聚类会把同一次发布的不同报道拆成几个事件，规则打分也挡不住标题里恰好带关键词的噪声；
 这里让模型做两件规则做不好的事：判断“是不是同一件事”和“重不重要”。模型只看候选池（排名靠前的事件），成本可控。
-简报先读主来源的原文（和对话共用原文缓存），概要和要点写的是原文里的具体内容，读者不用再点开链接。
+简报先读主来源的原文（和对话共用原文缓存），概要和要点写的是原文里的具体内容，读者不用再点开链接；
+另写一段 AI 解读（insight），说模型怎么看这件事，和只写事实的概要、要点分开。
 """
 from __future__ import annotations
 
@@ -20,9 +21,11 @@ BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下�
  "summary": "1～2 句中文概要，不超过 80 个字：说清谁做了什么，以及最关键的具体内容（能力、数字、价格、时间、怎么获取），让读者不点原文也知道主要内容；不夸大、不评价",
  "points": ["概要之外的具体要点 3～5 条，每条一句话、不超过 40 个字，取自原文；没有原文、材料只有标题时输出空数组"],
  "importance": 1～5 的整数,
+ "insight": "AI 解读，2～3 句、不超过 150 个字。概要和要点写发生了什么，这里写怎么看：新在哪（和之前的版本、同类产品或常见做法比），可能带来什么影响，有没有值得留意的局限或疑点（比如只有厂商自己的测试数据）。要有判断、判断要有依据；不复述概要，不写和读者个人有什么关系。importance 为 1～2 时输出空字符串",
  "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"]}
 importance 的含义：5 = 行业重大发布，或读者关注领域的关键进展；4 = 值得当天知道；3 = 一般动态；2 = 边缘信息；1 = 噪声、营销或与 AI 无关。
-只写材料里有的信息，不要编造数字和结论；也不要写“未披露”“原文没有提到”这类说明缺了什么的话。"""
+headline、summary、points 只写材料里有的信息，不要编造数字和结论；也不要写“未披露”“原文没有提到”这类说明缺了什么的话。
+insight 可以结合你了解的行业背景，但你的知识可能过时：拿不准的对比和“首个”“最强”这类说法不要写，数字只用材料里的。"""
 
 MERGE_SYSTEM = """下面是若干 AI 领域的新闻事件，每行一个，格式为“编号: 标题（来源）”。
 找出报道的是同一件事的编号，分组输出。只合并确定是同一件事的（同一次发布、同一篇论文、同一个产品更新），
@@ -108,7 +111,7 @@ def assign_topics(store, events: list[Event], llm, names: list[str]) -> int:
 
 def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str, Source],
                  now: datetime, top: int = 25, memory_rev: int = 0, read_wait: float = 0) -> int:
-    """给排名前 top 的事件写简报；已有简报、没有新报道且记忆没变过的跳过。返回新写的条数。
+    """给排名前 top 的事件写简报；已有简报、没有新报道、记忆没变过且已有 AI 解读的跳过。返回新写的条数。
 
     focus 是“读者是谁”的描述（配置兴趣 + 个人记忆，见 personal.focus），记忆变化后 memory_rev 变大，简报按新记忆重写。
     写之前读主来源的原文，最多等 read_wait 秒，为 0 时只用已缓存的原文。之前没读到原文写的简报（points 为 None），
@@ -117,7 +120,7 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
     pool = events[:top]
     existing = store.briefs(e.id for e in pool)
     stale = [e for e in pool if not (old := existing.get(e.id))
-             or old["signal_count"] < len(e.signals) or old["memory_rev"] < memory_rev]
+             or old["signal_count"] < len(e.signals) or old["memory_rev"] < memory_rev or old["insight"] is None]
     unread = [e for e in pool if e not in stale and existing[e.id]["points"] is None]
     originals = chat.read_pages(store, [e.lead.url for e in stale + unread], now, read_wait)
     written = 0
@@ -127,7 +130,7 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
         if original:
             reports += f"\n\n主来源原文（{_label(e.lead, sources)}）：\n{original[:chat.SOURCE_CHARS]}"
         try:
-            brief = _clean(llm.json(BRIEF_SYSTEM, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=900))
+            brief = _clean(llm.json(BRIEF_SYSTEM, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=1300))
         except Exception as err:
             log.warning("brief for event %d failed: %r", e.id, err)
             continue
@@ -151,7 +154,7 @@ def _clean(raw: dict) -> dict | None:
     points = [str(p).strip()[:80] for p in raw.get("points") or [] if str(p).strip()][:5]
     return {"headline": headline[:60], "summary": str(raw.get("summary") or "").strip()[:200],
             "why": str(raw.get("why") or "").strip()[:120], "importance": importance, "questions": questions,
-            "points": points}
+            "points": points, "insight": str(raw.get("insight") or "").strip()[:300]}
 
 
 def _label(signal, sources: dict[str, Source]) -> str:

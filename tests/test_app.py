@@ -57,7 +57,8 @@ class FakeLLM:
         if system.startswith("把输入"):
             return {"items": ["译：" + t for t in json.loads(user)]}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
-                "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"]}
+                "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"],
+                "insight": "全双工语音模型多了一个开源选择。"}
 
     def stream(self, messages):
         self.prompts.append(messages[0]["content"])
@@ -103,7 +104,8 @@ class EventTest(unittest.TestCase):
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 0)
         self.assertEqual(llm.calls, 1)
         saved = self.store.briefs([events[0].id])[events[0].id]
-        self.assertEqual((saved["importance"], len(saved["questions"])), (4, 2))
+        self.assertEqual((saved["importance"], len(saved["questions"]), saved["insight"]),
+                         (4, 2, "全双工语音模型多了一个开源选择。"))
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW, memory_rev=1), 1)  # 记忆变了就重写
 
     def test_briefs_are_rewritten_once_the_original_is_read(self):
@@ -116,6 +118,16 @@ class EventTest(unittest.TestCase):
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 1)
         self.assertIn("只用语音对话训练", llm.prompts[-1])
         self.assertEqual(self.store.briefs([eid])[eid]["points"], ["全双工"])
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 0)
+
+    def test_briefs_without_insight_are_rewritten(self):
+        assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice")), NOW)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        eid, llm = events[0].id, FakeLLM()
+        old = {"headline": "旧标题", "summary": "", "why": "", "importance": 3}  # 加 AI 解读之前写的简报
+        self.store.save_brief(eid, NOW, "m", 1, old)
+        self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 1)
+        self.assertEqual(self.store.briefs([eid])[eid]["insight"], "全双工语音模型多了一个开源选择。")
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW), 0)
 
 

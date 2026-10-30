@@ -38,9 +38,9 @@ public class EventActivity extends Activity {
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
-    private LinearLayout points, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
+    private LinearLayout points, insight, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
     private TextView useful, follow, summary, topicChip, badge, headline, meta, original;
-    private String shownPoints, shownUpdates, shownAsk, shownSignals;
+    private String shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
     private int topInset;
     private String feedback;
     private boolean following;
@@ -209,6 +209,13 @@ public class EventActivity extends Activity {
             for (int i = 0; ps != null && i < ps.length(); i++) points.addView(pointRow(ps.optString(i), i == 0));
         }
 
+        String in = e.optString("insight"); // AI 解读：模型怎么看这件事，详情接口才有
+        if (!in.equals(shownInsight)) {
+            shownInsight = in;
+            insight.removeAllViews();
+            if (!in.isEmpty()) insight.addView(insightCard(in));
+        }
+
         JSONArray us = e.optJSONArray("updates");
         if (!String.valueOf(us).equals(shownUpdates)) {
             shownUpdates = String.valueOf(us);
@@ -245,19 +252,20 @@ public class EventActivity extends Activity {
         updateActions();
     }
 
-    /** 正文的骨架：概要、要点、进展、问一问、来源，各块只建一次。 */
+    /** 正文的骨架：概要、要点、AI 解读、进展、问一问、来源，各块只建一次。 */
     private void buildBody() {
         summary = t.text(this, "", 17, t.ink, 400);
         summary.setLineSpacing(t.dp(9), 1f);
         summary.setPadding(0, t.dp(22), 0, 0);
         body.addView(summary);
         points = column();
+        insight = column();
         updates = column();
         body.addView(sectionLabel("问一问"));
         ask = column();
         body.addView(sectionLabel("来源"));
         sources = column();
-        Theme.smooth(body, points, updates, ask, sources);
+        Theme.smooth(body, points, insight, updates, ask, sources);
     }
 
     private LinearLayout column() {
@@ -280,6 +288,24 @@ public class EventActivity extends Activity {
         p.setPadding(t.dp(12), 0, 0, 0);
         row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         return row;
+    }
+
+    /** AI 解读和只写事实的概要、要点分开：单独一张浅色卡片，标明是 AI 的看法。 */
+    private View insightCard(String text) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(18));
+        card.setBackground(t.round(t.pc, Theme.R_L));
+        card.addView(t.text(this, "AI 解读", 13, t.onPc, 800));
+        TextView p = t.text(this, text, 15.5f, t.onPc, 400);
+        p.setLineSpacing(t.dp(7), 1f);
+        p.setPadding(0, t.dp(8), 0, 0);
+        card.addView(p);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = t.dp(24);
+        card.setLayoutParams(lp);
+        return card;
     }
 
     /** 头部：卡片色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和列表项一样，不跳变。控件只建一次，之后只改字。 */

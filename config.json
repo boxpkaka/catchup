@@ -253,6 +253,56 @@
         {
           "name": "Qwen",
           "url": "https://qwenlm.github.io/blog/index.xml"
+        },
+        {
+          "name": "Anthropic Engineering",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_engineering.xml"
+        },
+        {
+          "name": "Mistral",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_mistral.xml"
+        },
+        {
+          "name": "OpenAI Developers",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_developer.xml"
+        }
+      ]
+    },
+    "research_blogs": {
+      "type": "feed",
+      "title": "研究博客",
+      "interval": 60,
+      "tier": "official",
+      "kind": "论文",
+      "feeds": [
+        {
+          "name": "Anthropic Research",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_research.xml"
+        },
+        {
+          "name": "Microsoft Research",
+          "url": "https://www.microsoft.com/en-us/research/feed/"
+        },
+        {
+          "name": "Apple ML Research",
+          "url": "https://machinelearning.apple.com/rss.xml"
+        }
+      ]
+    },
+    "vendor_blogs": {
+      "type": "feed",
+      "title": "厂商博客",
+      "interval": 60,
+      "kind": "博客",
+      "important_only": true,
+      "feeds": [
+        {
+          "name": "ElevenLabs",
+          "url": "https://elevenlabs.io/blog/rss.xml"
+        },
+        {
+          "name": "Cursor",
+          "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_cursor.xml"
         }
       ]
     },
@@ -265,6 +315,76 @@
         {
           "name": "量子位",
           "url": "https://www.qbitai.com/feed"
+        },
+        {
+          "name": "InfoQ",
+          "url": "https://www.infoq.cn/feed"
+        }
+      ]
+    },
+    "ai_media": {
+      "type": "feed",
+      "title": "AI 媒体",
+      "interval": 30,
+      "kind": "新闻",
+      "feeds": [
+        {
+          "name": "The Decoder",
+          "url": "https://the-decoder.com/feed/"
+        },
+        {
+          "name": "MarkTechPost",
+          "url": "https://www.marktechpost.com/feed/"
+        },
+        {
+          "name": "MIT Technology Review",
+          "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed"
+        },
+        {
+          "name": "The Verge",
+          "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"
+        },
+        {
+          "name": "Ars Technica",
+          "url": "https://arstechnica.com/ai/feed/"
+        }
+      ]
+    },
+    "analysis": {
+      "type": "feed",
+      "title": "专家博客",
+      "interval": 60,
+      "tier": "primary",
+      "kind": "观点",
+      "important_only": true,
+      "feeds": [
+        {
+          "name": "Simon Willison",
+          "url": "https://simonwillison.net/atom/everything/"
+        },
+        {
+          "name": "Interconnects",
+          "url": "https://www.interconnects.ai/feed"
+        },
+        {
+          "name": "Latent Space",
+          "url": "https://www.latent.space/feed"
+        },
+        {
+          "name": "Ahead of AI",
+          "url": "https://magazine.sebastianraschka.com/feed"
+        },
+        {
+          "name": "One Useful Thing",
+          "url": "https://www.oneusefulthing.org/feed"
+        },
+        {
+          "name": "SemiAnalysis",
+          "url": "https://newsletter.semianalysis.com/feed"
+        },
+        {
+          "name": "宝玉",
+          "url": "https://baoyu.io/feed.xml"
         }
       ]
     },
@@ -347,6 +467,27 @@
         "ElevenLabs": "UC-ew9TfeD887qUSiWWAAj1w",
         "Deepgram": "UCZD2IkWTzZvajgiy9CjNfxA"
       }
+    },
+    "podcasts": {
+      "type": "feed",
+      "title": "播客",
+      "interval": 180,
+      "kind": "播客",
+      "important_only": true,
+      "feeds": [
+        {
+          "name": "Lex Fridman Podcast",
+          "url": "https://lexfridman.com/feed/podcast/"
+        },
+        {
+          "name": "Practical AI",
+          "url": "https://changelog.com/practicalai/feed"
+        },
+        {
+          "name": "TWIML AI Podcast",
+          "url": "https://feeds.megaphone.fm/MLN2155636147"
+        }
+      ]
     },
     "reddit": {
       "type": "reddit",

@@ -97,6 +97,8 @@ MIGRATIONS = [
         summary text, extra text, first_seen text not null, last_seen text not null,
         primary key (source, channel, url));
     """,
+    # AI 解读：简报之外模型对这件事的看法（新在哪、影响、局限）；NULL 表示写简报时还没有这一项，会重写简报补上
+    "alter table briefs add column insight text;",
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
@@ -210,7 +212,7 @@ class Store:
     def briefs(self, ids: Iterable[int]) -> dict[int, dict]:
         ids = list(ids)
         rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance, "
-                                f"memory_rev, questions, points, topic from briefs where event_id in ({','.join('?' * len(ids))})",
+                                f"memory_rev, questions, points, topic, insight from briefs where event_id in ({','.join('?' * len(ids))})",
                                 ids)
         keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance", "memory_rev")
         out = {}
@@ -219,6 +221,7 @@ class Store:
             out[r[0]]["questions"] = json.loads(r[9] or "[]")
             out[r[0]]["points"] = None if r[10] is None else json.loads(r[10])
             out[r[0]]["topic"] = r[11]
+            out[r[0]]["insight"] = r[12]
         return out
 
     def save_topics(self, topics: dict[int, str]) -> None:
@@ -228,11 +231,12 @@ class Store:
     def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict,
                    memory_rev: int = 0) -> None:
         self.con.execute("insert or replace into briefs (event_id, created, model, signal_count, headline, summary, "
-                         "why, importance, memory_rev, questions, points) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         "why, importance, memory_rev, questions, points, insight) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (event_id, to_iso(now), model, signal_count, brief["headline"], brief["summary"],
                           brief["why"], brief["importance"], memory_rev,
                           json.dumps(brief.get("questions", []), ensure_ascii=False),
-                          None if brief.get("points") is None else json.dumps(brief["points"], ensure_ascii=False)))
+                          None if brief.get("points") is None else json.dumps(brief["points"], ensure_ascii=False),
+                          brief.get("insight")))
         self.con.commit()
 
     def feedback(self) -> dict[int, str]:
