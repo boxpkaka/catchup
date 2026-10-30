@@ -61,6 +61,7 @@ class PageWatch(Source):
     type = "page_watch"
     default_tier = "official"
     default_kind = "更新日志"
+    quiet = True
 
     def fetch(self):
         state = Path(self.options.get("state_dir", "data/pages"))

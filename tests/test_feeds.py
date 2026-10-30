@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from catchup.collector import collect, due
+from catchup.collector import collect, due, health
 from catchup.sources import build_sources
 from catchup.sources.feeds import parse_feed
 from catchup.store import Store
@@ -75,6 +75,30 @@ class FeedSourceTest(unittest.TestCase):
         self.assertEqual(set(due(sources, store, now)), {"fast", "never"})
         store.record_run("fast", now - timedelta(minutes=4), 1, 0)
         self.assertEqual(set(due(sources, store, now)), {"never"})
+
+    def test_health(self):
+        store, now = Store(":memory:"), datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
+        sources = build_sources({"a": {"type": "feed", "feeds": [], "title": "YouTube"}, "b": {"type": "feed", "feeds": []},
+                                 "c": {"type": "feed", "feeds": []}, "w": {"type": "page_watch", "pages": []}})
+
+        def run(name, hours, fetched=0, error=None):
+            store.record_run(name, now + timedelta(hours=hours), fetched, 0, error)
+
+        for name in "abcw":
+            run(name, -4, 0 if name == "w" else 5)
+        for hours in (-3, -2, -1):
+            run("a", hours)  # 连续失败三轮，但上次采到内容才是 4 小时前：YouTube 每天都会这样
+            run("w", hours)  # 页面监控没变化本来就是 0 条
+        run("b", -2, error="boom")
+        run("b", -1)
+        self.assertEqual(health(sources, store, now), "")
+        run("c", -2)
+        run("c", -1)  # 三个来源同时连续失败两轮，多半是断网了
+        self.assertEqual(health(sources, store, now), "服务疑似故障：YouTube 等 3 个来源采不到内容")
+        for name in "abcw":
+            run(name, 1, 0 if name in "aw" else 5)
+        self.assertEqual(health(sources, store, now + timedelta(hours=2)), "服务疑似故障：YouTube 采不到内容")  # 6 小时没采到
+        self.assertEqual(health(sources, store, now + timedelta(hours=3)), "服务疑似故障：采集停了")
 
 
 AINEWS = b"""<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>

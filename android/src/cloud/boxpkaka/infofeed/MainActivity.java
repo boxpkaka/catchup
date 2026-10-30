@@ -511,9 +511,13 @@ public class MainActivity extends Activity {
         header.addView(notifyNotice, noticeLp());
 
         statusChip = t.text(this, "", 12.5f, t.onErr, 600);
-        statusChip.setPadding(t.dp(10), t.dp(6), t.dp(10), 0);
+        statusChip.setPadding(t.dp(10), t.dp(5), t.dp(10), t.dp(5));
+        statusChip.setBackground(t.round(t.err, Theme.R_S));
         statusChip.setVisibility(View.GONE);
-        header.addView(statusChip);
+        LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        chipLp.topMargin = t.dp(8);
+        header.addView(statusChip, chipLp);
         return header;
     }
 
@@ -585,7 +589,7 @@ public class MainActivity extends Activity {
                     olderCursor = cursor(got);
                     hidden.clear();
                     if (pendingDismiss >= 0) hidden.add(pendingDismiss);
-                    updateStatusChip(); // 清掉“刷新失败”，只保留推送连接的状态
+                    updateStatusChip(); // 清掉“刷新失败”，换回推送断开或服务端疑似故障的提示
                     render();
                 } else {
                     onLoadFailed(error, device);
@@ -636,8 +640,7 @@ public class MainActivity extends Activity {
         if (feed == null) {
             showState("!", "连不上服务器", "检查网络后重试。\n" + reason(e), null);
         } else {
-            statusChip.setText("刷新失败：" + reason(e));
-            statusChip.setVisibility(View.VISIBLE);
+            showStatus("刷新失败：" + reason(e));
         }
     }
 
@@ -788,10 +791,22 @@ public class MainActivity extends Activity {
         skeleton.animate().alpha(0f).setDuration(200).withEndAction(() -> skeleton.setVisibility(View.GONE)).start();
     }
 
+    /** 推送连接断开时说断开，否则显示服务端判断的疑似故障（feed 的 health，正常时为空）。 */
     private void updateStatusChip() {
         boolean bad = FeedService.status.startsWith("连接断开");
-        statusChip.setText(bad ? "推送连接断开，正在重试" : "");
-        statusChip.setVisibility(bad ? View.VISIBLE : View.GONE);
+        showStatus(bad ? "推送连接断开，正在重试" : feed == null ? "" : feed.optString("health"));
+    }
+
+    /** 首页顶部的小红条，空字符串时收起；出现时淡入。 */
+    private void showStatus(String s) {
+        statusChip.setText(s);
+        if (s.isEmpty()) {
+            statusChip.setVisibility(View.GONE);
+        } else if (statusChip.getVisibility() != View.VISIBLE) {
+            statusChip.setAlpha(0f);
+            statusChip.setVisibility(View.VISIBLE);
+            statusChip.animate().alpha(1f).setDuration(200).start();
+        }
     }
 
     // ---------- 列表 ----------

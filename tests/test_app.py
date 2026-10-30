@@ -197,6 +197,7 @@ class AppApiTest(unittest.TestCase):
             status, feed = self.call("GET", "/v1/feed", token)
             [event] = feed["events"]
             self.assertEqual((status, event["ai"], event["source_count"], event["pushed_at"]), (200, False, 1, None))
+            self.assertEqual(feed["health"], "")
             self.store.record_push(event["id"], NOW)
             self.assertEqual(self.call("GET", "/v1/feed", token)[1]["events"][0]["pushed_at"], to_iso(NOW))
             status, detail = self.call("GET", f"/v1/events/{event['id']}", token)

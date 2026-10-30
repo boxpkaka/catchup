@@ -555,3 +555,13 @@ class Store:
             "select source, started, fetched, new, error from runs where id in "
             "(select max(id) from runs group by source)").fetchall()
         return {r[0]: {"started": r[1], "fetched": r[2], "new": r[3], "error": r[4]} for r in rows}
+
+    def failing_sources(self, since: datetime) -> dict[str, tuple[str | None, int]]:
+        """since 以来最后一次采到内容（没报错且不是 0 条）的时间和之后连续失败的次数，只列最近一次失败了的来源。
+        since 以来一次都没采到内容的，时间为 None。"""
+        rows = self.con.execute(
+            "select r.source, s.ok, count(*) from runs r join (select source, max(case when fetched > 0 and error "
+            "is null then started end) as ok from runs where started >= ? group by source) s on r.source = s.source "
+            "where r.started >= ? and r.started > coalesce(s.ok, '') group by r.source",
+            (to_iso(since), to_iso(since))).fetchall()
+        return {r[0]: (r[1], r[2]) for r in rows}
