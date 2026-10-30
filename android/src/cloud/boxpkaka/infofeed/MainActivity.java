@@ -2,7 +2,6 @@ package cloud.boxpkaka.infofeed;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.ActivityOptions;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.NotificationChannel;
@@ -126,7 +125,7 @@ public class MainActivity extends Activity {
     private TopicsView topics;
     private ReportView reports;
     private int tab = FEED;
-    private boolean paging; // 松手后正在翻页，翻完之前不接新的滑动
+    private Swipe.Pager homePager;
     private final List<JSONObject> olderEvents = new ArrayList<>(); // 往前翻页加载的，接在第一页后面
     private String olderCursor; // 下一页的 before，到开始采集为止
     private boolean loadingOlder;
@@ -183,7 +182,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (tab != FEED) selectTab(FEED);
+        if (tab != FEED) homePager.go(FEED);
         else super.onBackPressed();
     }
 
@@ -251,8 +250,7 @@ public class MainActivity extends Activity {
         t.press(ask, t.lime, 99);
         ask.setPadding(t.dp(16), t.dp(9), t.dp(16), t.dp(9));
         ask.setOnClickListener(v -> {
-            startActivity(new Intent(this, ChatActivity.class));
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+            Push.open(this, new Intent(this, ChatActivity.class));
         });
         topBar.addView(ask);
         TextView menu = t.text(this, "⋮", 20, t.ink, 700);
@@ -286,14 +284,14 @@ public class MainActivity extends Activity {
 
             @Override
             public void onScroll(AbsListView v, int first, int visible, int total) {
-                boolean scrolled = first > 0 || (v.getChildCount() > 0 && v.getChildAt(0).getTop() < 0);
-                topDivider.setAlpha(scrolled ? 1f : 0f);
+                topDivider.setAlpha(listScrolled() ? 1f : 0f);
                 if (total > 0 && first + visible >= total - 4) loadOlder();
             }
         });
         pull = new PullLayout(this, t, list);
         pull.setOnRefresh(this::load);
-        Swipe content = new Swipe(this, homePages);
+        homePager = new Swipe.Pager(this, home, true);
+        Swipe content = homePager.frame;
         content.addView(pull, match());
         topics = new TopicsView(this, t, this::openTopic);
         topics.setVisibility(View.GONE);
@@ -301,6 +299,7 @@ public class MainActivity extends Activity {
         reports = new ReportView(this, t, this::openEvent);
         reports.setVisibility(View.GONE);
         content.addView(reports, match());
+        homePager.jump(tab);
         column.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         skeleton = buildSkeleton();
@@ -390,67 +389,43 @@ public class MainActivity extends Activity {
             TextView v = t.text(this, TABS[i], 15, t.ink, 800);
             v.setPadding(t.dp(18), t.dp(8), t.dp(18), t.dp(8));
             v.setBackground(t.ripple(Color.TRANSPARENT, 99));
-            v.setOnClickListener(x -> selectTab(index));
+            v.setOnClickListener(x -> homePager.go(index));
             tabBar.addView(v, gapLp(i < TABS.length - 1 ? 6 : 0));
         }
         tabBar.setCount(TABS.length);
-        tabBar.at(tab);
         return tabBar;
     }
 
-    /** 三页之间左右滑：当前页跟手移开，相邻的一页从旁边跟进来，松手后停在哪页就切到哪页。 */
-    private final Swipe.Pages homePages = new Swipe.Pages() {
+    /** 三页横向排开，左右滑时相邻的一页跟着手指进来，胶囊标签一起走；两头像橡皮筋。 */
+    private final Swipe.Pager.Host home = new Swipe.Pager.Host() {
         @Override
-        public boolean has(int dir) {
-            return !paging && tab + dir >= 0 && tab + dir < TABS.length;
+        public int count() {
+            return TABS.length;
         }
 
         @Override
-        public void drag(int dir, float dx) {
-            View from = page(tab), to = page(tab + dir);
-            if (to.getVisibility() != View.VISIBLE) {
-                to.setVisibility(View.VISIBLE);
-                if (to == topics) topics.refreshIfStale();
-            }
-            from.setTranslationX(dx);
-            to.setTranslationX(dx + dir * from.getWidth());
-            tabBar.at(tab - dx / Math.max(1, from.getWidth()));
+        public View page(int which) {
+            if (which == TOPICS) topics.refreshIfStale();
+            if (which == REPORT) reports.showIfEmpty();
+            return which == FEED ? pull : which == TOPICS ? topics : reports;
         }
 
         @Override
-        public void release(int dir, boolean go) {
-            int target = tab + dir;
-            View from = page(tab), to = page(target);
-            float w = from.getWidth();
-            paging = true;
-            tabBar.slide(go ? target : tab);
-            from.animate().translationX(go ? -dir * w : 0).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
-                    .start();
-            to.animate().translationX(go ? 0 : dir * w).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
-                    .withEndAction(() -> {
-                        paging = false;
-                        from.setTranslationX(0);
-                        if (go) selectTab(target);
-                        else to.setVisibility(View.GONE);
-                    })
-                    .start();
+        public void moved(float position) {
+            tabBar.at(position);
+        }
+
+        @Override
+        public void settled(int which) {
+            if (which != tab) Trace.log(MainActivity.this, "ui.tab", which == TOPICS ? "topics" : which == REPORT ? "report" : "feed");
+            tab = which;
+            topDivider.setAlpha(which == FEED && listScrolled() ? 1f : 0f);
         }
     };
 
-    private View page(int which) {
-        return which == FEED ? pull : which == TOPICS ? topics : reports;
-    }
-
-    private void selectTab(int which) {
-        if (which != tab) Trace.log(this, "ui.tab", which == TOPICS ? "topics" : which == REPORT ? "report" : "feed");
-        tab = which;
-        tabBar.slide(which);
-        pull.setVisibility(which == FEED ? View.VISIBLE : View.GONE);
-        topics.setVisibility(which == TOPICS ? View.VISIBLE : View.GONE);
-        reports.setVisibility(which == REPORT ? View.VISIBLE : View.GONE);
-        topDivider.setAlpha(0f);
-        if (which == TOPICS) topics.refreshIfStale();
-        if (which == REPORT) reports.showIfEmpty();
+    /** 信息流往上滚过了：顶栏下面显示分隔线。 */
+    private boolean listScrolled() {
+        return list.getFirstVisiblePosition() > 0 || (list.getChildCount() > 0 && list.getChildAt(0).getTop() < 0);
     }
 
     /** 推送的周报、月报点开：进报告页并显示那一份。 */
@@ -459,22 +434,18 @@ public class MainActivity extends Activity {
         if (r == null) return;
         intent.removeExtra(EXTRA_REPORT); // 转屏重建时不再重复打开
         String[] parts = r.split("/", 2);
-        selectTab(REPORT);
+        homePager.jump(REPORT);
         reports.show(parts[0], parts.length > 1 ? parts[1] : null);
     }
 
-    /** 从专题卡片的位置揭开专题页，标题栏和卡片同色，看起来像卡片长大了。 */
     private void openTopic(View from, JSONObject topic) {
-        Intent i = new Intent(this, TopicActivity.class)
+        Push.open(this, new Intent(this, TopicActivity.class)
                 .putExtra(TopicActivity.EXTRA_KEY, topic.optString("key"))
-                .putExtra(TopicActivity.EXTRA_TITLE, topic.optString("title"));
-        startActivity(i, ActivityOptions.makeClipRevealAnimation(from, 0, 0, from.getWidth(), from.getHeight())
-                .toBundle());
+                .putExtra(TopicActivity.EXTRA_TITLE, topic.optString("title")));
     }
 
     private void openEvent(long id) {
-        startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
-        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
     }
 
     private View buildHeader() {
@@ -838,7 +809,7 @@ public class MainActivity extends Activity {
             h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
-            h.front.setOnClickListener(v -> open(v, r.e));
+            h.front.setOnClickListener(v -> open(r.e));
             h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
             return convert;
         }
@@ -865,7 +836,13 @@ public class MainActivity extends Activity {
 
     /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”，从左边露出来。 */
     private FrameLayout swipeFrame(Holder h, View front) {
-        FrameLayout frame = new FrameLayout(this);
+        FrameLayout frame = new FrameLayout(this) {
+            /** 右滑归这一行（移除），首页不拿它拉橡皮筋。 */
+            @Override
+            public boolean canScrollHorizontally(int direction) {
+                return direction < 0 || super.canScrollHorizontally(direction);
+            }
+        };
         TextView behind = t.text(this, "✕  不需要", 15, t.onErr, 800);
         behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         behind.setPadding(t.dp(26), 0, 0, 0);
@@ -1019,8 +996,7 @@ public class MainActivity extends Activity {
         show(h.label, fresh ? "新进展" : "");
         long id = f.optLong("id");
         h.front.setOnClickListener(v -> {
-            startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+            Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
         });
     }
 
@@ -1039,8 +1015,7 @@ public class MainActivity extends Activity {
                 .putExtra(ChatActivity.EXTRA_EVENT, a.optLong("event_id", -1))
                 .putExtra(ChatActivity.EXTRA_TITLE, a.optString("question"));
         h.front.setOnClickListener(v -> {
-            startActivity(chat);
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+            Push.open(this, chat);
         });
     }
 
@@ -1160,13 +1135,12 @@ public class MainActivity extends Activity {
 
     // ---------- 打开与移除 ----------
 
-    /** 从这一项的位置和大小揭开详情页；详情页头部和列表项都是卡片色，看起来像这一项长大了。 */
-    private void open(View from, JSONObject e) {
+    /** 打开详情页：带上列表里的数据，详情页先显示出来。 */
+    private void open(JSONObject e) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
                 .putExtra(EventActivity.EXTRA_JSON, e.toString());
-        startActivityForResult(i, REQ_EVENT, ActivityOptions.makeClipRevealAnimation(
-                from, 0, 0, from.getWidth(), from.getHeight()).toBundle());
+        Push.open(this, i, REQ_EVENT);
     }
 
     private void dismiss(long id) {
@@ -1360,8 +1334,7 @@ public class MainActivity extends Activity {
         battery.setTint(t.onPc);
         sheet.addView(menuRow(memory, "记忆", "Catchup 记得的关于你的事", () -> {
             d.dismiss();
-            startActivity(new Intent(this, MemoryActivity.class));
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+            Push.open(this, new Intent(this, MemoryActivity.class));
         }));
         sheet.addView(menuRow("+", "添加链接", "从剪贴板", () -> {
             d.dismiss();
@@ -1475,8 +1448,7 @@ public class MainActivity extends Activity {
         row.addView(want, wl);
         long id = s.optLong("id");
         row.setOnClickListener(v -> {
-            startActivityForResult(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
+            Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
         });
         want.setOnClickListener(v -> {
             want.setEnabled(false);
@@ -1523,8 +1495,7 @@ public class MainActivity extends Activity {
             toast("先在别的 App 里复制一条链接");
             return;
         }
-        startActivity(new Intent(this, ShareActivity.class).putExtra(Intent.EXTRA_TEXT, text.toString()));
-        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        Push.open(this, new Intent(this, ShareActivity.class).putExtra(Intent.EXTRA_TEXT, text.toString()));
     }
 
     private View dismissedRow(JSONObject e) {

@@ -1,7 +1,6 @@
 package cloud.boxpkaka.infofeed;
 
 import android.app.Activity;
-import android.app.ActivityOptions;
 import android.app.Dialog;
 import android.content.Intent;
 import android.graphics.Color;
@@ -10,6 +9,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.SparseArray;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
@@ -50,7 +50,11 @@ public class TopicActivity extends Activity {
     private String key;
     private int[] z;
     private LinearLayout head, body;
+    private FrameLayout deck; // 榜单专题：几个榜横向排开，放在 body 里
+    private final SparseArray<View> channelPages = new SparseArray<>();
     private Swipe.Tabs tabs;
+    private Swipe.Pager pager;
+    private Push push;
     private ScrollView scroll;
     private HorizontalScrollView tabScroll;
     private TextView sub;
@@ -67,18 +71,18 @@ public class TopicActivity extends Activity {
         key = getIntent().getStringExtra(EXTRA_KEY);
         if (key == null) key = "";
         z = t.zone(key);
-        setContentView(build());
+        setContentView(build(state == null));
         load();
         Trace.log(this, "ui.topic", key);
     }
 
     @Override
     public void finish() {
-        super.finish();
-        overridePendingTransition(R.anim.hold, R.anim.exit_down);
+        push.finish(super::finish); // 先滑出去再关
     }
 
-    private View build() {
+    /** fresh（不是转屏之类的重建）时从右边推进来。 */
+    private View build(boolean fresh) {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
         scroll = new ScrollView(this);
@@ -127,6 +131,7 @@ public class TopicActivity extends Activity {
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(t.dp(12), t.dp(4), t.dp(12), 0);
+        body.setClipChildren(false); // 相邻的榜从屏幕边上进来，不在内容边距处被切掉
         page.addView(body);
         scroll.addView(page);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -144,51 +149,46 @@ public class TopicActivity extends Activity {
                 return WindowInsets.CONSUMED;
             });
         }
-        Swipe.Back backSwipe = new Swipe.Back(this, root, t.bg);
-        Swipe swipe = new Swipe(this, new Swipe.Pages() {
-            @Override
-            public boolean has(int dir) {
-                return dir < 0 || turns(dir);
-            }
-
-            @Override
-            public void drag(int dir, float dx) {
-                if (turns(dir)) {
-                    Swipe.follow(body, dx);
-                    tabs.at(channel - dx / Math.max(1, body.getWidth()));
-                } else {
-                    backSwipe.drag(dx);
-                }
-            }
-
-            @Override
-            public void release(int dir, boolean go) {
-                if (!turns(dir)) {
-                    backSwipe.release(go);
-                    return;
-                }
-                int to = channel + dir;
-                tabs.slide(go ? to : channel);
-                Swipe.turn(body, dir, go, () -> pick(to));
-            }
-        });
-        swipe.addView(root);
-        return swipe;
+        push = new Push(this, root, t.bg);
+        pager = new Swipe.Pager(this, board, true);
+        pager.back(push); // 第一个榜（不是榜单就是整页）再往右滑是返回
+        pager.scrollsWith(scroll, () -> tabScroll.getTop());
+        pager.frame.addView(root);
+        if (fresh) push.enter();
+        return pager.frame;
     }
 
-    /** 往 dir 方向还有没有别的榜（1 是下一个）。 */
-    private boolean turns(int dir) {
-        JSONArray channels = data == null || !"board".equals(data.optString("kind")) ? null : data.optJSONArray("channels");
-        int to = channel + dir;
-        return channels != null && channels.length() > 1 && to >= 0 && to < channels.length();
-    }
+    /** 榜单专题的几个榜：横向排开，左右滑或点标签切换。不是榜单时没有页，只能右滑返回。 */
+    private final Swipe.Pager.Host board = new Swipe.Pager.Host() {
+        @Override
+        public int count() {
+            if (data == null || !"board".equals(data.optString("kind"))) return 0;
+            JSONArray channels = data.optJSONArray("channels");
+            return Math.max(1, channels == null ? 0 : channels.length());
+        }
 
-    /** 换到第 index 个榜；已经往下翻过标签栏的，回到标签栏，从新榜的第一名看起。 */
-    private void pick(int index) {
-        channel = index;
-        renderBoard();
-        if (scroll.getScrollY() > tabScroll.getTop()) scroll.scrollTo(0, tabScroll.getTop());
-    }
+        @Override
+        public View page(int index) {
+            View v = channelPages.get(index);
+            if (v == null) {
+                v = channelPage(index);
+                channelPages.put(index, v);
+                deck.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            return v;
+        }
+
+        @Override
+        public void moved(float position) {
+            tabs.at(position);
+        }
+
+        @Override
+        public void settled(int index) {
+            channel = index;
+        }
+    };
 
     private void load() {
         new Thread(() -> {
@@ -206,7 +206,7 @@ public class TopicActivity extends Activity {
                 if (isDestroyed()) return;
                 if (got == null) {
                     body.removeAllViews();
-                    TextView v = note("加载失败：" + MainActivity.reason(error) + "\n点这里重试");
+                    TextView v = note(body, "加载失败：" + MainActivity.reason(error) + "\n点这里重试");
                     v.setOnClickListener(x -> {
                         loading();
                         load();
@@ -249,7 +249,7 @@ public class TopicActivity extends Activity {
                 if (list != null) t.segments(list);
                 day = d;
                 body.addView(heading(MainActivity.dayTitle(this, t, ms)));
-                list = segmentList();
+                list = segmentList(body);
             }
             list.addView(eventRow(e));
         }
@@ -263,13 +263,13 @@ public class TopicActivity extends Activity {
                 JSONObject b = boards.optJSONObject(i);
                 String label = b.optString("title") + ("hf_models".equals(b.optString("key")) ? " · 各分类前两名" : "");
                 body.addView(label(label));
-                LinearLayout rows = segmentList();
+                LinearLayout rows = segmentList(body);
                 JSONArray items = b.optJSONArray("items");
                 for (int j = 0; items != null && j < items.length(); j++) rows.addView(itemRow(items.optJSONObject(j), true));
                 t.segments(rows);
             }
         }
-        if (body.getChildCount() == 0) note("这个专题三天里还没有内容");
+        if (body.getChildCount() == 0) note(body, "这个专题三天里还没有内容");
     }
 
     /** 和信息流的时间线一样：左边是时间，重要性 4 以上的标题加粗、带一行概要；话题就是这个专题，不再写。 */
@@ -300,7 +300,7 @@ public class TopicActivity extends Activity {
         }
         col.addView(meta(sources(e)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.setOnClickListener(v -> openEvent(v, e.optLong("id"), e));
+        row.setOnClickListener(v -> openEvent(e.optLong("id"), e));
         return row;
     }
 
@@ -325,7 +325,7 @@ public class TopicActivity extends Activity {
             TextView tab = t.text(this, channels.optJSONObject(i).optString("name"), 14, t.sub, 800);
             tab.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
             tab.setBackground(t.ripple(Color.TRANSPARENT, 99));
-            tab.setOnClickListener(v -> pick(index));
+            tab.setOnClickListener(v -> pager.go(index));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
             lp.rightMargin = t.dp(4);
@@ -345,22 +345,34 @@ public class TopicActivity extends Activity {
         ol.leftMargin = t.dp(n > 1 ? 8 : 0);
         tabs.addView(only, ol);
         tabs.setCount(n > 1 ? n : 0);
-        tabs.slide(channel); // 胶囊滑到这个榜，在标签栏外面时顺带把它带进来
         tabScroll.setVisibility(View.VISIBLE);
 
         body.removeAllViews();
-        JSONArray items = n == 0 ? null : channels.optJSONObject(Math.min(channel, n - 1)).optJSONArray("items");
-        LinearLayout rows = segmentList();
+        deck = new FrameLayout(this);
+        body.addView(deck);
+        channelPages.clear();
+        pager.reset(Math.min(channel, board.count() - 1));
+    }
+
+    /** 第 index 个榜的内容，翻到它旁边时才建。 */
+    private View channelPage(int index) {
+        LinearLayout p = new LinearLayout(this);
+        p.setOrientation(LinearLayout.VERTICAL);
+        JSONArray channels = data.optJSONArray("channels");
+        JSONArray items = channels == null || index >= channels.length() ? null
+                : channels.optJSONObject(index).optJSONArray("items");
+        LinearLayout rows = segmentList(p);
         for (int i = 0; items != null && i < items.length(); i++) {
             JSONObject x = items.optJSONObject(i);
             if (!related || !x.optString("topic").isEmpty()) rows.addView(itemRow(x, false));
         }
         if (rows.getChildCount() == 0) {
-            body.removeView(rows);
-            note(related ? "这个榜现在没有和你相关的" : "这个榜还没有数据");
+            p.removeView(rows);
+            note(p, related ? "这个榜现在没有和你相关的" : "这个榜还没有数据");
         } else {
             t.segments(rows);
         }
+        return p;
     }
 
     /**
@@ -419,7 +431,7 @@ public class TopicActivity extends Activity {
         col.addView(meta(itemMeta(x, inTopic)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> {
-            if (!x.isNull("event_id")) openEvent(v, x.optLong("event_id"), null);
+            if (!x.isNull("event_id")) openEvent(x.optLong("event_id"), null);
             else intro(x);
         });
         return row;
@@ -505,9 +517,8 @@ public class TopicActivity extends Activity {
         t.press(ask, t.lime, 99);
         ask.setOnClickListener(v -> {
             d.dismiss();
-            startActivity(new Intent(this, ChatActivity.class).putExtra(ChatActivity.EXTRA_QUESTIONS,
+            Push.open(this, new Intent(this, ChatActivity.class).putExtra(ChatActivity.EXTRA_QUESTIONS,
                     new String[]{shortName + " 是做什么的？有什么特别之处？", shortName + " 和同类相比怎么样？"}));
-            overridePendingTransition(R.anim.enter_up, R.anim.hold);
         });
         LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(0, t.dp(52), 1);
         al.leftMargin = t.dp(10);
@@ -519,12 +530,11 @@ public class TopicActivity extends Activity {
 
     // ---------- 公用 ----------
 
-    /** 从这一行的位置揭开事件详情；话题专题里的事件带上列表数据，详情页先显示出来。 */
-    private void openEvent(View from, long id, JSONObject e) {
+    /** 打开事件详情；话题专题里的事件带上列表数据，详情页先显示出来。 */
+    private void openEvent(long id, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id);
         if (e != null) i.putExtra(EventActivity.EXTRA_JSON, e.toString());
-        startActivity(i, ActivityOptions.makeClipRevealAnimation(from, 0, 0, from.getWidth(), from.getHeight())
-                .toBundle());
+        Push.open(this, i);
     }
 
     private TextView heading(CharSequence s) {
@@ -539,10 +549,10 @@ public class TopicActivity extends Activity {
         return v;
     }
 
-    private LinearLayout segmentList() {
+    private LinearLayout segmentList(LinearLayout into) {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
-        body.addView(list);
+        into.addView(list);
         return list;
     }
 
@@ -575,11 +585,11 @@ public class TopicActivity extends Activity {
         return lp;
     }
 
-    private TextView note(String s) {
+    private TextView note(LinearLayout into, String s) {
         TextView v = t.text(this, s, 14.5f, t.sub, 500);
         v.setGravity(Gravity.CENTER);
         v.setPadding(t.dp(20), t.dp(48), t.dp(20), t.dp(48));
-        body.addView(v);
+        into.addView(v);
         return v;
     }
 }

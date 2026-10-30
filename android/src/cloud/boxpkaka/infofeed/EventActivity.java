@@ -34,6 +34,7 @@ public class EventActivity extends Activity {
     private static final int FOLDED_SOURCES = 4;
 
     private Theme t;
+    private Push push;
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
@@ -49,7 +50,8 @@ public class EventActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         id = getIntent().getLongExtra(EXTRA_ID, -1);
-        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
+        push = new Push(this, build(), t.bg);
+        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
         if (cached != null) {
             try {
@@ -64,8 +66,7 @@ public class EventActivity extends Activity {
 
     @Override
     public void finish() {
-        super.finish();
-        overridePendingTransition(R.anim.hold, R.anim.exit_down);
+        push.finish(super::finish); // 先滑出去再关
     }
 
     @Override
@@ -394,8 +395,7 @@ public class EventActivity extends Activity {
             i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
         }
         if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
-        startActivity(i);
-        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        Push.open(this, i);
     }
 
     private void post(String path, String json) {

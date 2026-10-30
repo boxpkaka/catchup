@@ -35,6 +35,7 @@ import java.util.Map;
  */
 public class MemoryActivity extends Activity {
     private Theme t;
+    private Push push;
     private LinearLayout body;
     private final Map<String, String> kinds = new LinkedHashMap<>();
     private boolean personalize = true;
@@ -51,14 +52,14 @@ public class MemoryActivity extends Activity {
         kinds.put("source", "偏好的来源");
         kinds.put("avoid_source", "不想看的来源");
         kinds.put("style", "希望怎么写");
-        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
+        push = new Push(this, build(), t.bg);
+        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
         load();
     }
 
     @Override
     public void finish() {
-        super.finish();
-        overridePendingTransition(R.anim.hold, R.anim.exit_down);
+        push.finish(super::finish); // 先滑出去再关
     }
 
     private View build() {
@@ -232,7 +233,7 @@ public class MemoryActivity extends Activity {
                 weight());
         long id = q.optLong("id");
         if (answered) {
-            row.setOnClickListener(v -> startActivity(new Intent(this, ChatActivity.class)
+            row.setOnClickListener(v -> Push.open(this, new Intent(this, ChatActivity.class)
                     .putExtra(ChatActivity.EXTRA_THREAD, q.optLong("thread_id"))
                     .putExtra(ChatActivity.EXTRA_TITLE, q.optString("text"))));
         } else {

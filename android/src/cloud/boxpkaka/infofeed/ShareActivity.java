@@ -28,6 +28,7 @@ public class ShareActivity extends Activity {
     private static final Pattern URL = Pattern.compile("https?://[^\\s<>\"'，。；！？、）】」]+");
 
     private Theme t;
+    private Push push;
     private TextView title, link, detail, retry;
     private Shapes.Loader loader;
     private View loaderBox;
@@ -41,8 +42,14 @@ public class ShareActivity extends Activity {
         t.applyWindow(this);
         text = getIntent().getStringExtra(Intent.EXTRA_TEXT);
         subject = getIntent().getStringExtra(Intent.EXTRA_SUBJECT);
-        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
+        push = new Push(this, build(), t.bg);
+        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
         submit();
+    }
+
+    @Override
+    public void finish() {
+        push.finish(super::finish); // 先滑出去再关
     }
 
     private View build() {
@@ -137,8 +144,8 @@ public class ShareActivity extends Activity {
                     fail("没读成", error == null ? "服务器没有返回结果，稍后再试一次。" : error, true);
                     return;
                 }
-                startActivity(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
-                overridePendingTransition(R.anim.enter_up, R.anim.hold);
+                Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+                push.replaced(); // 详情页从右边盖上来，这一页直接关
                 finish();
             });
         }, "share").start();

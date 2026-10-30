@@ -42,6 +42,7 @@ public class ChatActivity extends Activity {
     static final String EXTRA_THREAD = "thread";
 
     private Theme t;
+    private Push push;
     private long eventId;
     private long threadId = -1;
     private boolean busy;
@@ -63,7 +64,8 @@ public class ChatActivity extends Activity {
         t.applyWindow(this);
         eventId = getIntent().getLongExtra(EXTRA_EVENT, -1);
         threadId = getIntent().getLongExtra(EXTRA_THREAD, -1);
-        setContentView(Swipe.back(this, build(), t.bg)); // 右滑返回
+        push = new Push(this, build(), t.bg);
+        setContentView(push.wrap(state == null)); // 从右边推进来，右滑返回
         pendingAsk = getIntent().getStringExtra(EXTRA_ASK);
         if (threadId > 0 || eventId > 0) {
             loadHistory();
@@ -77,8 +79,7 @@ public class ChatActivity extends Activity {
 
     @Override
     public void finish() {
-        super.finish();
-        overridePendingTransition(R.anim.hold, R.anim.exit_down);
+        push.finish(super::finish); // 先滑出去再关
     }
 
     @Override
@@ -547,8 +548,7 @@ public class ChatActivity extends Activity {
     }
 
     private void openEvent(long id) {
-        startActivity(new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
-        overridePendingTransition(R.anim.enter_up, R.anim.hold);
+        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
     }
 
     private void postAsync(String path, String json) {
