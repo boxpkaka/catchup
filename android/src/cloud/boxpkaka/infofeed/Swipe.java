@@ -2,14 +2,12 @@ package cloud.boxpkaka.infofeed;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
-import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import android.view.HapticFeedbackConstants;
+import android.util.SparseArray;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
@@ -19,39 +17,42 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.util.function.IntSupplier;
+
 /**
- * 横向滑动翻页：左滑去下一页，右滑回上一页（没有上一页时是返回）。手指横向移动超过 touch slop、且明显比纵向多时接管，
- * 之后内容跟手，超过三成宽度或快速甩动松手就翻过去，否则弹回；跨过阈值时震一下。
- * 手指下面的控件自己还能往这个方向滚（标签栏、嵌在里面的另一个 Swipe）时让给它，到头了再由外层接管，所以可以一层套一层。
- * 跟手的样子和翻过去之后做什么由 Pages 决定，常用的两种：follow / turn 原地换内容，Back 返回上一个页面。
+ * 横向滑动：左滑去下一页，右滑回上一页（没有上一页时是返回）。手指横向移动超过 touch slop、且明显比纵向多时接管，
+ * 之后完全跟手，松手时把手指的速度交给 Pages 收尾。
+ * 手指下面的控件自己还能往这个方向滚（标签栏、嵌在里面的另一个 Swipe、能右滑移除的行）时让给它，到头了再由外层接管，
+ * 所以可以一层套一层。常用的 Pages 是 Pager（横向排开的几页）和 Push（右滑返回）。
  */
 final class Swipe extends FrameLayout {
     interface Pages {
-        /** dir 为 1 是左滑（下一页），-1 是右滑（上一页或返回）。 */
+        /** 能不能接管这个方向的横滑：dir 为 1 是左滑，-1 是右滑。 */
         boolean has(int dir);
 
-        /** 跟手：dx 是横向位移，右为正，只会落在 dir 那一侧。 */
-        void drag(int dir, float dx);
+        /** 开始拖动，dir 是起手的方向；正在弹的话就地停住，从那里接着拖。 */
+        void grab(int dir);
 
-        /** 松手：go 为 false 时回到原位。 */
-        void release(int dir, boolean go);
+        /** 跟手：dx 是开始拖动以来的横向位移，右为正。 */
+        void drag(float dx);
+
+        /** 松手：vx 是横向速度（像素/秒，右为正），被打断时为 0。 */
+        void release(float vx);
     }
 
     private final Pages pages;
-    private final int slop, minFling;
+    private final int slop;
     private float downX, downY, startX;
-    private int dir; // 0 是还没接管
-    private boolean armed;
+    private boolean dragging;
     private VelocityTracker velocity;
 
     Swipe(Context c, Pages pages) {
         super(c);
         this.pages = pages;
-        ViewConfiguration vc = ViewConfiguration.get(c);
-        slop = vc.getScaledTouchSlop();
-        minFling = vc.getScaledMinimumFlingVelocity() * 8;
+        slop = ViewConfiguration.get(c).getScaledTouchSlop();
     }
 
     /** 嵌在另一个 Swipe 里时，外层靠它知道这一层还能不能翻。 */
@@ -63,7 +64,7 @@ final class Swipe extends FrameLayout {
     @Override
     public boolean onInterceptTouchEvent(MotionEvent e) {
         track(e);
-        return dir != 0;
+        return dragging;
     }
 
     @Override
@@ -77,48 +78,47 @@ final class Swipe extends FrameLayout {
         if (action == MotionEvent.ACTION_DOWN) {
             downX = e.getRawX();
             downY = e.getRawY();
-            dir = 0;
-            armed = false;
+            dragging = false;
             if (velocity == null) velocity = VelocityTracker.obtain();
             else velocity.clear();
         }
-        if (velocity != null) velocity.addMovement(e);
+        if (velocity != null) addRaw(velocity, e);
         if (action == MotionEvent.ACTION_MOVE) {
-            if (dir == 0) {
+            if (!dragging) {
                 float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
                 int d = dx < 0 ? 1 : -1;
                 if (Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.5f && pages.has(d)
                         && !scrolls(this, d, e.getX(), e.getY())) {
-                    dir = d;
+                    dragging = true;
                     startX = e.getRawX();
+                    pages.grab(d);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 }
             }
-            if (dir != 0) {
-                float dx = e.getRawX() - startX;
-                dx = dir > 0 ? Math.min(0, dx) : Math.max(0, dx);
-                pages.drag(dir, dx);
-                boolean over = Math.abs(dx) > getWidth() * 0.3f;
-                if (over != armed) {
-                    armed = over;
-                    if (over) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                }
-            }
+            if (dragging) pages.drag(e.getRawX() - startX);
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            if (dir != 0) {
+            if (dragging) {
+                dragging = false;
                 float vx = 0;
-                if (velocity != null) {
+                if (velocity != null && action == MotionEvent.ACTION_UP) {
                     velocity.computeCurrentVelocity(1000);
-                    vx = -dir * velocity.getXVelocity(); // 朝翻页方向为正
+                    vx = velocity.getXVelocity();
                 }
-                pages.release(dir, action == MotionEvent.ACTION_UP && (armed ? vx > -minFling : vx > minFling));
-                dir = 0;
+                pages.release(vx);
             }
             if (velocity != null) {
                 velocity.recycle();
                 velocity = null;
             }
         }
+    }
+
+    /** 按屏幕坐标记速度：跟手移动的控件收到的是自己坐标系里的位置，直接记会把速度算小。 */
+    static void addRaw(VelocityTracker v, MotionEvent e) {
+        MotionEvent raw = MotionEvent.obtain(e);
+        raw.setLocation(e.getRawX(), e.getRawY());
+        v.addMovement(raw);
+        raw.recycle();
     }
 
     /**
@@ -140,118 +140,224 @@ final class Swipe extends FrameLayout {
         return false;
     }
 
-    // ---------- 原地换内容 ----------
-
-    /** 内容跟手移动，离开越远越淡。 */
-    static void follow(View v, float dx) {
-        v.animate().cancel(); // 上一次翻页的动画还没走完时，以手指为准
-        v.setTranslationX(dx);
-        v.setAlpha(1 - 0.7f * Math.min(1f, Math.abs(dx) / Math.max(1, v.getWidth())));
-    }
-
-    /** 松手：翻过去时内容滑出，swap 换成新内容后从另一边滑进来；不翻就弹回。 */
-    static void turn(View v, int dir, boolean go, Runnable swap) {
-        v.animate().cancel();
-        if (!go) {
-            v.animate().translationX(0).alpha(1).setDuration(Spring.STD.duration).setInterpolator(Spring.STD).start();
-            return;
-        }
-        float w = v.getWidth();
-        v.animate().translationX(-dir * w * 0.6f).alpha(0).setDuration(120).setInterpolator(null)
-                .withEndAction(() -> {
-                    swap.run();
-                    v.setTranslationX(dir * w * 0.3f);
-                    v.animate().translationX(0).alpha(1).setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
-                            .start();
-                })
-                .start();
-    }
-
-    // ---------- 右滑返回 ----------
+    // ---------- 横向排开的几页 ----------
 
     /**
-     * 右滑返回：整页跟手右移，左边露出下面的页面，由暗变亮；松手翻过去就接着滑出，再走 onBackPressed。
-     * 能看到下面的页面是因为这些页面的窗口是半透明的（AndroidManifest 里的 @style/Page）；
-     * 平时窗口底色就是页面底色，只有拖动时换成压暗的遮罩。
+     * 横向排开的几页，像 iOS 的分页滚动：position 是小数页码，第 i 页放在 (i - position) 个宽度处，拖动时相邻的页
+     * 跟着手指一起进来；松手带着手指的速度弹到一页（过半或者甩一下就到下一页），弹的途中按住可以接着拖。
+     * 两头没有下一页时：第一页右滑可以接 back（返回）；rubber 为 true 时像橡皮筋一样越拉越紧、松手弹回；
+     * 都不是就交给外层。frame 是接手势的外框，把要横滑的整块内容放进去。
      */
-    static final class Back {
-        private final Activity a;
-        private final View page;
-        private final int bg;
+    static final class Pager implements Pages {
+        interface Host {
+            int count();
 
-        Back(Activity a, View page, int bg) {
-            this.a = a;
-            this.page = page;
-            this.bg = bg;
+            /** 第 index 页，要露出来时才调用，可以这时再建。 */
+            View page(int index);
+
+            /** 每动一下：标签胶囊跟着走。 */
+            void moved(float position);
+
+            /** 停在了第 index 页。 */
+            void settled(int index);
         }
 
-        void drag(float dx) {
-            page.animate().cancel();
-            page.setTranslationX(dx);
-            a.getWindow().getDecorView().setBackgroundColor(scrim(dx));
+        final Swipe frame;
+        private final Host host;
+        private final boolean rubber;
+        private final int minFling;
+        private final SparseArray<View> shown = new SparseArray<>();
+        private Push back;
+        private ScrollView scroll;
+        private IntSupplier top;
+        private ValueAnimator motion;
+        private float position, from;
+        private int index, start, lift;
+        private boolean backing;
+
+        Pager(Context c, Host host, boolean rubber) {
+            this.host = host;
+            this.rubber = rubber;
+            minFling = ViewConfiguration.get(c).getScaledMinimumFlingVelocity() * 8;
+            frame = new Swipe(c, this);
         }
 
-        void release(boolean go) {
-            View decor = a.getWindow().getDecorView();
-            page.animate().cancel();
-            page.animate().translationX(go ? page.getWidth() : 0)
-                    .setDuration(go ? 180 : Spring.STD.duration).setInterpolator(go ? null : Spring.STD)
-                    .setUpdateListener(an -> decor.setBackgroundColor(scrim(page.getTranslationX())))
-                    .withEndAction(() -> {
-                        page.animate().setUpdateListener(null);
-                        if (!go) {
-                            decor.setBackgroundColor(bg);
-                            return;
-                        }
-                        a.onBackPressed();
-                        a.overridePendingTransition(0, 0); // 已经滑出去了，不再走 finish() 里的下滑动画
-                    })
-                    .start();
+        /** 第一页再往右滑就是返回。 */
+        void back(Push p) {
+            back = p;
         }
 
-        private int scrim(float dx) {
-            float p = Math.min(1f, Math.max(0f, dx / Math.max(1, page.getWidth())));
-            return Color.argb(Math.round(0x55 * (1 - p)), 0, 0, 0);
+        /**
+         * 这几页和别的内容一起放在竖着滚的 scroll 里：已经往下滚过 top 时，别的页往下错开同样多，看起来是从 top 开始的，
+         * 翻过去以后真的滚回 top。
+         */
+        void scrollsWith(ScrollView s, IntSupplier top) {
+            scroll = s;
+            this.top = top;
         }
-    }
 
-    /** 只能右滑返回的页面：把整页包起来。 */
-    static Swipe back(Activity a, View page, int bg) {
-        Back back = new Back(a, page, bg);
-        Swipe s = new Swipe(a, new Pages() {
-            @Override
-            public boolean has(int dir) {
-                return dir < 0;
+        int index() {
+            return index;
+        }
+
+        /** 点标签：从当前位置滑到第 i 页。 */
+        void go(int i) {
+            if (!moving()) {
+                if (i == index) return;
+                begin();
             }
+            settle(i, 0);
+        }
 
-            @Override
-            public void drag(int dir, float dx) {
+        /** 直接停在第 i 页，不要动画。 */
+        void jump(int i) {
+            if (motion != null) motion.cancel();
+            index = start = i;
+            lift = 0;
+            move(i);
+            host.settled(i);
+        }
+
+        /** 页面重建了：丢掉旧的，停在第 i 页。 */
+        void reset(int i) {
+            for (int k = 0; k < shown.size(); k++) shown.valueAt(k).setVisibility(GONE);
+            shown.clear();
+            jump(i);
+        }
+
+        @Override
+        public boolean has(int dir) {
+            if (moving()) return true; // 弹的途中可以接住
+            int to = index + dir;
+            if (to >= 0 && to < host.count()) return true;
+            if (dir < 0 && index == 0 && back != null) return back.can();
+            return rubbery();
+        }
+
+        @Override
+        public void grab(int dir) {
+            boolean caught = moving();
+            if (caught) motion.cancel();
+            backing = !caught && dir < 0 && index == 0 && back != null;
+            if (backing) {
+                back.grab();
+                return;
+            }
+            if (!caught) begin();
+            int last = Math.max(0, host.count() - 1);
+            // 在橡皮筋里接住：换回手指拉出去的距离，接着拉才不会跳
+            from = position < 0 ? -unband(-position) : position > last ? last + unband(position - last) : position;
+        }
+
+        @Override
+        public void drag(float dx) {
+            if (backing) {
                 back.drag(dx);
+                return;
             }
+            float p = from - dx / width();
+            int last = Math.max(0, host.count() - 1);
+            if (p < 0) p = rubbery() ? -band(-p) : 0;
+            else if (p > last) p = rubbery() ? last + band(p - last) : last;
+            move(p);
+        }
 
-            @Override
-            public void release(int dir, boolean go) {
-                back.release(go);
+        @Override
+        public void release(float vx) {
+            if (backing) {
+                backing = false;
+                back.release(vx);
+                return;
             }
-        });
-        s.addView(page, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        return s;
+            int to = vx < -minFling ? (int) Math.floor(position) + 1
+                    : vx > minFling ? (int) Math.ceil(position) - 1
+                    : Math.round(position);
+            settle(Math.max(0, Math.min(host.count() - 1, to)), -vx);
+        }
+
+        private boolean moving() {
+            return motion != null && motion.isRunning();
+        }
+
+        private boolean rubbery() {
+            return rubber && host.count() > 1;
+        }
+
+        private float width() {
+            return Math.max(1, frame.getWidth());
+        }
+
+        /** 从停着的一页开始翻：记下起点和要错开多少。 */
+        private void begin() {
+            start = index;
+            lift = scroll == null ? 0 : Math.max(0, scroll.getScrollY() - top.getAsInt());
+        }
+
+        /** iOS 的橡皮筋：x 是拉出去几页，越远越拉不动，最多接近一页。 */
+        private static float band(float x) {
+            return 1 - 1 / (x * 0.55f + 1);
+        }
+
+        private static float unband(float y) {
+            return (1 / (1 - Math.min(y, 0.99f)) - 1) / 0.55f;
+        }
+
+        /** velocity 是 position 方向的速度（像素/秒）。 */
+        private void settle(int to, float velocity) {
+            if (motion != null) motion.cancel();
+            float w = width(), last = Math.max(0, host.count() - 1);
+            // 没有橡皮筋的（嵌在外层里的）弹到头不越界，免得露出空白
+            motion = Spring.PAGE.fling(position * w, to * w, velocity,
+                    x -> move(rubbery() ? x / w : Math.max(0, Math.min(last, x / w))), () -> land(to));
+        }
+
+        private void land(int to) {
+            if (to != start && lift > 0) scroll.scrollTo(0, scroll.getScrollY() - lift);
+            index = start = to;
+            lift = 0;
+            move(to);
+            host.settled(to);
+        }
+
+        private void move(float p) {
+            position = p;
+            float w = width();
+            int lo = (int) Math.floor(p), hi = (int) Math.ceil(p);
+            for (int k = shown.size() - 1; k >= 0; k--) {
+                int i = shown.keyAt(k);
+                if (i < lo || i > hi) {
+                    shown.valueAt(k).setVisibility(GONE);
+                    shown.removeAt(k);
+                }
+            }
+            for (int i = Math.max(0, lo); i <= Math.min(hi, host.count() - 1); i++) {
+                View v = shown.get(i);
+                if (v == null) {
+                    v = host.page(i);
+                    v.setVisibility(VISIBLE);
+                    shown.put(i, v);
+                }
+                v.setTranslationX((i - p) * w);
+                v.setTranslationY(i == start ? 0 : lift);
+            }
+            host.moved(p);
+        }
     }
 
-    // ---------- 跟着翻页滑的胶囊标签 ----------
+    // ---------- 跟着翻页走的胶囊标签 ----------
 
     /**
-     * 一排胶囊标签，选中的胶囊画在标签后面，可以停在两个标签之间：翻页时跟着手指从这个标签滑向下一个，文字颜色跟着交接。
-     * 放在横向滚动的标签栏里时，胶囊跑到外面就把它带进来。只管前 count 个子控件，后面的（如“只看相关”）不动。
+     * 一排标签，选中的胶囊画在标签后面，可以停在两个标签之间：翻页时由 Pager 每帧告诉它位置，胶囊跟着手指从这个标签
+     * 滑向下一个，文字颜色跟着交接。放在横向滚动的标签栏里时，胶囊跑到外面就把它带进来。
+     * 只管前 count 个子控件，后面的（如“只看相关”）不动。
      */
     static final class Tabs extends LinearLayout {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF pill = new RectF();
         private final ArgbEvaluator argb = new ArgbEvaluator();
         private final int on, off;
-        private int count, target;
+        private int count;
         private float pos;
-        private ValueAnimator anim;
 
         Tabs(Context c, int fill, int on, int off) {
             super(c);
@@ -265,32 +371,11 @@ final class Swipe extends FrameLayout {
             this.count = count;
         }
 
-        /** 马上停在 pos：1.5 是第二、三个标签正中间。 */
+        /** 停在 pos：1.5 是第二、三个标签正中间。 */
         void at(float pos) {
-            if (anim != null) anim.cancel();
-            move(pos);
-        }
-
-        /** 用和翻页一样的弹簧滑到第 to 个；已经在往那里滑就不打断。 */
-        void slide(int to) {
-            if (anim != null && anim.isRunning() && target == to) return;
-            if (anim != null) anim.cancel();
-            target = to;
-            if (pos == to) {
-                move(to); // 标签刚重建时也要上色
-                return;
-            }
-            anim = ValueAnimator.ofFloat(pos, to);
-            anim.setDuration(Spring.STD.duration);
-            anim.setInterpolator(Spring.STD);
-            anim.addUpdateListener(a -> move((float) a.getAnimatedValue()));
-            anim.start();
-        }
-
-        private void move(float p) {
-            pos = p;
+            this.pos = pos;
             for (int i = 0; i < count && i < getChildCount(); i++) {
-                float near = Math.max(0f, 1 - Math.abs(p - i));
+                float near = Math.max(0f, 1 - Math.abs(pos - i));
                 ((TextView) getChildAt(i)).setTextColor((int) argb.evaluate(near, off, on));
             }
             reveal();
@@ -329,7 +414,7 @@ final class Swipe extends FrameLayout {
     // ---------- 底部面板下拉关闭 ----------
 
     /**
-     * 底部面板的外框：往下拉跟手，拉过四分之一高度或快速下甩就收起（等于点面板外面），否则弹回。
+     * 底部面板的外框：往下拉跟手，拉过四分之一高度或快速下甩就带着速度收起（等于点面板外面），否则弹回。
      * 面板里的列表还能往上滚时让给列表。
      */
     static final class Sheet extends LinearLayout {
@@ -338,6 +423,7 @@ final class Swipe extends FrameLayout {
         private float downX, downY, startY;
         private boolean dragging;
         private VelocityTracker velocity;
+        private ValueAnimator motion;
 
         Sheet(Context c, Dialog dialog) {
             super(c);
@@ -369,12 +455,13 @@ final class Swipe extends FrameLayout {
                 if (velocity == null) velocity = VelocityTracker.obtain();
                 else velocity.clear();
             }
-            if (velocity != null) velocity.addMovement(e);
+            if (velocity != null) addRaw(velocity, e);
             if (action == MotionEvent.ACTION_MOVE) {
                 float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
                 if (!dragging && dy > slop && dy > Math.abs(dx) * 1.5f && !scrollsUp(this, e.getX(), e.getY())) {
                     dragging = true;
-                    startY = e.getRawY();
+                    if (motion != null) motion.cancel();
+                    startY = e.getRawY() - getTranslationY();
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 }
                 if (dragging) setTranslationY(Math.max(0, e.getRawY() - startY));
@@ -382,16 +469,14 @@ final class Swipe extends FrameLayout {
                 if (dragging) {
                     dragging = false;
                     float vy = 0;
-                    if (velocity != null) {
+                    if (velocity != null && action == MotionEvent.ACTION_UP) {
                         velocity.computeCurrentVelocity(1000);
                         vy = velocity.getYVelocity();
                     }
                     boolean close = action == MotionEvent.ACTION_UP
                             && (getTranslationY() > getHeight() * 0.25f ? vy > -minFling : vy > minFling);
-                    animate().translationY(close ? getHeight() : 0)
-                            .setDuration(close ? 160 : Spring.STD.duration).setInterpolator(close ? null : Spring.STD)
-                            .withEndAction(close ? dialog::dismiss : null)
-                            .start();
+                    motion = Spring.PAGE.fling(getTranslationY(), close ? getHeight() : 0, vy,
+                            y -> setTranslationY(Math.max(0, y)), close ? dialog::dismiss : null);
                 }
                 if (velocity != null) {
                     velocity.recycle();

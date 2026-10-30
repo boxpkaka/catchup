@@ -5,14 +5,15 @@ import android.content.Context;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.ViewConfiguration;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.AbsListView;
 import android.widget.FrameLayout;
 
 /**
- * 下拉刷新：列表在顶部时向下拉，露出加载指示器，随拉动距离放大、转动；拉过阈值时震一下，
- * 松手后指示器边变形边转，直到刷新结束。框架里没有 SwipeRefreshLayout，这里自己实现。
+ * 下拉刷新：列表在顶部时向下拉，像 iOS 的橡皮筋一样越拉越紧，露出加载指示器，随拉动距离放大、转动；拉过阈值时震一下，
+ * 松手后带着手指的速度弹到刷新位置（或弹回），指示器边变形边转，直到刷新结束；弹的途中按住可以接着拉。
+ * 框架里没有 SwipeRefreshLayout，这里自己实现。
  */
 final class PullLayout extends FrameLayout {
     interface OnRefresh {
@@ -23,9 +24,11 @@ final class PullLayout extends FrameLayout {
     private final FrameLayout indicator;
     private final Shapes.Loader loader;
     private final int slop, threshold, rest;
-    private float downY, downX, offset;
+    private float downY, downX, offset, pulled;
     private boolean dragging, refreshing, armed;
     private OnRefresh listener;
+    private VelocityTracker velocity;
+    private ValueAnimator motion;
 
     PullLayout(Context c, Theme theme, AbsListView list) {
         super(c);
@@ -53,7 +56,7 @@ final class PullLayout extends FrameLayout {
         if (!refreshing) return;
         refreshing = false;
         loader.stop();
-        animateTo(0);
+        animateTo(0, 0);
     }
 
     private boolean atTop() {
@@ -69,13 +72,19 @@ final class PullLayout extends FrameLayout {
                 downY = e.getY();
                 downX = e.getX();
                 dragging = false;
+                if (velocity == null) velocity = VelocityTracker.obtain();
+                else velocity.clear();
+                velocity.addMovement(e);
                 break;
             case MotionEvent.ACTION_MOVE:
+                if (velocity != null) velocity.addMovement(e);
                 float dy = e.getY() - downY, dx = Math.abs(e.getX() - downX);
                 if (dy > slop && dy > dx && atTop()) {
                     dragging = true;
-                    downY = e.getY();
-                    armed = false;
+                    if (motion != null) motion.cancel();
+                    pulled = unband(offset); // 正在弹回时从当前位置接着拉
+                    downY = e.getY() - pulled;
+                    armed = offset >= threshold;
                 }
                 break;
             default:
@@ -87,10 +96,11 @@ final class PullLayout extends FrameLayout {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         if (!dragging) return super.onTouchEvent(e);
+        if (velocity != null) velocity.addMovement(e);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_MOVE:
-                float pulled = Math.max(0, e.getY() - downY);
-                setOffset(pulled * 0.5f); // 阻尼：手指移动一半的距离
+                pulled = Math.max(0, e.getY() - downY);
+                setOffset(band(pulled));
                 boolean over = offset >= threshold;
                 if (over != armed) {
                     armed = over;
@@ -100,13 +110,22 @@ final class PullLayout extends FrameLayout {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 dragging = false;
+                float vy = 0;
+                if (velocity != null) {
+                    if (e.getActionMasked() == MotionEvent.ACTION_UP) {
+                        velocity.computeCurrentVelocity(1000);
+                        vy = velocity.getYVelocity() * slope(pulled); // 手指的速度换成被橡皮筋拉住后的速度
+                    }
+                    velocity.recycle();
+                    velocity = null;
+                }
                 if (offset >= threshold && listener != null) {
                     refreshing = true;
-                    animateTo(rest);
+                    animateTo(rest, vy);
                     loader.start();
                     listener.refresh();
                 } else {
-                    animateTo(0);
+                    animateTo(0, vy);
                 }
                 return true;
             default:
@@ -124,11 +143,26 @@ final class PullLayout extends FrameLayout {
         if (!refreshing) loader.setRotation(progress * 180);
     }
 
-    private void animateTo(float target) {
-        ValueAnimator a = ValueAnimator.ofFloat(offset, target);
-        a.setDuration(260);
-        a.setInterpolator(new DecelerateInterpolator());
-        a.addUpdateListener(v -> setOffset((float) v.getAnimatedValue()));
-        a.start();
+    private void animateTo(float target, float velocity) {
+        if (motion != null) motion.cancel();
+        motion = Spring.PAGE.fling(offset, target, velocity, v -> setOffset(Math.max(0, v)), null);
+    }
+
+    /** iOS 的橡皮筋：手指拉了 x，列表只下来这么多，越远越拉不动，最多接近整个高度。 */
+    private float band(float x) {
+        float d = Math.max(1, getHeight());
+        return (1 - 1 / (x * 0.55f / d + 1)) * d;
+    }
+
+    /** band 的反函数：列表下来了 y，手指要拉多少。 */
+    private float unband(float y) {
+        float d = Math.max(1, getHeight());
+        return d / 0.55f * (1 / (1 - Math.min(y, d * 0.99f) / d) - 1);
+    }
+
+    /** band 在 x 处的斜率：手指每移动 1，列表移动多少。 */
+    private float slope(float x) {
+        float d = Math.max(1, getHeight()), k = x * 0.55f / d + 1;
+        return 0.55f / (k * k);
     }
 }

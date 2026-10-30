@@ -8,10 +8,11 @@ import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.animation.DecelerateInterpolator;
 
 /**
  * 右滑移除：横向拖动时内容跟手，圆角随距离收到一半、略微缩小，背后露出“不需要”；
- * 超过 35% 宽度（或快速甩动）松手即用弹簧飞出，跨过阈值时震一下。没开始横向拖动前不消费事件，点按和纵向滚动照常。
+ * 超过 35% 宽度（或快速甩动）松手即接着手指的速度飞出，跨过阈值时震一下。没开始横向拖动前不消费事件，点按和纵向滚动照常。
  * 只认右滑：左滑留给首页翻到下一页（见 Swipe）。
  */
 final class SwipeDismiss implements View.OnTouchListener {
@@ -44,10 +45,10 @@ final class SwipeDismiss implements View.OnTouchListener {
                 downY = e.getRawY();
                 swiping = armed = false;
                 velocity = VelocityTracker.obtain();
-                velocity.addMovement(e);
+                Swipe.addRaw(velocity, e); // 这一行自己在跟手移动，按屏幕坐标记速度
                 return false; // 让控件自己处理按下效果和点击
             case MotionEvent.ACTION_MOVE: {
-                if (velocity != null) velocity.addMovement(e);
+                if (velocity != null) Swipe.addRaw(velocity, e);
                 float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
                 if (!swiping && dx > slop && Math.abs(dx) > Math.abs(dy) * 1.5f) {
                     swiping = true;
@@ -76,15 +77,19 @@ final class SwipeDismiss implements View.OnTouchListener {
                 swiping = false;
                 float vx = 0;
                 if (velocity != null) {
-                    velocity.addMovement(e);
+                    Swipe.addRaw(velocity, e);
                     velocity.computeCurrentVelocity(1000);
                     vx = velocity.getXVelocity();
                 }
                 recycle();
                 boolean dismiss = e.getActionMasked() == MotionEvent.ACTION_UP && (armed || vx > minFling);
-                // 用 ViewPropertyAnimator：列表复用这一行时 reset() 能把它取消掉
+                // 用 ViewPropertyAnimator：列表复用这一行时 reset() 能把它取消掉。
+                // 飞出用减速曲线 1-(1-t)^3，起步速度是 3 倍距离/时长，时长按松手速度算，就接上了手指的速度。
+                float out = v.getWidth() * 1.15f - v.getTranslationX();
+                long ms = vx > 0 ? Math.round(3000 * out / vx) : 320;
                 v.animate().translationX(dismiss ? v.getWidth() * 1.15f : 0)
-                        .setDuration(Spring.STD.duration).setInterpolator(Spring.STD)
+                        .setDuration(dismiss ? Math.max(140, Math.min(320, ms)) : Spring.STD.duration)
+                        .setInterpolator(dismiss ? new DecelerateInterpolator(1.5f) : Spring.STD)
                         .setUpdateListener(an -> morph(v, v.getTranslationX()))
                         .withEndAction(() -> {
                             v.animate().setUpdateListener(null);
