@@ -43,10 +43,10 @@ python3 -m unittest                   # 测试
 
 `catchup serve` 作为 systemd 用户服务 `catchup-web` 常驻（`systemctl --user restart catchup-web`）。App 经 Caddy 访问 `https://43.139.27.91:8443/v1/*`；第一台注册的设备自动批准，之后的新设备要用 `devices approve` 确认。
 
-定时任务：
+定时任务（Google、Hugging Face、YouTube、Reddit 在服务器上直连不通，所以采集走本机 mihomo 代理，国内站点由 mihomo 规则直连；`catchup-web` 的 systemd 单元里也设了同样的 `Environment=`）：
 
 ```
-*/10 * * * * cd /home/boxp/workspace/catchup && /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
+*/10 * * * * cd /home/boxp/workspace/catchup && http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 no_proxy=localhost,127.0.0.1 /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
 ```
 
 预览页只监听本机，远程查看用 SSH 端口转发：`ssh -L 2591:127.0.0.1:2591 <server>`。
