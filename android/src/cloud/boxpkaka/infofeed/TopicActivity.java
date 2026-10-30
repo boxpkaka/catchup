@@ -54,7 +54,7 @@ public class TopicActivity extends Activity {
     private final SparseArray<View> channelPages = new SparseArray<>();
     private Swipe.Tabs tabs;
     private Swipe.Pager pager;
-    private Push push;
+    private Nav nav;
     private ScrollView scroll;
     private HorizontalScrollView tabScroll;
     private TextView sub;
@@ -78,10 +78,10 @@ public class TopicActivity extends Activity {
 
     @Override
     public void finish() {
-        push.finish(super::finish); // 先滑出去再关
+        nav.finish(super::finish); // 先收回卡片或滑出去再关
     }
 
-    /** fresh（不是转屏之类的重建）时从右边推进来。 */
+    /** fresh（不是转屏之类的重建）时从点开的卡片展开，或者从右边推进来。 */
     private View build(boolean fresh) {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
@@ -149,12 +149,12 @@ public class TopicActivity extends Activity {
                 return WindowInsets.CONSUMED;
             });
         }
-        push = new Push(this, root, t.bg);
+        nav = Nav.of(this, root, t.bg);
         pager = new Swipe.Pager(this, board, true);
-        pager.back(push); // 第一个榜（不是榜单就是整页）再往右滑是返回
+        pager.back(nav); // 第一个榜（不是榜单就是整页）再往右滑是返回
         pager.scrollsWith(scroll, () -> tabScroll.getTop());
         pager.frame.addView(root);
-        if (fresh) push.enter();
+        if (fresh) nav.enter();
         return pager.frame;
     }
 
@@ -214,8 +214,10 @@ public class TopicActivity extends Activity {
                     return;
                 }
                 data = got;
+                body.setAlpha(0f); // 内容整块淡入，不突然冒出来
                 if ("board".equals(got.optString("kind"))) renderBoard();
                 else renderTopic();
+                body.animate().alpha(1f).setDuration(220).start();
             });
         }, "topic-load").start();
     }
@@ -300,7 +302,7 @@ public class TopicActivity extends Activity {
         }
         col.addView(meta(sources(e)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.setOnClickListener(v -> openEvent(e.optLong("id"), e));
+        row.setOnClickListener(v -> openEvent(v, e.optLong("id"), e));
         return row;
     }
 
@@ -431,7 +433,7 @@ public class TopicActivity extends Activity {
         col.addView(meta(itemMeta(x, inTopic)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> {
-            if (!x.isNull("event_id")) openEvent(x.optLong("event_id"), null);
+            if (!x.isNull("event_id")) openEvent(v, x.optLong("event_id"), null);
             else intro(x);
         });
         return row;
@@ -530,11 +532,11 @@ public class TopicActivity extends Activity {
 
     // ---------- 公用 ----------
 
-    /** 打开事件详情；话题专题里的事件带上列表数据，详情页先显示出来。 */
-    private void openEvent(long id, JSONObject e) {
+    /** 这一行原地展开成事件详情；话题专题里的事件带上列表数据，详情页一开始就有内容。 */
+    private void openEvent(View from, long id, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id);
         if (e != null) i.putExtra(EventActivity.EXTRA_JSON, e.toString());
-        Push.open(this, i);
+        Card.open(this, from, i);
     }
 
     private TextView heading(CharSequence s) {

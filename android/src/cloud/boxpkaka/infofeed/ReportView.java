@@ -1,7 +1,9 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.LayoutTransition;
 import android.app.Activity;
 import android.graphics.Color;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -14,14 +16,16 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 首页的“报告”页：日报、周报、月报三页横向排开，左右滑时相邻的一页跟着手指进来（也可以点上面的分段按钮），
- * ‹ › 翻看往期。要点、趋势、持续发展的事和分领域的条目点开进事件详情。
+ * 首页的“报告”页：日报、周报、月报三页横向排开，左右滑时相邻的一页跟着手指进来（也可以点上面的分段按钮）。
+ * 每类最新一期在最上面，往下滚到底就接着出上一期，一直往前看，不用点。要点、趋势、持续发展的事和分领域的条目
+ * 点开从那一行展开成事件详情。
  * 报告由服务器在每个时间段结束后写好（见 catchup/pipeline/reports.py），这里只负责读和显示；第一次进来时三类一起加载，
  * 滑过去就已经有内容。
  */
 final class ReportView extends FrameLayout {
     interface OnOpen {
-        void open(long eventId);
+        /** 从 from 这张卡片展开事件详情。 */
+        void open(View from, long eventId);
     }
 
     private static final String[][] KINDS = {{"daily", "日报"}, {"weekly", "周报"}, {"monthly", "月报"}};
@@ -77,6 +81,7 @@ final class ReportView extends FrameLayout {
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setPadding(0, 0, 0, t.dp(96));
         scroll.addView(column);
+        scroll.setOnScrollChangeListener((v, x, y, ox, oy) -> more());
         pager = new Swipe.Pager(a, new Swipe.Pager.Host() {
             @Override
             public int count() {
@@ -96,6 +101,7 @@ final class ReportView extends FrameLayout {
 
             @Override
             public void settled(int index) {
+                more();
             }
         }, false); // 两头交给首页翻页
         pager.scrollsWith(scroll, () -> 0);
@@ -110,13 +116,13 @@ final class ReportView extends FrameLayout {
         scroll.setPadding(0, 0, 0, px);
     }
 
-    /** 切到这一页时调用：还没加载过的类型都去加载最新一份。 */
+    /** 切到这一页时调用：还没加载过的类型都去加载最新一期。 */
     void showIfEmpty() {
         started = true;
         for (Kind k : pages) k.showIfEmpty();
     }
 
-    /** 翻到这类报告；period 为空时是最新一份。 */
+    /** 翻到这类报告，从 period 这一期看起（空是最新一期）。 */
     void show(String kind, String period) {
         started = true;
         for (int i = 0; i < KINDS.length; i++) {
@@ -126,46 +132,49 @@ final class ReportView extends FrameLayout {
         }
     }
 
-    /** 一类报告的一页：期数导航和正文，自己加载。 */
+    /** 当前这类离底部不到一屏了：接上更早的一期。 */
+    private void more() {
+        View column = scroll.getChildAt(0);
+        if (column.getHeight() - scroll.getScrollY() - scroll.getHeight() < scroll.getHeight()) {
+            pages[pager.index()].more();
+        }
+    }
+
+    /** 一类报告的一页：一期接一期往下排，最新的在最上面，自己加载。 */
     private final class Kind {
         final String kind;
-        final LinearLayout view, body;
-        final TextView prev, next, label;
-        JSONObject shown;
+        final LinearLayout view;
+        String older; // 下一期要接上的往期，null 是到头了
+        boolean loading, loaded;
+        long failedAt;
         int loadSeq;
-        boolean loading;
 
         Kind(String kind) {
             this.kind = kind;
             view = new LinearLayout(a);
             view.setOrientation(LinearLayout.VERTICAL);
-
-            LinearLayout nav = new LinearLayout(a);
-            nav.setGravity(Gravity.CENTER_VERTICAL);
-            nav.setPadding(0, t.dp(12), 0, t.dp(4));
-            prev = navButton("‹");
-            label = t.text(a, "", 17, t.ink, 800);
-            label.setGravity(Gravity.CENTER);
-            next = navButton("›");
-            nav.addView(prev, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
-            nav.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            nav.addView(next, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
-            view.addView(nav);
-
-            body = new LinearLayout(a);
-            body.setOrientation(LinearLayout.VERTICAL);
-            view.addView(body);
+            Theme.smooth(view); // 接上的往期淡入
         }
 
         void showIfEmpty() {
-            if (shown == null && !loading) show(null);
+            if (!loaded && !loading) show(null);
         }
 
-        /** period 为空时是这类报告的最新一份。 */
+        /** 从 period 这一期看起（空是最新一期），往期接在下面。 */
         void show(String period) {
-            int seq = ++loadSeq;
             loading = true;
-            body.setAlpha(0.4f);
+            if (loaded) view.animate().alpha(0.4f).setDuration(120).start();
+            fetch(period, ++loadSeq, true);
+        }
+
+        /** 滚到底了：接上更早的一期；上次失败的过一会儿再试。 */
+        void more() {
+            if (!loaded || loading || older == null || SystemClock.uptimeMillis() - failedAt < 10_000) return;
+            loading = true;
+            fetch(older, loadSeq, false);
+        }
+
+        private void fetch(String period, int seq, boolean fresh) {
             Trace.log(a, "ui.report", kind + " " + (period == null ? "latest" : period));
             new Thread(() -> {
                 JSONObject r = null;
@@ -179,30 +188,46 @@ final class ReportView extends FrameLayout {
                 JSONObject got = r;
                 Exception error = err;
                 a.runOnUiThread(() -> {
-                    if (a.isDestroyed() || seq != loadSeq) return; // 期间又翻了别的期
+                    if (a.isDestroyed() || seq != loadSeq) return; // 期间又换了从哪一期看起
                     loading = false;
-                    body.setAlpha(1f);
-                    if (got != null) render(got);
-                    else failed(error, period);
+                    if (got == null) {
+                        failedAt = SystemClock.uptimeMillis();
+                        if (fresh) failed(error, period);
+                        return;
+                    }
+                    if (fresh) {
+                        // 换了从哪一期看起：整页换掉时不逐条淡入淡出，整页一起淡入
+                        LayoutTransition lt = view.getLayoutTransition();
+                        view.setLayoutTransition(null);
+                        view.removeAllViews();
+                        append(got);
+                        view.setLayoutTransition(lt);
+                        view.setAlpha(loaded ? 0.4f : 0f);
+                        view.animate().alpha(1f).setDuration(220).start();
+                        loaded = true;
+                        if (this == pages[pager.index()]) scroll.scrollTo(0, 0);
+                    } else {
+                        append(got);
+                    }
+                    scroll.post(ReportView.this::more); // 还没铺满一屏就接着往前接
                 });
             }, "report-load").start();
         }
 
-        private void render(JSONObject r) {
-            shown = r;
-            body.removeAllViews();
+        /** 接上一期：期名做标题，下面是要点、趋势、持续发展的事和各领域。 */
+        private void append(JSONObject r) {
+            LinearLayout section = new LinearLayout(a);
+            section.setOrientation(LinearLayout.VERTICAL);
             String period = r.isNull("period") ? null : r.optString("period");
-            String name = r.optString("name");
-            if (period == null) { // 第一份还没出
-                label.setText(name);
-                enable(prev, null);
-                enable(next, null);
-                note(r.optString("upcoming") + " 出第一期" + name);
+            older = r.isNull("prev") ? null : r.optString("prev");
+            if (period == null) { // 第一期还没出
+                section.addView(note(r.optString("upcoming") + " 出第一期" + r.optString("name")));
+                view.addView(section);
                 return;
             }
-            label.setText(r.optString("label"));
-            enable(prev, r.isNull("prev") ? null : r.optString("prev"));
-            enable(next, r.isNull("next") ? null : r.optString("next"));
+            TextView label = t.text(a, r.optString("label"), 22, t.ink, 900);
+            label.setPadding(t.dp(10), t.dp(view.getChildCount() == 0 ? 18 : 44), t.dp(10), t.dp(2));
+            section.addView(label);
 
             JSONArray highlights = r.optJSONArray("highlights");
             if (highlights != null && highlights.length() > 0) {
@@ -216,17 +241,17 @@ final class ReportView extends FrameLayout {
                 for (int i = 0; i < highlights.length(); i++) card.addView(highlight(highlights.optJSONObject(i)));
                 LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
-                cl.topMargin = t.dp(8);
-                body.addView(card, cl);
+                cl.topMargin = t.dp(14);
+                section.addView(card, cl);
             }
-            notes("趋势", r.optJSONArray("trends"));
-            notes("持续发展的事", r.optJSONArray("ongoing"));
+            notes(section, "趋势", r.optJSONArray("trends"));
+            notes(section, "持续发展的事", r.optJSONArray("ongoing"));
             JSONArray sections = r.optJSONArray("sections");
             for (int i = 0; sections != null && i < sections.length(); i++) {
                 JSONObject s = sections.optJSONObject(i);
                 JSONArray items = s.optJSONArray("items");
                 if (items == null || items.length() == 0) continue;
-                body.addView(heading(s.optString("name")));
+                section.addView(heading(s.optString("name")));
                 LinearLayout list = new LinearLayout(a);
                 list.setOrientation(LinearLayout.VERTICAL);
                 for (int j = 0; j < items.length(); j++) {
@@ -234,58 +259,46 @@ final class ReportView extends FrameLayout {
                     list.addView(row(item.optString("text"), item.optLong("id", -1)));
                 }
                 t.segments(list);
-                body.addView(list);
+                section.addView(list);
             }
-            if (this == pages[pager.index()]) scroll.scrollTo(0, 0); // 翻了期数从头看；顺带加载的别的类型不动
-        }
-
-        /** 要点里的一条：点开进它说的第一件事。 */
-        private View highlight(JSONObject h) {
-            TextView v = t.text(a, "· " + h.optString("text"), 15, t.onPc, 600);
-            v.setLineSpacing(t.dp(5), 1f);
-            v.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-            long id = firstEvent(h);
-            if (id >= 0) {
-                v.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_M));
-                v.setOnClickListener(x -> onOpen.open(id));
-            }
-            return v;
-        }
-
-        /** 趋势、持续发展的事：一组分段行，点开进提到的第一件事。 */
-        private void notes(String title, JSONArray items) {
-            if (items == null || items.length() == 0) return;
-            body.addView(heading(title));
-            LinearLayout list = new LinearLayout(a);
-            list.setOrientation(LinearLayout.VERTICAL);
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject x = items.optJSONObject(i);
-                list.addView(row(x.optString("text"), firstEvent(x)));
-            }
-            t.segments(list);
-            body.addView(list);
-        }
-
-        private void note(String s) {
-            TextView v = t.text(a, s, 14.5f, t.sub, 500);
-            v.setGravity(Gravity.CENTER);
-            v.setPadding(t.dp(20), t.dp(48), t.dp(20), t.dp(48));
-            body.addView(v);
+            view.addView(section);
         }
 
         private void failed(Exception e, String period) {
-            if (shown != null) return; // 已有内容就留着，下次再试
-            body.removeAllViews();
-            label.setText("");
-            note("加载失败：" + MainActivity.reason(e) + "\n点这里重试");
-            body.getChildAt(0).setOnClickListener(v -> show(period));
+            view.animate().alpha(1f).setDuration(120).start();
+            if (loaded) return; // 已有内容就留着，下次再试
+            view.removeAllViews();
+            TextView v = note("加载失败：" + MainActivity.reason(e) + "\n点这里重试");
+            v.setOnClickListener(x -> show(period));
+            view.addView(v);
         }
+    }
 
-        private void enable(TextView button, String period) {
-            button.setAlpha(period == null ? 0.25f : 1f);
-            button.setEnabled(period != null);
-            button.setOnClickListener(period == null ? null : v -> show(period));
+    /** 要点里的一条：点开从这一行展开成它说的第一件事。 */
+    private View highlight(JSONObject h) {
+        TextView v = t.text(a, "· " + h.optString("text"), 15, t.onPc, 600);
+        v.setLineSpacing(t.dp(5), 1f);
+        v.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
+        long id = firstEvent(h);
+        if (id >= 0) {
+            v.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_M));
+            v.setOnClickListener(x -> onOpen.open(x, id));
         }
+        return v;
+    }
+
+    /** 趋势、持续发展的事：一组分段行，点开进提到的第一件事。 */
+    private void notes(LinearLayout into, String title, JSONArray items) {
+        if (items == null || items.length() == 0) return;
+        into.addView(heading(title));
+        LinearLayout list = new LinearLayout(a);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject x = items.optJSONObject(i);
+            list.addView(row(x.optString("text"), firstEvent(x)));
+        }
+        t.segments(list);
+        into.addView(list);
     }
 
     private static long firstEvent(JSONObject x) {
@@ -302,7 +315,7 @@ final class ReportView extends FrameLayout {
         row.addView(v, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         if (eventId >= 0) {
             row.addView(t.text(a, "›", 17, t.sub, 700));
-            row.setOnClickListener(x -> onOpen.open(eventId));
+            row.setOnClickListener(x -> onOpen.open(x, eventId));
         }
         row.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -315,10 +328,10 @@ final class ReportView extends FrameLayout {
         return v;
     }
 
-    private TextView navButton(String s) {
-        TextView b = t.text(a, s, 22, t.ink, 700);
-        b.setGravity(Gravity.CENTER);
-        b.setBackground(t.ripple(Color.TRANSPARENT, 99));
-        return b;
+    private TextView note(String s) {
+        TextView v = t.text(a, s, 14.5f, t.sub, 500);
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(t.dp(20), t.dp(48), t.dp(20), t.dp(48));
+        return v;
     }
 }

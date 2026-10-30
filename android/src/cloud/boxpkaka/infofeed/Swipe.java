@@ -2,17 +2,26 @@ package cloud.boxpkaka.infofeed;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.graphics.drawable.ColorDrawable;
+import android.os.Build;
 import android.util.SparseArray;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -167,7 +176,7 @@ final class Swipe extends FrameLayout {
         private final boolean rubber;
         private final int minFling;
         private final SparseArray<View> shown = new SparseArray<>();
-        private Push back;
+        private Nav back;
         private ScrollView scroll;
         private IntSupplier top;
         private ValueAnimator motion;
@@ -183,7 +192,7 @@ final class Swipe extends FrameLayout {
         }
 
         /** 第一页再往右滑就是返回。 */
-        void back(Push p) {
+        void back(Nav p) {
             back = p;
         }
 
@@ -411,76 +420,169 @@ final class Swipe extends FrameLayout {
         }
     }
 
-    // ---------- 底部面板下拉关闭 ----------
+    // ---------- 底部面板 ----------
 
     /**
-     * 底部面板的外框：往下拉跟手，拉过四分之一高度或快速下甩就带着速度收起（等于点面板外面），否则弹回。
-     * 面板里的列表还能往上滚时让给列表。
+     * 底部面板，像 iOS 的 sheet：从底下升起、背后一起渐暗；往下拉跟手，背后跟着变亮，拉过四分之一高度或快速下甩就带着
+     * 速度收下去，否则弹回；点面板外面、返回键、代码里的 dismiss() 也都先收下去再关。面板里的列表还能往上滚时让给列表。
+     * 窗口铺满整屏（遮罩自己画，盖住状态栏和导航栏后面），面板底部按导航栏和键盘的高度留空。内容放进 box。
      */
-    static final class Sheet extends LinearLayout {
-        private final Dialog dialog;
-        private final int slop, minFling;
-        private float downX, downY, startY;
-        private boolean dragging;
-        private VelocityTracker velocity;
+    static final class Sheet extends Dialog {
+        private static final int DIM = 0x6B;
+
+        final LinearLayout box;
+        private final FrameLayout root;
+        private final Activity owner;
         private ValueAnimator motion;
+        private boolean closing;
+        private int pad = -1;
 
-        Sheet(Context c, Dialog dialog) {
-            super(c);
-            this.dialog = dialog;
-            setOrientation(VERTICAL);
-            ViewConfiguration vc = ViewConfiguration.get(c);
-            slop = vc.getScaledTouchSlop();
-            minFling = vc.getScaledMinimumFlingVelocity() * 8;
-        }
-
-        @Override
-        public boolean onInterceptTouchEvent(MotionEvent e) {
-            track(e);
-            return dragging;
-        }
-
-        @Override
-        public boolean onTouchEvent(MotionEvent e) {
-            track(e);
-            return true;
-        }
-
-        private void track(MotionEvent e) {
-            int action = e.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN) {
-                downX = e.getRawX();
-                downY = e.getRawY();
-                dragging = false;
-                if (velocity == null) velocity = VelocityTracker.obtain();
-                else velocity.clear();
+        Sheet(Activity a) {
+            super(a);
+            owner = a;
+            requestWindowFeature(Window.FEATURE_NO_TITLE);
+            root = new FrameLayout(a);
+            root.setOnClickListener(v -> cancel()); // 点面板外面
+            box = new Box(a);
+            box.setClickable(true); // 面板上的点按不漏到外面
+            root.addView(box, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM));
+            setContentView(root);
+            Window w = getWindow();
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setLayout(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
+            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setWindowAnimations(0); // 进出场自己做
+            w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            w.getDecorView().setSystemUiVisibility(a.getWindow().getDecorView().getSystemUiVisibility()); // 状态栏图标颜色不变
+            if (Build.VERSION.SDK_INT >= 30) {
+                w.setDecorFitsSystemWindows(false);
+                WindowManager.LayoutParams lp = w.getAttributes();
+                lp.setFitInsetsTypes(0); // 浮动窗口默认让开系统栏，遮罩就盖不到状态栏和导航栏后面
+                w.setAttributes(lp);
+                root.setOnApplyWindowInsetsListener((v, insets) -> {
+                    if (pad < 0) pad = box.getPaddingBottom();
+                    int bottom = insets.getInsets(WindowInsets.Type.navigationBars() | WindowInsets.Type.ime()).bottom;
+                    box.setPadding(box.getPaddingLeft(), box.getPaddingTop(), box.getPaddingRight(), pad + bottom);
+                    return WindowInsets.CONSUMED;
+                });
             }
-            if (velocity != null) addRaw(velocity, e);
-            if (action == MotionEvent.ACTION_MOVE) {
-                float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
-                if (!dragging && dy > slop && dy > Math.abs(dx) * 1.5f && !scrollsUp(this, e.getX(), e.getY())) {
-                    dragging = true;
-                    if (motion != null) motion.cancel();
-                    startY = e.getRawY() - getTranslationY();
-                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+        }
+
+        @Override
+        public void show() {
+            closing = false;
+            box.setTranslationY(owner.getResources().getDisplayMetrics().heightPixels); // 第一帧在屏幕外
+            dim(0);
+            super.show();
+            box.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    box.getViewTreeObserver().removeOnPreDrawListener(this);
+                    slide(box.getHeight(), 0, 0, null);
+                    return true;
                 }
-                if (dragging) setTranslationY(Math.max(0, e.getRawY() - startY));
-            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                if (dragging) {
+            });
+        }
+
+        @Override
+        public void dismiss() {
+            if (closing) return;
+            if (!isShowing() || owner.isFinishing() || owner.isDestroyed() || box.getHeight() == 0) {
+                super.dismiss();
+                return;
+            }
+            close(0);
+        }
+
+        /** 带着速度收下去，收完再真的关。 */
+        private void close(float velocity) {
+            closing = true;
+            slide(box.getTranslationY(), box.getHeight(), velocity, () -> {
+                if (!owner.isDestroyed()) super.dismiss();
+            });
+        }
+
+        private void slide(float from, float to, float velocity, Runnable end) {
+            if (motion != null) motion.cancel();
+            motion = Spring.PAGE.fling(from, to, velocity, y -> {
+                box.setTranslationY(Math.max(0, y));
+                dim(1 - Math.max(0, y) / Math.max(1, box.getHeight()));
+            }, end);
+        }
+
+        private void dim(float p) {
+            root.setBackgroundColor(Color.argb(Math.round(DIM * Math.max(0, Math.min(1, p))), 0, 0, 0));
+        }
+
+        /** 面板本身：接住往下拉的手势。 */
+        private final class Box extends LinearLayout {
+            private final int slop, minFling;
+            private float downX, downY, startY;
+            private boolean dragging;
+            private VelocityTracker velocity;
+
+            Box(Context c) {
+                super(c);
+                setOrientation(VERTICAL);
+                ViewConfiguration vc = ViewConfiguration.get(c);
+                slop = vc.getScaledTouchSlop();
+                minFling = vc.getScaledMinimumFlingVelocity() * 8;
+            }
+
+            @Override
+            public boolean onInterceptTouchEvent(MotionEvent e) {
+                track(e);
+                return dragging;
+            }
+
+            @Override
+            public boolean onTouchEvent(MotionEvent e) {
+                track(e);
+                return true;
+            }
+
+            private void track(MotionEvent e) {
+                if (closing) return;
+                int action = e.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    downX = e.getRawX();
+                    downY = e.getRawY();
                     dragging = false;
-                    float vy = 0;
-                    if (velocity != null && action == MotionEvent.ACTION_UP) {
-                        velocity.computeCurrentVelocity(1000);
-                        vy = velocity.getYVelocity();
-                    }
-                    boolean close = action == MotionEvent.ACTION_UP
-                            && (getTranslationY() > getHeight() * 0.25f ? vy > -minFling : vy > minFling);
-                    motion = Spring.PAGE.fling(getTranslationY(), close ? getHeight() : 0, vy,
-                            y -> setTranslationY(Math.max(0, y)), close ? dialog::dismiss : null);
+                    if (velocity == null) velocity = VelocityTracker.obtain();
+                    else velocity.clear();
                 }
-                if (velocity != null) {
-                    velocity.recycle();
-                    velocity = null;
+                if (velocity != null) addRaw(velocity, e);
+                if (action == MotionEvent.ACTION_MOVE) {
+                    float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
+                    if (!dragging && dy > slop && dy > Math.abs(dx) * 1.5f && !scrollsUp(this, e.getX(), e.getY())) {
+                        dragging = true;
+                        if (motion != null) motion.cancel();
+                        startY = e.getRawY() - getTranslationY();
+                        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    if (dragging) {
+                        float y = Math.max(0, e.getRawY() - startY);
+                        setTranslationY(y);
+                        dim(1 - y / Math.max(1, getHeight()));
+                    }
+                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    if (dragging) {
+                        dragging = false;
+                        float vy = 0;
+                        if (velocity != null && action == MotionEvent.ACTION_UP) {
+                            velocity.computeCurrentVelocity(1000);
+                            vy = velocity.getYVelocity();
+                        }
+                        boolean close = action == MotionEvent.ACTION_UP
+                                && (getTranslationY() > getHeight() * 0.25f ? vy > -minFling : vy > minFling);
+                        if (close) close(vy);
+                        else slide(getTranslationY(), 0, vy, null);
+                    }
+                    if (velocity != null) {
+                        velocity.recycle();
+                        velocity = null;
+                    }
                 }
             }
         }

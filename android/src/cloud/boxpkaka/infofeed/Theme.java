@@ -1,5 +1,6 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.LayoutTransition;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.animation.StateListAnimator;
@@ -21,7 +22,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
-import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -181,6 +182,24 @@ final class Theme {
         return ripple(color, top, top, bottom, bottom);
     }
 
+    /**
+     * 内容变了不跳：新出现的淡入，消失的淡出，其余的平滑挪到新位置，外面的容器高度也跟着平滑变。
+     * 只给原地更新内容的容器用；整块清空重建的容器别用，新旧内容会一起淡入淡出。
+     */
+    static void smooth(ViewGroup... groups) {
+        for (ViewGroup g : groups) {
+            LayoutTransition lt = new LayoutTransition();
+            lt.enableTransitionType(LayoutTransition.CHANGING);
+            lt.setDuration(280);
+            lt.setInterpolator(LayoutTransition.CHANGE_APPEARING, new DecelerateInterpolator(1.5f));
+            lt.setInterpolator(LayoutTransition.CHANGE_DISAPPEARING, new DecelerateInterpolator(1.5f));
+            lt.setInterpolator(LayoutTransition.CHANGING, new DecelerateInterpolator(1.5f));
+            lt.setStartDelay(LayoutTransition.APPEARING, 120); // 先让位，再淡入，两段叠着一点
+            lt.setStartDelay(LayoutTransition.CHANGE_DISAPPEARING, 80);
+            g.setLayoutTransition(lt);
+        }
+    }
+
     /** 把一列行排成分段列表：卡片色底，相隔 3dp，头尾大圆角。 */
     void segments(LinearLayout list) {
         int n = list.getChildCount();
@@ -245,11 +264,10 @@ final class Theme {
         return back;
     }
 
-    /** 底部弹出的面板：顶部圆角、拖动条、背景压暗，按住往下拉可以收起（见 Swipe.Sheet）。content 是面板里的内容。 */
+    /** 底部弹出的面板：顶部圆角、拖动条，从底下升起、背景一起渐暗，按住往下拉可以收起（见 Swipe.Sheet）。content 是面板里的内容。 */
     Dialog sheet(Activity a, View content) {
-        Dialog d = new Dialog(a);
-        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout box = new Swipe.Sheet(a, d);
+        Swipe.Sheet d = new Swipe.Sheet(a);
+        LinearLayout box = d.box;
         box.setPadding(0, dp(10), 0, dp(24));
         box.setBackground(round(bg, R_2XL, R_2XL, 0, 0));
         View grab = new View(a);
@@ -259,14 +277,6 @@ final class Theme {
         glp.bottomMargin = dp(14);
         box.addView(grab, glp);
         box.addView(content);
-        d.setContentView(box);
-        Window w = d.getWindow();
-        w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-        w.setGravity(Gravity.BOTTOM);
-        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        w.setDimAmount(0.42f);
-        w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         return d;
     }
 

@@ -205,10 +205,13 @@ public class FeedService extends Service {
             String body = m.optString("message");
             String click = m.optString("click");
             Intent open;
+            boolean page = false; // 详情、对话页：压在首页上面打开，右滑返回时下面是首页而不是桌面
             if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
+                page = true;
                 open = new Intent(this, EventActivity.class)
                         .putExtra(EventActivity.EXTRA_ID, Long.parseLong(click.substring(EVENT_LINK.length())));
             } else if (click.startsWith(THREAD_LINK)) { // 你问过的问题有答案了：回到原来的对话
+                page = true;
                 open = new Intent(this, ChatActivity.class)
                         .putExtra(ChatActivity.EXTRA_THREAD, Long.parseLong(click.substring(THREAD_LINK.length())));
             } else if (click.startsWith(REPORT_LINK)) { // 周报、月报：进首页的报告页，显示这一份
@@ -219,10 +222,17 @@ public class FeedService extends Service {
             } else {
                 open = new Intent(Intent.ACTION_VIEW, Uri.parse(click));
             }
-            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             int id = (int) (m.getLong("id") % 100000) + 1000;
-            PendingIntent pi = PendingIntent.getActivity(this, id, open,
-                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
+            PendingIntent pi;
+            if (page) { // 首页已经开着就回到它（关掉它上面的页面），再把这一页推上去
+                Intent home = new Intent(this, MainActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                pi = PendingIntent.getActivities(this, id, new Intent[]{home, open}, flags);
+            } else {
+                open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                pi = PendingIntent.getActivity(this, id, open, flags);
+            }
             Trace.log(this, "notify", "id=" + m.optLong("id") + " " + notifyState());
             nm.notify(id, new Notification.Builder(this, CHANNEL_MESSAGES)
                     .setSmallIcon(R.drawable.ic_notify)

@@ -34,6 +34,7 @@ import android.text.style.TypefaceSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -117,6 +118,8 @@ public class MainActivity extends Activity {
     private boolean loading, receiving;
     private final Set<Long> hidden = new HashSet<>();
     private long pendingDismiss = -1;
+    private final Set<Long> collapsing = new HashSet<>(); // 正在收起的行，列表重绑时别打断它的动画
+    private long expanding = -1; // 撤销后要展开的那一行
     private long answeredFor = -1; // 撤销条正在等哪件事的“记住了”回应
     private final Runnable commitDismiss = () -> commitDismiss(null);
     private final Runnable hideUndoLater = this::hideUndo;
@@ -191,7 +194,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         // 在详情页点了“不需要”：回到首页后和右滑一样移除并给出撤销
         if (request == REQ_EVENT && result == RESULT_OK && data != null) {
-            dismiss(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
+            dismissRow(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
         }
     }
 
@@ -226,8 +229,14 @@ public class MainActivity extends Activity {
             unregisterReceiver(receiver);
             receiving = false;
         }
-        if (feed != null) Store.setSeenAt(this, System.currentTimeMillis()); // 看过的事件下次不再算“新的”
         commitDismiss(null);
+    }
+
+    /** 真的离开了（不是上面盖了一张详情页）：看过的事件下次不再算“新的”。放在这里，看完详情回来“新”不会一下子都没了。 */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (feed != null) Store.setSeenAt(this, System.currentTimeMillis());
     }
 
     // ---------- 布局 ----------
@@ -438,14 +447,33 @@ public class MainActivity extends Activity {
         reports.show(parts[0], parts.length > 1 ? parts[1] : null);
     }
 
+    /** 专题卡片原地展开成专题页。 */
     private void openTopic(View from, JSONObject topic) {
-        Push.open(this, new Intent(this, TopicActivity.class)
+        Card.open(this, from, new Intent(this, TopicActivity.class)
                 .putExtra(TopicActivity.EXTRA_KEY, topic.optString("key"))
                 .putExtra(TopicActivity.EXTRA_TITLE, topic.optString("title")));
     }
 
-    private void openEvent(long id) {
-        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+    /** 报告里的一条展开成它说的那件事。 */
+    private void openEvent(View from, long id) {
+        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+    }
+
+    /**
+     * 列表里显示这件事的那张卡片：行会被复用，关详情页时按 id 重新找。同一件事可能既在“追踪中”又在下面的时间线里，
+     * follow 说明要找的是哪一种（追踪行后面没有“不需要”）。
+     */
+    private Card.Anchor rowAnchor(long id, boolean follow) {
+        return () -> {
+            for (int i = 0; i < list.getChildCount(); i++) {
+                Object tag = list.getChildAt(i).getTag();
+                if (tag instanceof Holder) {
+                    Holder h = (Holder) tag;
+                    if (h.id == id && (h.behind == null) == follow) return h.front;
+                }
+            }
+            return null;
+        };
     }
 
     private View buildHeader() {
@@ -657,6 +685,18 @@ public class MainActivity extends Activity {
 
     private void render() {
         if (feed == null) return;
+        // 往下翻过的时候，新内容插在上面也让正在看的那一行留在原地
+        String keep = null;
+        int keepTop = 0;
+        if (list.getFirstVisiblePosition() > 0) {
+            for (int i = 0; i < list.getChildCount() && keep == null; i++) {
+                int at = list.getFirstVisiblePosition() + i - list.getHeaderViewsCount();
+                if (at >= 0 && at < rows.size() && rows.get(at).e != null) {
+                    keep = rowKey(rows.get(at));
+                    keepTop = list.getChildAt(i).getTop();
+                }
+            }
+        }
         stopSkeleton();
         stateView.setVisibility(View.GONE);
         List<JSONObject> events = new ArrayList<>();
@@ -687,6 +727,17 @@ public class MainActivity extends Activity {
         JSONArray skipped = feed.optJSONArray("skipped");
         if (skipped != null && skipped.length() > 0) rows.add(skipAt < 0 ? rows.size() : skipAt, new Row(5, null, null));
         adapter.notifyDataSetChanged();
+        for (int i = 0; keep != null && i < rows.size(); i++) {
+            if (rows.get(i).e != null && keep.equals(rowKey(rows.get(i)))) {
+                this.list.setSelectionFromTop(i + this.list.getHeaderViewsCount(), keepTop);
+                break;
+            }
+        }
+    }
+
+    /** 一行是哪一种、哪一件：追踪行、答案行和时间线里的同一件事不能混。 */
+    private static String rowKey(Row r) {
+        return r.type + (ANSWER.equals(r.label) ? "a" : "") + ":" + r.e.optLong("id");
     }
 
     /** 一天：标题，最值得看的几件，其余按时间从新到旧。 */
@@ -797,25 +848,40 @@ public class MainActivity extends Activity {
             boolean first = rows.get(i - 1).type != r.type, last = i == rows.size() - 1 || rows.get(i + 1).type != r.type;
             if (r.type == 3) {
                 if (convert == null) convert = newFollowRow();
+                SwipeDismiss.unfold(convert);
                 if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e, first, last);
                 else bindFollow((Holder) convert.getTag(), r.e, first, last);
                 return convert;
             }
             if (convert == null) convert = r.type == 1 ? newTop() : newRow();
             Holder h = (Holder) convert.getTag();
-            SwipeDismiss.reset(h.front, h.behind);
+            long id = r.e.optLong("id");
+            if (!collapsing.contains(id)) { // 收起动画还在走的那一行不动它
+                SwipeDismiss.reset(h.front, h.behind);
+                SwipeDismiss.unfold(convert);
+            }
             h.front.setBackground(t.segment(t.sheet, first, last));
             float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
             h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
+            h.id = id;
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
-            h.front.setOnClickListener(v -> open(r.e));
-            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismiss(r.e.optLong("id"))));
+            h.front.setOnClickListener(v -> open(v, r.e));
+            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismissRow(id)));
+            if (id == expanding) { // 撤销移除：内容绑好以后量出高度，从无到有展开
+                expanding = -1;
+                if (convert.getLayoutParams() == null) {
+                    convert.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                }
+                SwipeDismiss.expand(convert, parent.getWidth());
+            }
             return convert;
         }
     }
 
     private static final class Holder {
+        long id = -1; // 显示的是哪件事，追踪行和答案行以外的分组标题等都是 -1
         View front, behind;
         TextView label, badge, num, headline, summary, meta, time;
     }
@@ -995,13 +1061,14 @@ public class MainActivity extends Activity {
         boolean fresh = n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen;
         show(h.label, fresh ? "新进展" : "");
         long id = f.optLong("id");
-        h.front.setOnClickListener(v -> {
-            Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
-        });
+        h.id = id;
+        h.front.setOnClickListener(v -> Card.open(this, v, rowAnchor(id, true),
+                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT));
     }
 
     /** 替你留意的问题有了答案：点开回到当时的对话，答案已经写在里面。 */
     private void bindAnswer(Holder h, JSONObject a, boolean first, boolean last) {
+        h.id = -1;
         h.front.setBackground(t.segment(t.pc, first, last));
         h.headline.setTextColor(t.onPc);
         h.summary.setTextColor(t.onPc);
@@ -1135,12 +1202,27 @@ public class MainActivity extends Activity {
 
     // ---------- 打开与移除 ----------
 
-    /** 打开详情页：带上列表里的数据，详情页先显示出来。 */
-    private void open(JSONObject e) {
+    /** 这张卡片原地展开成详情页：带上列表里的数据，详情页一开始就有内容。 */
+    private void open(View card, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
                 .putExtra(EventActivity.EXTRA_JSON, e.toString());
-        Push.open(this, i, REQ_EVENT);
+        Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
+    }
+
+    /** 右滑或在详情页点了“不需要”：这一行平滑收起、下面的跟上来，收完再真正移走。 */
+    private void dismissRow(long id) {
+        View card = id < 0 ? null : rowAnchor(id, false).find();
+        View row = card == null ? null : (View) card.getParent();
+        if (row == null || !row.isShown()) {
+            dismiss(id);
+            return;
+        }
+        collapsing.add(id);
+        SwipeDismiss.collapse(row, () -> {
+            collapsing.remove(id);
+            dismiss(id);
+        });
     }
 
     private void dismiss(long id) {
@@ -1168,9 +1250,17 @@ public class MainActivity extends Activity {
     private void undoDismiss() {
         main.removeCallbacks(commitDismiss);
         if (pendingDismiss >= 0) hidden.remove(pendingDismiss);
+        expanding = pendingDismiss;
         pendingDismiss = -1;
         hideUndo();
         render();
+        list.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() { // 这一轮排版没轮到它（不在屏幕上）就不展开了，免得以后滚到时才突然动
+                list.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                expanding = -1;
+            }
+        });
     }
 
     private JSONObject findEvent(long id) {
@@ -1447,9 +1537,8 @@ public class MainActivity extends Activity {
         wl.leftMargin = t.dp(12);
         row.addView(want, wl);
         long id = s.optLong("id");
-        row.setOnClickListener(v -> {
-            Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
-        });
+        row.setOnClickListener(v -> Card.open(this, v,
+                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT));
         want.setOnClickListener(v -> {
             want.setEnabled(false);
             want.setText("记下中…");
