@@ -8,7 +8,7 @@
 
 | 阶段 | 状态 |
 |---|---|
-| 信号采集（GitHub / GitHub Trending / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit / AINews 的 X 热帖 / DeepSeek 搜索 / 页面监控；新模型上架看 OpenRouter 和 HF 各家机构，科技快讯看 Techmeme，AI 新产品看 Product Hunt，AI 创投看 TechCrunch Venture / Crunchbase News / The Information / 极客公园；另有研究博客（Anthropic Research / Microsoft Research / Apple ML）、AI 媒体（The Decoder / MarkTechPost / MIT Technology Review / The Verge / Ars Technica）、中文媒体（量子位 / InfoQ）、专家博客（Simon Willison / Interconnects / Latent Space / Ahead of AI / One Useful Thing / SemiAnalysis / 宝玉）、厂商博客（ElevenLabs / Cursor）和播客（Lex Fridman / Practical AI / TWIML），后三类只推重要的；GitHub Trending 和 HF 模型热榜另记每天的名次） | ✅ 每 10 分钟检查，各来源按自己的采样间隔（10 分钟～6 小时）采集 |
+| 信号采集（GitHub / GitHub Trending / HF / arXiv / HN / 官方博客 / Google News / YouTube / Reddit / AINews 的 X 热帖 / DeepSeek 搜索 / 页面监控；新模型上架看 OpenRouter 和 HF 各家机构，科技快讯看 Techmeme，AI 新产品看 Product Hunt，AI 创投看 TechCrunch Venture / Crunchbase News / The Information / 极客公园；另有研究博客（Anthropic Research / Microsoft Research / Apple ML）、AI 媒体（The Decoder / MarkTechPost / MIT Technology Review / The Verge / Ars Technica）、中文媒体（量子位 / InfoQ）、专家博客（Simon Willison / Interconnects / Latent Space / Ahead of AI / One Useful Thing / SemiAnalysis / 宝玉）、厂商博客（ElevenLabs / Cursor）和播客（Lex Fridman / Practical AI / TWIML），后三类只推重要的；GitHub Trending 和 HF 模型热榜另记每天的名次） | ✅ 每 10 分钟检查，各来源按自己的采样间隔（10 分钟～6 小时）采集，失败的 20 分钟后重试 |
 | 事件合并：规则聚类 + DeepSeek 合并同一件事，事件持久化有固定 id | ✅ |
 | 排序：规则分（兴趣、来源、多源、热度）× 模型给的重要性；每个事件有 AI 简报（先读主来源原文，写概要和要点，不用点开链接也知道主要内容）和 AI 解读（新在哪、可能的影响、值得留意的局限，和只写事实的概要分开）；App 上的英文来源标题都翻成中文 | ✅ |
 | 推送：能推的都推（模型判定为新闻、还没推过的事件，不限条数；排在后面但正热门的新闻也会判断；只出现在 GitHub Trending 等榜单或创投媒体上的要模型判为“重要”才推送、才进信息流，一般的留在专题里），不感兴趣的在首页右滑“不需要”，从反馈里学；23:00～8:00 只推重要性 5 的重大消息，其余早上合成一条早报 | ✅ 经 `../infofeed` 的 hub 送达 |

@@ -69,11 +69,18 @@ class FeedSourceTest(unittest.TestCase):
         store, now = Store(":memory:"), datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
         sources = build_sources({"fast": {"type": "feed", "feeds": [], "interval": 10},
                                  "slow": {"type": "feed", "feeds": [], "interval": 360},
-                                 "never": {"type": "feed", "feeds": []}})
+                                 "never": {"type": "feed", "feeds": []},
+                                 "watch": {"type": "page_watch", "pages": [], "interval": 360}})
         store.record_run("fast", now - timedelta(minutes=7), 1, 0)  # 上一轮晚开始了几分钟，也算到期
-        store.record_run("slow", now - timedelta(hours=2), 0, 0, "boom")  # 失败了也等满间隔再试
+        store.record_run("slow", now - timedelta(hours=2), 5, 0)
+        store.record_run("watch", now - timedelta(minutes=20), 0, 0)  # 页面没变化本来就是 0 条，不算失败
         self.assertEqual(set(due(sources, store, now)), {"fast", "never"})
         store.record_run("fast", now - timedelta(minutes=4), 1, 0)
+        self.assertEqual(set(due(sources, store, now)), {"never"})
+        # 失败了不等满间隔，隔 RETRY 就再试：断网恢复后尽快补采
+        store.record_run("slow", now - timedelta(minutes=20), 0, 0, "boom")
+        self.assertEqual(set(due(sources, store, now)), {"never", "slow"})
+        store.record_run("slow", now - timedelta(minutes=10), 0, 0)  # 0 条也算失败，刚试过就等下一次
         self.assertEqual(set(due(sources, store, now)), {"never"})
 
     def test_health(self):
