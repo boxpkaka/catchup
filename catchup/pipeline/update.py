@@ -1,5 +1,5 @@
-"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、写简报 → 追踪进展 → 从反馈学习 → 推送
-→ 写到期的日报、周报、月报 → 翻译英文原文。
+"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、给新事件写简报 → 追踪进展 → 从反馈学习 → 推送
+→ 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
 """
@@ -18,6 +18,9 @@ from . import answers, brief, follow, push, reports, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
+# 推送之后每轮最多重写的旧简报（记忆变了、补 AI 解读、补读原文）。一条约 3 秒，记忆一变要重写两百条，
+# 一次写完要十分钟以上，会挡住下一轮采集；分到几轮里写
+REWRITES = 30
 
 
 def ranked(config: Config, store: Store, now: datetime) -> tuple[list, list[Event]]:
@@ -26,15 +29,16 @@ def ranked(config: Config, store: Store, now: datetime) -> tuple[list, list[Even
     return signals, personal.build_ranker(config, store, now).rank(group_events(signals), now)
 
 
-def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = None, top: int | None = None) -> int:
-    """按当前记忆给前排事件写或重写简报（记忆变了的、有新报道的、还没有简报的）。
+def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = None, top: int | None = None,
+                   rewrites: int | None = None) -> int:
+    """按当前记忆给前排事件写或重写简报（记忆变了的、有新报道的、还没有简报的），只是要重写的最多 rewrites 条。
     不指定 top 时（每轮采集后）还包括排在后面但正热门的事件，见 brief.candidates。"""
     now = now or datetime.now(timezone.utc)
     _, events = ranked(config, store, now)
     sources = build_sources(config.sources)
     pool = events[:top] if top else brief.candidates(events, config.llm.get("brief_top", 25), sources)
     return brief.write_briefs(store, pool, personal.focus(config, store, now), llm, sources,
-                              now, len(pool), personal.memory_rev(store), brief.READ_WAIT)
+                              now, len(pool), personal.memory_rev(store), brief.READ_WAIT, rewrites)
 
 
 def update(config: Config, store: Store, now: datetime | None = None, llm=None, deliver: bool = True) -> dict:
@@ -52,7 +56,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
             stats["merged"] = brief.merge_duplicates(store, pool, llm, sources, len(pool))
         learned = personal.learn_from_feedback(config, store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
-        stats["briefs"] = refresh_briefs(config, store, llm, now)
+        stats["briefs"] = refresh_briefs(config, store, llm, now, rewrites=0)  # 新事件先写，赶上这一轮推送
         updates = follow.run(store, llm, now)
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
@@ -65,6 +69,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         push.deliver_answers(config.push, store, now)
         reports.deliver(config.push, store, now)
     if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报下一轮推送
+        stats["briefs"] += refresh_briefs(config, store, llm, now, rewrites=REWRITES)
         stats["topics"] = brief.assign_topics(store, events, llm, [i["name"] for i in config.interests])
         stats["reports"] = len(reports.run(config, store, llm, now))
         stats["translated"] = translate.run(store, llm, events, [
