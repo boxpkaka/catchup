@@ -8,7 +8,7 @@
 - **时间统一存 UTC ISO 字符串**（`util.to_iso`），`Store.recent` 依赖字符串比较。
 - **网络**：服务器的 mihomo 没开 TUN，直连时 Google、Hugging Face、YouTube、Reddit 都不通（DNS 被污染），所以 cron 的 `collect` 和 `catchup-web` 都显式设置 `http_proxy`/`https_proxy=http://127.0.0.1:7890`，`no_proxy=localhost,127.0.0.1` 放行本机的推送 hub。手动测试用同一组变量，不要依赖当前 shell：`clauded` 会话设了 `no_proxy=*`，等于全部直连。
 - **Reddit 公开 RSS 限流严**：版块间隔默认 60 秒，一次完整采集约 4 分钟。
-- **采集频率**：cron 每 10 分钟跑一次 `collect`，各来源按自己的 `interval` 判断是否到期（`collector.due`），`--only` 不看间隔；上一轮没跑完时靠 `data/collect.lock` 跳过。`update` 每轮都跑，新加按时间触发或按次计费的逻辑要自己限频（参考 `follow.SEARCH_EVERY`、只发一次的早报 `push.morning`）。
+- **采集频率**：cron 每 10 分钟跑一次 `collect`，各来源按自己的 `interval` 判断是否到期（`collector.due`），上次失败（报错或 0 条）的隔 `collector.RETRY`（20 分钟）就重试，`--only` 不看间隔；上一轮没跑完时靠 `data/collect.lock` 跳过。`update` 每轮都跑，新加按时间触发或按次计费的逻辑要自己限频（参考 `follow.SEARCH_EVERY`、只发一次的早报 `push.morning`）。
 - `.env` 含 `GITHUB_TOKEN`，不要读出内容或写进日志。
 - 推送服务仍在 `../infofeed`（`feed.py` / `hub.py`），本项目采集、预览，并维护安卓 App（`android/`，从 `../infofeed/android` 迁入）。
 - **App 签名**：`android/release.keystore` 和 `.env` 的 `APK_KEYSTORE_PASS` 不入库、不要读出。包名 `cloud.boxpkaka.infofeed` 和签名都不能改，否则已装的 App 无法覆盖升级。
