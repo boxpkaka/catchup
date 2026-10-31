@@ -108,6 +108,17 @@ class EventTest(unittest.TestCase):
                          (4, 2, "全双工语音模型多了一个开源选择。"))
         self.assertEqual(brief.write_briefs(self.store, events, "关注语音", llm, {}, NOW, memory_rev=1), 1)  # 记忆变了就重写
 
+    def test_rewrites_wait_and_are_capped(self):
+        assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice"),
+                                           sig("https://b/1", "Kimi ships a coding model")), NOW)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        llm = FakeLLM()
+        self.assertEqual((len(events), brief.write_briefs(self.store, events[:1], "", llm, {}, NOW)), (2, 1))
+        # 记忆变了：新事件照写，旧简报推送前不重写（rewrites=0），推送后每次最多重写 rewrites 条
+        self.assertEqual(brief.write_briefs(self.store, events, "", llm, {}, NOW, memory_rev=1, rewrites=0), 1)
+        self.assertEqual(brief.write_briefs(self.store, events, "", llm, {}, NOW, memory_rev=1, rewrites=1), 1)
+        self.assertEqual(brief.write_briefs(self.store, events, "", llm, {}, NOW, memory_rev=1, rewrites=1), 0)
+
     def test_briefs_are_rewritten_once_the_original_is_read(self):
         assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice")), NOW)
         events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
@@ -144,12 +155,34 @@ class PushTest(unittest.TestCase):
         opts = {}
         self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 5)  # 过了门槛的都推，不限条数
         self.assertEqual(push.select(opts, self.store, self.events, NOW.replace(hour=16)), [])  # 北京时间 0 点
+        self.store.con.execute("update briefs set importance = 5 where event_id = ?", (self.events[0].id,))
+        night = push.select(opts, self.store, self.events, NOW.replace(hour=16))
+        self.assertEqual([e.id for e in night], [self.events[0].id])  # 重大消息夜里照推
+        self.store.con.execute("update briefs set importance = 4")
         for e in self.events[:2]:
             self.store.record_push(e.id, NOW - timedelta(minutes=30))
         self.assertEqual(len(push.select(opts, self.store, self.events, NOW)), 3)  # 推过的不再推
         self.store.set_feedback(self.events[2].id, "not_needed", NOW)
         picked = push.select(opts, self.store, self.events, NOW)
         self.assertNotIn(self.events[2].id, [e.id for e in picked])
+
+    def test_new_events_are_pushed_before_old_briefs_are_rewritten(self):
+        from catchup import personal
+        from catchup.pipeline import update
+        for e in self.events:
+            self.store.record_push(e.id, NOW - timedelta(hours=1))
+        personal.bump(self.store)  # 记忆变了，五份旧简报都要重写
+        self.store.add([sig("https://kimi.example/asr", "Kimi ships speech recognition for meetings")], now=NOW)
+        rev, at_push = personal.memory_rev(self.store), []
+
+        def send(title, message, click):  # 推送那一刻有几份简报是按新记忆写的
+            at_push.append(sum(b["memory_rev"] == rev for b in self.store.briefs(range(1, 100)).values()))
+            return True
+
+        with mock.patch("catchup.pipeline.push._send", side_effect=send), \
+                mock.patch("catchup.reader.tool", side_effect=OSError("offline")):
+            stats = update.update(config(), self.store, NOW, FakeLLM())
+        self.assertEqual((at_push, stats["pushed"], stats["briefs"]), ([1], 1, 6))  # 先推新事件，推完再重写旧的
 
     def test_low_importance_is_not_pushed(self):
         self.store.con.execute("update briefs set importance = 2")  # 边缘信息不推，一般动态就推

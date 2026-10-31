@@ -2,7 +2,7 @@
 
 原则：能推的都推，不限条数，不感兴趣的由用户在首页右滑“不需要”，从反馈里学到的记忆再让简报的重要性判断收紧。
 只推模型判定为新闻（重要性至少是“一般动态”；只出现在榜单、创投媒体这类只推重要的来源上的要“重要”）、还没推过的事件；
-夜里不推（攒到早上合成一条早报）。参数见 config.json 的 push。
+夜里只推重大消息，其余攒到早上合成一条早报。参数见 config.json 的 push。
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ log = logging.getLogger(__name__)
 DEFAULTS = {
     "min_importance": 3,     # 模型给的重要性至少是“一般动态”，边缘信息和噪声不推
     "board_min_importance": 4,  # 只出现在榜单（GitHub Trending 等）或创投媒体上的一天几十条，要“重要”才推，见 strict_sources
-    "quiet_hours": [23, 8],  # 本地时间 23:00～8:00 不推
+    "quiet_hours": [23, 8],  # 本地时间 23:00～8:00 只推重大消息
+    "night_min_importance": 5,  # 免打扰时段的门槛：行业重大发布、关注领域的关键进展照常推，几天才有一件
     "utc_offset": 8,
     "max_age_hours": 24,     # 最新报道超过这个时间的事件不再推
 }
@@ -55,15 +56,14 @@ def min_importance(options: dict, event: Event, strict) -> int:
 
 def select(options: dict, store, events: list[Event], now: datetime, strict=frozenset()) -> list[Event]:
     opt = {**DEFAULTS, **options}
-    if quiet(opt, now):
-        return []
+    night = opt["night_min_importance"] if quiet(opt, now) else 0
     pushed, feedback = store.pushed(), store.feedback()
     briefs = store.briefs(e.id for e in events)
     candidates = [
         e for e in events
         if e.id not in pushed and feedback.get(e.id) != "not_needed" and e.id in briefs
         and not any(s.source == SHARED for s in e.signals)  # 用户自己分享的，不用再推给他
-        and briefs[e.id]["importance"] >= min_importance(opt, e, strict)
+        and briefs[e.id]["importance"] >= max(min_importance(opt, e, strict), night)
         and now - max(s.published for s in e.signals) <= timedelta(hours=opt["max_age_hours"])
     ]
     candidates.sort(key=lambda e: -final_score(e, briefs[e.id]))

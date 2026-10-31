@@ -110,21 +110,26 @@ def assign_topics(store, events: list[Event], llm, names: list[str]) -> int:
 
 
 def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str, Source],
-                 now: datetime, top: int = 25, memory_rev: int = 0, read_wait: float = 0) -> int:
+                 now: datetime, top: int = 25, memory_rev: int = 0, read_wait: float = 0,
+                 rewrites: int | None = None) -> int:
     """给排名前 top 的事件写简报；已有简报、没有新报道、记忆没变过且已有 AI 解读的跳过。返回新写的条数。
 
     focus 是“读者是谁”的描述（配置兴趣 + 个人记忆，见 personal.focus），记忆变化后 memory_rev 变大，简报按新记忆重写。
     写之前读主来源的原文，最多等 read_wait 秒，为 0 时只用已缓存的原文。之前没读到原文写的简报（points 为 None），
     这次读到了就重写。
+    还没有简报、有新报道的总是写；只是要重写的（记忆变了、缺 AI 解读、补读原文）这次最多写 rewrites 条，None 不限。
     """
     pool = events[:top]
     existing = store.briefs(e.id for e in pool)
-    stale = [e for e in pool if not (old := existing.get(e.id))
-             or old["signal_count"] < len(e.signals) or old["memory_rev"] < memory_rev or old["insight"] is None]
-    unread = [e for e in pool if e not in stale and existing[e.id]["points"] is None]
-    originals = chat.read_pages(store, [e.lead.url for e in stale + unread], now, read_wait)
+    fresh = [e for e in pool if not (old := existing.get(e.id)) or old["signal_count"] < len(e.signals)]
+    redo = [e for e in pool if e not in fresh
+            and (existing[e.id]["memory_rev"] < memory_rev or existing[e.id]["insight"] is None)][:rewrites]
+    unread = [e for e in pool if e not in fresh and e not in redo and existing[e.id]["points"] is None]
+    if rewrites is not None:
+        unread = unread[:rewrites - len(redo)]
+    originals = chat.read_pages(store, [e.lead.url for e in fresh + redo + unread], now, read_wait)
     written = 0
-    for e in stale + [e for e in unread if originals.get(e.lead.url) is not None]:
+    for e in fresh + redo + [e for e in unread if originals.get(e.lead.url) is not None]:
         reports = "\n".join(f"- [{_label(s, sources)}] {s.title}\n  {s.summary[:200]}" for s in e.signals[:8])
         original = originals.get(e.lead.url)
         if original:
