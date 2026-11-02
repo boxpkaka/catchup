@@ -235,6 +235,16 @@ class AppApiTest(unittest.TestCase):
         self.assertEqual(self.store.feedback(), {})
         self.assertEqual(self.store.devices()[1]["readonly"], True)
 
+    def test_share_key_approves_as_readonly(self):
+        owner = self.call("POST", "/v1/devices", body={"name": "V2505A"})[1]
+        friend = self.call("POST", "/v1/devices", body={"name": "friend"})[1]
+        with mock.patch.dict("os.environ", {"SHARE_KEY": "k"}):
+            self.assertEqual(self.call("POST", "/v1/key", friend["token"], {"key": "x"}), (403, {"error": "密钥不对"}))
+            self.assertEqual(self.call("GET", "/v1/feed", friend["token"])[0], 403)
+            self.assertEqual(self.call("POST", "/v1/key", friend["token"], {"key": " k "})[1]["readonly"], True)
+            self.assertEqual(self.call("POST", "/v1/key", owner["token"], {"key": "k"})[1]["readonly"], False)
+        self.assertEqual([(d["approved"], d["readonly"]) for d in self.store.devices()], [(1, 0), (1, 1)])
+
     def test_feed_detail_and_feedback(self):
         token = self.call("POST", "/v1/devices", body={"name": "p"})[1]["token"]
         with mock.patch("catchup.web.app_api.datetime") as dt, mock.patch("catchup.chat.prefetch"):
