@@ -27,7 +27,7 @@
 
 ## 💡 为什么是 Catchup
 
-刷信息流的问题是：同一件事在十个地方各看一遍，重要的消息混在噪音里，看完之后的进展也没人告诉你。Catchup 换了三个出发点：
+**不用刷，重要的不会错过。** 刷信息流的问题是：同一件事在十个地方各看一遍，重要的消息混在噪音里，看完之后的进展也没人告诉你。Catchup 换了三个出发点：
 
 | | Feed-first 信息流 | Catchup |
 |:--|:--|:--|
@@ -37,7 +37,7 @@
 
 调性：Catchup 是你的私人助手，像一位和蔼、体贴、靠得住的管家或秘书，替你留意、帮你整理、把要紧的先告诉你。App 文案、推送和模型写给你的话（对话、报告、记忆的提问）都是这个口吻：温和、有分寸，有看法但不说教，建议说成可选的，不催促、不制造焦虑。写给模型的语气要求在 `catchup/tone.py`。
 
-> 完整的产品思路见 `~/Catchup_for_AI_Product_Thesis.pdf`（作者本机文档）。
+> 完整的产品思路（要解决什么问题、为什么先做 AI、怎么判断做对了）见 [产品思路](docs/product.md)。
 
 ## ✨ 功能
 
@@ -94,7 +94,7 @@
 - 不感兴趣的在首页右滑“不需要”，从反馈里学。
 - 23:00～8:00 只推重要性 5 的重大消息，其余早上合成一条早报。
 - 持续追踪：主动搜后续，只推实质进展。
-- 经 `../infofeed` 的 hub 送达。
+- 经推送 hub（独立的 infofeed 服务，不在本仓库）送达。
 
 **报告**
 
@@ -232,7 +232,7 @@ python3 -m unittest                   # 测试
 |:--|:--|
 | `catchup collect`（cron，每 10 分钟） | 采集到期的来源，之后归并事件、写简报、推送 |
 | `catchup serve`（systemd 用户服务 `catchup-web`） | 预览页和 App 接口 `/v1`，只监听本机 `127.0.0.1:2591` |
-| `../infofeed` 的 hub | 推送通道（`/stream` 免认证，`/publish` 需要 `FEED_TOKEN`），并分发 App（`/app/version`、`/app.apk`） |
+| 推送 hub（infofeed，独立服务，不在本仓库） | 推送通道（`/stream` 免认证，`/publish` 需要 `FEED_TOKEN`），并分发 App（`/app/version`、`/app.apk`） |
 | Caddy | 对外入口 `https://43.139.27.91:8443`，证书由内部 CA 签发 |
 
 **常驻服务**
@@ -248,7 +248,7 @@ systemctl --user restart catchup-web
 Google、Hugging Face、YouTube、Reddit 在服务器上直连不通，所以采集走本机 mihomo 代理，国内站点由 mihomo 规则直连；`catchup-web` 的 systemd 单元里也设了同样的 `Environment=`：
 
 ```cron
-*/10 * * * * cd /home/boxp/workspace/catchup && http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 no_proxy=localhost,127.0.0.1 /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
+*/10 * * * * cd /path/to/catchup && http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 no_proxy=localhost,127.0.0.1 python3 -m catchup collect >> logs/collect.log 2>&1
 ```
 
 **设备管理**
@@ -274,11 +274,11 @@ ssh -L 2591:127.0.0.1:2591 <server>
 - 首次安装：用手机浏览器打开 `https://43.139.27.91:8443/app.apk` 下载（浏览器会提示证书不受信任，选择继续访问即可）。
 - 打开即用，不需要令牌。
 - App 每次打开和下拉刷新时都检查一次更新，版本号比当前新就显示“新版本 … 已就绪”，点击后下载并调起系统安装；设置里也可以手动“检查更新”。
-- 手机在国内网络下连 GitHub 不稳定，所以 App 只访问推送用的同一个服务器：`../infofeed/hub.py` 从 `android/dist/` 提供 `/app/version` 和 `/app.apk`。[GitHub Releases](https://github.com/boxpkaka/catchup/releases) 只做存档。
+- 手机在国内网络下连 GitHub 不稳定，所以 App 只访问推送用的同一个服务器：推送 hub 从 `android/dist/` 提供 `/app/version` 和 `/app.apk`。[GitHub Releases](https://github.com/boxpkaka/catchup/releases) 只做存档。
 
 **构建与发布**
 
-不用 Gradle，`android/build.sh` 直接调用 SDK 工具打包（JDK 17 在 `~/.local/share/jdk17`，SDK 在 `~/.local/share/android-sdk`）。
+不用 Gradle，`android/build.sh` 直接调用 SDK 工具打包，需要 JDK 17 和 Android SDK（build-tools 35.0.0、platform android-35），SDK 路径用 `ANDROID_HOME` 指定，默认值见 `build.sh`。
 
 ```bash
 ./android/build.sh                  # 本地调试包 → android/build/infofeed.apk（版本 0.0.0-dev）

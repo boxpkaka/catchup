@@ -30,7 +30,7 @@ reads the originals to write briefs, ranks them by what it remembers about you, 
 
 ## 💡 Why Catchup
 
-The trouble with scrolling a feed: you read the same story in ten places, the important news is buried in noise, and nobody tells you what happened next. Catchup starts from three different principles:
+**Stop checking. You won't miss it.** The trouble with scrolling a feed: you read the same story in ten places, the important news is buried in noise, and nobody tells you what happened next. Catchup starts from three different principles:
 
 | | Feed-first | Catchup |
 |:--|:--|:--|
@@ -40,7 +40,7 @@ The trouble with scrolling a feed: you read the same story in ten places, the im
 
 Tone: Catchup is your personal assistant, like a kind, considerate and dependable butler or secretary who keeps an eye out for you, tidies things up and tells you what matters first. App copy, pushes and everything the model writes to you (chats, reports, memory questions) share this voice: gentle and measured, with opinions but no lecturing, suggestions offered as options, never rushing you or stirring up anxiety. The tone instructions given to the model live in `catchup/tone.py`.
 
-> The full product thesis is in `~/Catchup_for_AI_Product_Thesis.pdf` (a local document on the author's machine, in Chinese).
+> The full product thesis (the problem, why AI first, how to tell it works) is in [docs/product.md](docs/product.md) (in Chinese).
 
 ## ✨ Features
 
@@ -97,7 +97,7 @@ Tone: Catchup is your personal assistant, like a kind, considerate and dependabl
 - Swipe right on the home page for "Not interested"; it learns from that feedback.
 - From 23:00 to 8:00 only importance-5 major news is pushed; the rest is combined into one morning digest.
 - Follow-ups: searches for later coverage and pushes only real progress.
-- Delivered through the hub in `../infofeed`.
+- Delivered through the push hub (infofeed, a separate service outside this repo).
 
 **Reports**
 
@@ -235,7 +235,7 @@ This is how it runs on the author's server:
 |:--|:--|
 | `catchup collect` (cron, every 10 minutes) | Collects due sources, then merges events, writes briefs and pushes |
 | `catchup serve` (systemd user service `catchup-web`) | Preview page and app API `/v1`, listening only on `127.0.0.1:2591` |
-| The hub in `../infofeed` | Push channel (`/stream` needs no auth, `/publish` needs `FEED_TOKEN`) and app distribution (`/app/version`, `/app.apk`) |
+| Push hub (infofeed, a separate service outside this repo) | Push channel (`/stream` needs no auth, `/publish` needs `FEED_TOKEN`) and app distribution (`/app/version`, `/app.apk`) |
 | Caddy | Public entry point `https://43.139.27.91:8443`, with a certificate from its internal CA |
 
 **Long-running service**
@@ -251,7 +251,7 @@ systemctl --user restart catchup-web
 Google, Hugging Face, YouTube and Reddit can't be reached directly from the server, so collection goes through the local mihomo proxy, and mihomo rules send domestic sites direct; the `catchup-web` systemd unit sets the same `Environment=`:
 
 ```cron
-*/10 * * * * cd /home/boxp/workspace/catchup && http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 no_proxy=localhost,127.0.0.1 /usr/bin/python3 -m catchup collect >> logs/collect.log 2>&1
+*/10 * * * * cd /path/to/catchup && http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 no_proxy=localhost,127.0.0.1 python3 -m catchup collect >> logs/collect.log 2>&1
 ```
 
 **Devices**
@@ -277,11 +277,11 @@ Written in plain Java against the Android SDK only, supporting Android 10 (API 2
 - First install: open `https://43.139.27.91:8443/app.apk` in the phone's browser (it will warn that the certificate isn't trusted; choose to continue).
 - Works right after opening, no token needed.
 - The app checks for updates on every launch and pull-to-refresh; when the version is newer it shows "New version … ready", and tapping it downloads the APK and opens the system installer. You can also "Check for updates" manually in settings.
-- GitHub is unreliable from phones on networks in mainland China, so the app only talks to the same server used for push: `../infofeed/hub.py` serves `/app/version` and `/app.apk` from `android/dist/`. [GitHub Releases](https://github.com/boxpkaka/catchup/releases) are an archive only.
+- GitHub is unreliable from phones on networks in mainland China, so the app only talks to the same server used for push: the push hub serves `/app/version` and `/app.apk` from `android/dist/`. [GitHub Releases](https://github.com/boxpkaka/catchup/releases) are an archive only.
 
 **Build and release**
 
-No Gradle: `android/build.sh` packages the app by calling the SDK tools directly (JDK 17 in `~/.local/share/jdk17`, SDK in `~/.local/share/android-sdk`).
+No Gradle: `android/build.sh` packages the app by calling the SDK tools directly. It needs JDK 17 and the Android SDK (build-tools 35.0.0, platform android-35); point `ANDROID_HOME` at the SDK, defaults are in `build.sh`.
 
 ```bash
 ./android/build.sh                  # local debug build → android/build/infofeed.apk (version 0.0.0-dev)
