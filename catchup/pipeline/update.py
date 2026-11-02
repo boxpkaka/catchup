@@ -1,5 +1,5 @@
 """采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、给新事件写简报 → 追踪进展 → 从反馈学习 → 推送
-→ 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 翻译英文原文。
+→ 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
 """
@@ -14,7 +14,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import answers, brief, follow, push, reports, translate
+from . import answers, brief, follow, intros, push, reports, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "translated": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "intros": 0, "translated": 0}
     _, events = ranked(config, store, now)
     updates = []
     if llm:
@@ -72,6 +72,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["briefs"] += refresh_briefs(config, store, llm, now, rewrites=REWRITES)
         stats["topics"] = brief.assign_topics(store, events, llm, [i["name"] for i in config.interests])
         stats["reports"] = len(reports.run(config, store, llm, now))
+        stats["intros"] = intros.run(store, llm, sources, now)  # 写成中文，翻译那一步就不用再翻
         stats["translated"] = translate.run(store, llm, events, [
             x["summary"][:translate.SUMMARY_CHARS] for name in boards for x in store.board(name)])
     log.info("update: %s", stats)

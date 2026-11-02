@@ -164,6 +164,12 @@ class Store:
         r = self.con.execute("select event_id from signals where url = ?", (url,)).fetchone()
         return r[0] if r else None
 
+    def set_summaries(self, summaries: dict[str, str]) -> None:
+        """补上采集时没有的摘要（URL → 摘要），已有摘要的不覆盖。"""
+        self.con.executemany("update signals set summary = ? where url = ? and coalesce(summary, '') = ''",
+                             [(text, url) for url, text in summaries.items()])
+        self.con.commit()
+
     def recent(self, since: datetime, until: datetime) -> list[Signal]:
         rows = self.con.execute(f"select {COLUMNS}, event_id from signals where published >= ? and published <= ?",
                                 (to_iso(since), to_iso(until))).fetchall()
@@ -541,11 +547,13 @@ class Store:
         self.con.commit()
 
     def board(self, source: str) -> list[dict]:
-        """榜单来源每个榜最近一次抓到的名次，按榜和名次排；first_seen 用来看新上榜、连续上榜了多久。"""
+        """榜单来源每个榜最近一次抓到的名次，按榜和名次排；first_seen 用来看新上榜、连续上榜了多久。
+        榜上没有简介的（HF 模型）用信号表里后来补写的（pipeline/intros.py）。"""
         rows = self.con.execute(
-            "select channel, rank, url, title, summary, extra, first_seen from board_items b where source = ? "
-            "and last_seen = (select max(last_seen) from board_items where source = b.source and channel = b.channel) "
-            "order by channel, rank", (source,)).fetchall()
+            "select b.channel, b.rank, b.url, b.title, coalesce(nullif(b.summary, ''), s.summary, ''), b.extra, "
+            "b.first_seen from board_items b left join signals s on s.url = b.url where b.source = ? "
+            "and b.last_seen = (select max(last_seen) from board_items where source = b.source and channel = b.channel) "
+            "order by b.channel, b.rank", (source,)).fetchall()
         return [{"channel": r[0], "rank": r[1], "url": r[2], "title": r[3], "summary": r[4],
                  "extra": json.loads(r[5] or "{}"), "first_seen": r[6]} for r in rows]
 

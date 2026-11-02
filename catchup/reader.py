@@ -2,7 +2,7 @@
 
 - Google News：RSS 里给的是 Google 的跳转页，先向 Google 换出原文地址再读。
 - Reddit 帖子：JSON 接口对服务器 IP 返回 403，帖子的 RSS（/comments/<id>/.rss）可以直接读，含正文和评论。
-- Hugging Face 模型页：直接读模型卡 README.md。
+- Hugging Face 模型页：直接读模型卡 README.md；要申请才能下载的模型读不到（401），从模型页里渲染好的卡片取正文。
 - X 帖子：用官方嵌入接口 oEmbed 取正文，免费、不需要 Key，但长帖会被截断。
 OpenAI 官网、YouTube、头条 DeepSeek 也读不了，暂时只用摘要。
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 import urllib.parse
 
 from . import http
@@ -78,5 +79,14 @@ def _x_post(url: str) -> tuple[str, str]:
 
 
 def _model_card(repo: str) -> str:
-    text = http.get(f"https://huggingface.co/{repo}/raw/main/README.md").decode("utf-8", "replace")
+    try:
+        text = http.get(f"https://huggingface.co/{repo}/raw/main/README.md").decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code not in (401, 403):
+            raise
+        page = http.get(f"https://huggingface.co/{repo}").decode("utf-8", "replace")
+        start = page.find("model-card-content")
+        if start < 0:
+            raise
+        return clean_text(page[start:].split(">", 1)[-1], 20000)
     return re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S).strip()  # 去掉开头的 YAML 元数据

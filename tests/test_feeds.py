@@ -278,6 +278,14 @@ class ReaderTest(unittest.TestCase):
             self.assertEqual(reader.read("https://huggingface.co/KRAFTON/Raon-Speech-9B"),
                              ("KRAFTON/Raon-Speech-9B", "# Raon-Speech\n\nA 9B speech model."))
         get.assert_called_once_with("https://huggingface.co/KRAFTON/Raon-Speech-9B/raw/main/README.md")
+        # 要申请才能下载的模型 README 返回 401，改读模型页里渲染好的卡片
+        import urllib.error
+        page = b'<div data-props="{&quot;cls&quot;:&quot;model-card-content&quot;}"><h1>PersonaPlex</h1><p>Full duplex.</p>'
+        gated = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+        with mock.patch("catchup.reader.http.get", side_effect=[gated, page]) as get:
+            self.assertEqual(reader.read("https://huggingface.co/nvidia/personaplex-7b-v1"),
+                             ("nvidia/personaplex-7b-v1", "PersonaPlex Full duplex."))
+        get.assert_called_with("https://huggingface.co/nvidia/personaplex-7b-v1")
         with mock.patch("catchup.reader.tool", return_value={"content": "x"}) as tool:
             reader.read("https://huggingface.co/papers/2610.31066")  # 论文页不是模型
         tool.assert_called_once()
