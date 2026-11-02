@@ -1,7 +1,8 @@
 """手机 App 的接口，挂在 /v1 下，经 Caddy 的 https://43.139.27.91:8443/v1/* 对外。
 
 认证：App 首次启动调用 POST /v1/devices 换取令牌。还没有任何已批准设备时自动批准（只有本人使用），
-之后的新设备处于待确认状态，需要在服务器上运行 `python3 -m catchup devices approve <id>`。
+之后的新设备处于待确认状态，需要在服务器上运行 `python3 -m catchup devices approve <id>`；
+`devices mirror <id>` 批准为只读设备，只能读，所有写操作（反馈、追踪、对话、改记忆）都返回 403。
 数据库只存令牌的 sha256。
 
 handle() 返回 (状态码, JSON)；对话接口返回 (200, 生成器)，由 server.py 以 SSE 流式写回。
@@ -61,6 +62,8 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
     if not device["approved"]:
         return 403, {"error": "device not approved", "device": device}
     store.touch_device(device["id"], now)
+    if device["readonly"] and method != "GET":
+        return 403, {"error": "这台设备只能看，不能改"}
 
     if method == "GET" and path == "/v1/feed":
         return 200, feed(config, store, now, parse_time((query or {}).get("before")))

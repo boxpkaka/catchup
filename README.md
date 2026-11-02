@@ -36,13 +36,13 @@ python3 -m catchup collect            # 采集到了采样间隔的来源，之�
 python3 -m catchup collect --only youtube reddit   # 只采指定来源，不看采样间隔
 python3 -m catchup update --no-push   # 不采集，只重新归并事件、写简报（不推送）
 python3 -m catchup serve              # 预览页 http://127.0.0.1:2591，以及 App 接口 /v1
-python3 -m catchup devices            # 查看 App 设备；devices approve <id> 批准新设备
+python3 -m catchup devices            # 查看 App 设备；devices approve <id> 批准新设备，devices mirror <id> 批准为只读
 python3 -m unittest                   # 测试
 ```
 
 凭据放在 `.env`（参考 `.env.example`）：`GITHUB_TOKEN`（可选，提高额度）、`DEEPSEEK_API_KEY`（简报、合并和 DeepSeek 来源，没有则只跑规则部分）、`FEED_URL` / `FEED_TOKEN`（推送到 hub）。
 
-`catchup serve` 作为 systemd 用户服务 `catchup-web` 常驻（`systemctl --user restart catchup-web`）。App 经 Caddy 访问 `https://43.139.27.91:8443/v1/*`；第一台注册的设备自动批准，之后的新设备要用 `devices approve` 确认。
+`catchup serve` 作为 systemd 用户服务 `catchup-web` 常驻（`systemctl --user restart catchup-web`）。App 经 Caddy 访问 `https://43.139.27.91:8443/v1/*`；第一台注册的设备自动批准，之后的新设备要用 `devices approve` 确认。给别人用时用 `devices mirror` 批准为只读设备：内容和本人看到的一样（推送照收），但反馈、追踪、对话、改记忆都会被拒绝，不影响本人的推荐。
 
 定时任务（Google、Hugging Face、YouTube、Reddit 在服务器上直连不通，所以采集走本机 mihomo 代理，国内站点由 mihomo 规则直连；`catchup-web` 的 systemd 单元里也设了同样的 `Environment=`）：
 

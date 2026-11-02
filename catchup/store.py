@@ -99,6 +99,8 @@ MIGRATIONS = [
     """,
     # AI 解读：简报之外模型对这件事的看法（新在哪、影响、局限）；NULL 表示写简报时还没有这一项，会重写简报补上
     "alter table briefs add column insight text;",
+    # 只读设备（devices mirror）：看到的和本人一样，但不能反馈、对话或改记忆
+    "alter table devices add column readonly integer not null default 0;",
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
@@ -501,15 +503,17 @@ class Store:
         return cur.lastrowid
 
     def device_by_token(self, token_hash: str) -> dict | None:
-        r = self.con.execute("select id, name, approved from devices where token_hash = ?", (token_hash,)).fetchone()
-        return {"id": r[0], "name": r[1], "approved": bool(r[2])} if r else None
+        r = self.con.execute("select id, name, approved, readonly from devices where token_hash = ?",
+                             (token_hash,)).fetchone()
+        return {"id": r[0], "name": r[1], "approved": bool(r[2]), "readonly": bool(r[3])} if r else None
 
     def devices(self) -> list[dict]:
-        rows = self.con.execute("select id, name, approved, created, last_seen from devices order by id")
-        return [dict(zip(("id", "name", "approved", "created", "last_seen"), r)) for r in rows]
+        rows = self.con.execute("select id, name, approved, readonly, created, last_seen from devices order by id")
+        return [dict(zip(("id", "name", "approved", "readonly", "created", "last_seen"), r)) for r in rows]
 
-    def set_device_approved(self, device_id: int, approved: bool) -> bool:
-        n = self.con.execute("update devices set approved = ? where id = ?", (int(approved), device_id)).rowcount
+    def set_device_approved(self, device_id: int, approved: bool, readonly: bool = False) -> bool:
+        n = self.con.execute("update devices set approved = ?, readonly = ? where id = ?",
+                             (int(approved), int(readonly), device_id)).rowcount
         self.con.commit()
         return n > 0
 
