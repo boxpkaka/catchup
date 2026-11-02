@@ -102,6 +102,26 @@ class EventTest(unittest.TestCase):
         [e] = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
         self.assertEqual((e.id, len(e.signals)), (ids[0], 2))
 
+    def test_reports_bridging_two_events_do_not_chain_them(self):
+        assign_events(self.store, self.add(sig("https://b/1", "DeepSeek V4.1 Flash update lands")), NOW)
+        assign_events(self.store, self.add(sig("https://a/1", "Moonshot Kimi K3.1 Pro launch")), NOW)
+        recent = self.add(sig("https://c/1", "Kimi K3.1 Pro vs DeepSeek V4.1 Flash"),
+                          sig("https://d/1", "Moonshot Kimi K3.1 Pro tops benchmark"))
+        self.assertEqual(assign_events(self.store, recent, NOW), 0)
+        events = {e.id: sorted(s.url for s in e.signals) for e in group_events(self.store.recent(NOW - timedelta(days=3), NOW))}
+        self.assertEqual(sorted(events.values()), [["https://a/1", "https://d/1"], ["https://b/1", "https://c/1"]])
+
+    def test_llm_merge_keeps_different_repos_apart(self):
+        recent = self.add(sig("https://github.com/obra/superpowers", "obra/superpowers"),
+                          sig("https://github.com/pbakaus/impeccable", "pbakaus/impeccable"),
+                          sig("https://x.com/1", "Skill packs for coding agents trend on GitHub"))
+        assign_events(self.store, recent, NOW)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        llm = FakeLLM(groups=[[e.id for e in events]])
+        self.assertEqual(brief.merge_duplicates(self.store, events, llm, {}), 1)
+        events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+        self.assertEqual(sorted(len(e.signals) for e in events), [1, 2])
+
     def test_briefs_skip_unchanged_events(self):
         assign_events(self.store, self.add(sig("https://a/1", "Block unveils Dessa voice")), NOW)
         events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
