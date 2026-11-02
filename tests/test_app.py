@@ -223,6 +223,18 @@ class AppApiTest(unittest.TestCase):
         self.assertEqual(self.call("GET", "/v1/feed")[0], 401)
         self.assertEqual(self.call("GET", "/v1/me", second["token"])[1]["approved"], False)
 
+    def test_readonly_device_reads_but_cannot_write(self):
+        self.call("POST", "/v1/devices", body={"name": "V2505A"})
+        friend = self.call("POST", "/v1/devices", body={"name": "friend"})[1]
+        self.store.set_device_approved(friend["id"], True, readonly=True)
+        self.assertEqual(self.call("GET", "/v1/dismissed", friend["token"])[0], 200)
+        event_id = self.store.signal_event("https://a/1")
+        status, out = self.call("POST", f"/v1/events/{event_id}/feedback", friend["token"], {"value": "not_needed"})
+        self.assertEqual((status, out["error"]), (403, "这台设备只能看，不能改"))
+        self.assertEqual(self.call("POST", "/v1/memories", friend["token"], {"text": "x"})[0], 403)
+        self.assertEqual(self.store.feedback(), {})
+        self.assertEqual(self.store.devices()[1]["readonly"], True)
+
     def test_feed_detail_and_feedback(self):
         token = self.call("POST", "/v1/devices", body={"name": "p"})[1]["token"]
         with mock.patch("catchup.web.app_api.datetime") as dt, mock.patch("catchup.chat.prefetch"):

@@ -24,8 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     p_collect.add_argument("--no-update", action="store_true", help="只采集，不做事件、简报和推送")
     p_update = sub.add_parser("update", help="不采集，只做事件归并、简报和推送")
     p_update.add_argument("--no-push", action="store_true", help="不推送到手机")
-    p_devices = sub.add_parser("devices", help="查看或批准 App 设备")
-    p_devices.add_argument("action", nargs="?", choices=["list", "approve", "revoke"], default="list")
+    p_devices = sub.add_parser("devices", help="查看或批准 App 设备；mirror 批准为只读，跟着看但不改数据")
+    p_devices.add_argument("action", nargs="?", choices=["list", "approve", "mirror", "revoke"], default="list")
     p_devices.add_argument("id", nargs="?", type=int)
     p_serve = sub.add_parser("serve", help="启动只读预览页")
     p_serve.add_argument("--host")
@@ -70,11 +70,12 @@ def main(argv: list[str] | None = None) -> int:
         store = Store(config.db_path)
         if args.action != "list":
             if args.id is None:
-                parser.error("approve/revoke 需要设备 id")
-            if not store.set_device_approved(args.id, args.action == "approve"):
+                parser.error("approve/mirror/revoke 需要设备 id")
+            if not store.set_device_approved(args.id, args.action != "revoke", readonly=args.action == "mirror"):
                 parser.error(f"没有设备 {args.id}")
         for d in store.devices():
-            print(f"{d['id']:>3}  {'已批准' if d['approved'] else '待确认'}  {d['name']}  创建 {d['created']}  最近 {d['last_seen']}")
+            state = ("只读" if d["readonly"] else "已批准") if d["approved"] else "待确认"
+            print(f"{d['id']:>3}  {state}  {d['name']}  创建 {d['created']}  最近 {d['last_seen']}")
         return 0
 
     if args.command == "serve":
