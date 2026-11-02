@@ -426,7 +426,7 @@ final class Card implements Nav {
         s.bitmap = Bitmap.createBitmap(v.getWidth(), v.getHeight(), Bitmap.Config.ARGB_8888);
         v.draw(new Canvas(s.bitmap)); // draw() 不管控件自己的 alpha，藏着的卡片也拍得到
         s.radius = radius(v);
-        int c = s.bitmap.getPixel(s.bitmap.getWidth() / 2, Math.min(s.bitmap.getHeight() - 1, 4));
+        int c = s.bitmap.getPixel(s.bitmap.getWidth() / 2, Math.max(0, s.bitmap.getHeight() - 5)); // 底下取色：上面可能是封面
         s.color = Color.alpha(c) == 255 ? c : Color.TRANSPARENT;
         return s;
     }

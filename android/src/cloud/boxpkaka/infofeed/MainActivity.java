@@ -1,6 +1,7 @@
 package cloud.boxpkaka.infofeed;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -12,6 +13,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
@@ -43,6 +45,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.animation.AccelerateInterpolator;
+import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
@@ -63,16 +66,18 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
- * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗，3 以上带一行概要，其他只有标题；服务器已经取到封面的右边带小图。
- * 不按话题上色，话题写在来源前面；
- * 颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
+ * 一件一张彩色大卡片、带编号：有封面的大图在上面、融进照着封面铺的渐变底色，没有的用话题的专题色和徽记。其余按时间排成一条线，
+ * 不上色：重要性 4 以上加粗，3 以上带一行概要，其他只有标题；服务器已经取到封面的右边带小图，话题写在来源前面。
+ * 行里的颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
  * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销；追踪中的行右滑是取消追踪、答案不再显示），点开看详情。
  * 三页之间左右滑切换（左滑下一页），也可以点标签。
  * 专题页见 TopicsView，报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
@@ -129,6 +134,7 @@ public class MainActivity extends Activity {
     private long seenAtOpen, lastFetch;
     private boolean loading, receiving;
     private final Set<Long> hidden = new HashSet<>();
+    private final Map<Long, JSONObject> firstSeen = new HashMap<>(); // 见 first
     private long pendingDismiss = -1;
     private final Set<Long> collapsing = new HashSet<>(); // 正在收起的行，列表重绑时别打断它的动画
     private final Set<String> leaving = new HashSet<>(); // 追踪中正在收起的行（按 rowKey）
@@ -582,8 +588,8 @@ public class MainActivity extends Activity {
         blocks.setOrientation(LinearLayout.VERTICAL);
         blocks.addView(block(-1, 136, Theme.R_XL, 36));
         blocks.addView(block(96, 32, Theme.R_S, 30));
-        blocks.addView(block(-1, 180, Theme.R_XL, 44));
-        blocks.addView(block(-1, 180, Theme.R_XS, 3));
+        blocks.addView(block(-1, 320, Theme.R_XL, 44));
+        blocks.addView(block(-1, 180, Theme.R_XL, 10));
         s.addView(blocks, match());
         skeletonLoader = new Shapes.Loader(this, t.pri);
         skeletonLoader.setPadding(t.dp(11), t.dp(11), t.dp(11), t.dp(11));
@@ -985,8 +991,12 @@ public class MainActivity extends Activity {
                 SwipeDismiss.reset(h.front, h.behind);
                 SwipeDismiss.unfold(convert);
             }
-            h.front.setBackground(t.segment(t.sheet, first, last));
-            h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
+            if (r.type == 1) { // 最值得看是一张张分开的卡片，底色在 bindTop 里按封面或话题上
+                h.behind.setBackground(t.round(t.err, Theme.R_XL));
+            } else {
+                h.front.setBackground(t.segment(t.sheet, first, last));
+                h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
+            }
             h.id = id;
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
@@ -1030,6 +1040,7 @@ public class MainActivity extends Activity {
         View front, behind;
         TextView label, badge, num, headline, summary, meta, time;
         ImageView cover;
+        FrameLayout mark; // 最值得看的卡片右上角，没有封面时放话题的徽记
     }
 
     /** 每天的标题：大字，是这一天的起点。 */
@@ -1068,53 +1079,60 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 最值得看的一件：左边是加宽数字的编号，中间是“新”“要闻”、大字标题、两行概要和“时间 · 话题 · 来源”，有封面的右边是小图。 */
+    /**
+     * 最值得看的一件：一张彩色大卡片。有封面的最上面是铺满卡片宽度的大图，下面一段渐渐透明、融进卡片的渐变底色，
+     * 编号那一行压在融开的地方；没有封面的这一行右边是话题的徽记。往下是大字标题、概要和“时间 · 话题 · 来源”。颜色见 tone。
+     */
     private View newTop() {
         Holder h = new Holder();
-        LinearLayout item = new LinearLayout(this);
-        item.setPadding(t.dp(14), t.dp(16), t.dp(20), t.dp(16));
-        item.setClickable(true);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setClickable(true);
 
-        h.num = t.text(this, "", 26, t.ink, 800);
+        RoundImage cover = new RoundImage(this, t.dp(Theme.R_XL)); // 和卡片一样的圆角，上面两个角贴着卡片的角
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.fadeBottom(0.45f);
+        h.cover = cover;
+        int width = getResources().getDisplayMetrics().widthPixels - t.dp(12 * 2);
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, width * 9 / 16); // 高度先定好，图下来时卡片不跳
+        cl.bottomMargin = -t.dp(22);
+        card.addView(cover, cl);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(t.dp(20), t.dp(16), t.dp(20), t.dp(18));
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        h.num = t.text(this, "", 28, t.ink, 800);
         h.num.setTypeface(Theme.flex(this, 135, 800));
-        h.num.setGravity(Gravity.CENTER_HORIZONTAL);
-        h.num.setPadding(0, t.dp(2), 0, 0);
-        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(t.dp(44), ViewGroup.LayoutParams.WRAP_CONTENT);
-        nl.rightMargin = t.dp(4);
-        item.addView(h.num, nl);
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout tags = new LinearLayout(this); // 不要垂直居中：居中时标签的下边距会把它往上推，顶部被裁掉
+        head.addView(h.num, gapLp(10));
         h.label = newLabel("新");
-        LinearLayout.LayoutParams ll = gapLp(6);
-        ll.bottomMargin = t.dp(8);
-        tags.addView(h.label, ll);
+        head.addView(h.label, gapLp(6));
         h.badge = newsBadge();
-        LinearLayout.LayoutParams bl = gapLp(0);
-        bl.bottomMargin = t.dp(8);
-        tags.addView(h.badge, bl);
-        col.addView(tags);
-        h.headline = t.text(this, "", 18, t.ink, 800);
+        head.addView(h.badge);
+        head.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        h.mark = new FrameLayout(this);
+        head.addView(h.mark, new LinearLayout.LayoutParams(t.dp(36), t.dp(36)));
+        body.addView(head);
+        h.headline = t.text(this, "", 19, t.ink, 800);
         h.headline.setLineSpacing(t.dp(4), 1f);
-        col.addView(h.headline);
-        h.summary = t.text(this, "", 14, t.sub, 400);
+        h.headline.setPadding(0, t.dp(10), 0, 0);
+        body.addView(h.headline);
+        h.summary = t.text(this, "", 14.5f, t.sub, 400);
         h.summary.setLineSpacing(t.dp(5), 1f);
-        h.summary.setMaxLines(2);
         h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(6), 0, 0);
-        col.addView(h.summary);
+        h.summary.setPadding(0, t.dp(8), 0, 0);
+        body.addView(h.summary);
         h.meta = t.text(this, "", 12.5f, t.sub, 600);
         h.meta.setTypeface(Theme.flex(this, 92, 600));
         h.meta.setSingleLine();
         h.meta.setEllipsize(TextUtils.TruncateAt.END);
-        h.meta.setPadding(0, t.dp(9), 0, 0);
-        col.addView(h.meta);
-        item.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        h.cover = newCover(item, 72);
+        h.meta.setPadding(0, t.dp(12), 0, 0);
+        body.addView(h.meta);
+        card.addView(body);
 
-        FrameLayout frame = swipeFrame(h, item);
-        frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
+        FrameLayout frame = swipeFrame(h, card);
+        frame.setPadding(t.dp(12), t.dp(5), t.dp(12), t.dp(5));
         return frame;
     }
 
@@ -1175,18 +1193,44 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 服务器已经取到封面的（推送前会取）放上小图，没有的不占位置。有没有图由服务器先说好，图下来时行高不跳；
-     * 行会复用，图回来时还是这件事才放上去。
+     * 服务器已经取到封面的（推送前会取）放上图，没有的不占位置。有没有图由服务器先说好，图下来时行高不跳；
+     * 有没有图按这件事这次第一次显示时的数据（见 first）。内存里已经有的直接放，要等的下来后淡入；
+     * 行会复用，图回来时还是这件事才放上去；已经是这张图（可能正在淡入）的不打断。
      */
     private void bindCover(Holder h, JSONObject e) {
-        String path = e.optBoolean("cover") ? "/v1/events/" + e.optLong("id") + "/cover" : null;
+        String path = first(e).optBoolean("cover") ? "/v1/events/" + e.optLong("id") + "/cover" : null;
         ImageView cover = h.cover;
+        if (path != null && path.equals(cover.getTag())) return;
         cover.setTag(path);
         cover.setImageDrawable(null);
+        cover.setImageAlpha(255);
         cover.setVisibility(path == null ? View.GONE : View.VISIBLE);
-        if (path != null) Images.load(this, path, b -> {
-            if (path.equals(cover.getTag())) cover.setImageBitmap(b);
+        if (path == null) return;
+        Bitmap ready = Images.cached(path);
+        if (ready != null) {
+            cover.setImageBitmap(ready);
+            return;
+        }
+        Images.load(this, path, b -> {
+            if (!path.equals(cover.getTag())) return;
+            cover.setImageAlpha(0);
+            cover.setImageBitmap(b);
+            ValueAnimator in = ValueAnimator.ofInt(0, 255);
+            in.setDuration(320);
+            in.setInterpolator(new DecelerateInterpolator(1.5f));
+            in.addUpdateListener(a -> {
+                if (path.equals(cover.getTag())) cover.setImageAlpha((int) a.getAnimatedValue());
+            });
+            in.start();
         });
+    }
+
+    /**
+     * 这件事这次打开里第一次显示时的数据。有没有封面、卡片的颜色和徽记都按它来：之后服务器取到了封面、换了话题也不跟着变，
+     * 免得正看着的卡片突然长出一张图、换了颜色（下次打开才用新的）。
+     */
+    private JSONObject first(JSONObject e) {
+        return firstSeen.computeIfAbsent(e.optLong("id"), k -> e);
     }
 
     /** 追踪中：有了答案的问题（主色容器）和追踪的事件（卡片色）放在一组。 */
@@ -1261,14 +1305,46 @@ public class MainActivity extends Activity {
     }
 
     private void bindTop(Holder h, Row r) {
-        JSONObject e = r.e;
+        JSONObject e = r.e, look = first(e);
+        boolean cover = look.optBoolean("cover");
+        String topic = Theme.topicOf(look);
+        int[] z = tone(look, cover, topic);
+        paint(h, z);
+        h.mark.removeAllViews();
+        if (!cover && !topic.isEmpty()) h.mark.addView(TopicsView.emblem(this, t, topic), match());
         h.num.setText(r.label);
         h.label.setVisibility(isNew(e) ? View.VISIBLE : View.GONE);
         h.badge.setVisibility(e.optInt("importance") >= 5 ? View.VISIBLE : View.GONE);
         h.headline.setText(e.optString("headline"));
+        h.summary.setMaxLines(cover ? 2 : 3);
         show(h.summary, e.optString("summary"));
-        h.meta.setText(meta(clock(Theme.millis(e.optString("time"))) + " · ", e));
+        h.meta.setText(meta(clock(Theme.millis(e.optString("time"))) + " · ", e, z[2]));
         bindCover(h, e);
+    }
+
+    /**
+     * 最值得看的卡片的颜色 {上, 下, 文字色, 点缀色}：有封面的照着封面铺渐变（Theme.cover，颜色随信息流一起来，卡片一出来
+     * 就是这个颜色）；没有封面的用话题的专题色，往下略微渐向专题的形状色；没有话题的是卡片色。
+     */
+    private int[] tone(JSONObject look, boolean cover, String topic) {
+        JSONArray palette = look.optJSONArray("palette");
+        if (cover && palette != null && palette.length() == 2) {
+            return t.cover(Color.parseColor(palette.optString(0)), Color.parseColor(palette.optString(1)));
+        }
+        if (topic.isEmpty()) return new int[]{t.sheet, t.sheet, t.ink, t.ink};
+        int[] z = t.zone(topic);
+        return new int[]{z[0], Theme.mix(z[0], z[2], 0.22f), z[1], z[2]};
+    }
+
+    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。 */
+    private void paint(Holder h, int[] z) {
+        h.front.setBackground(t.ripple(z[0], z[1], Theme.R_XL));
+        h.num.setTextColor(z[3]);
+        h.headline.setTextColor(z[2]);
+        h.summary.setTextColor(z[2] & 0xFFFFFF | 0xD0000000);
+        h.meta.setTextColor(z[2] & 0xFFFFFF | 0xB8000000);
+        h.badge.setTextColor(z[0]);
+        h.badge.setBackground(t.round(z[2], Theme.R_XS));
     }
 
     private void bindRow(Holder h, JSONObject e) {
@@ -1280,15 +1356,15 @@ public class MainActivity extends Activity {
         h.headline.setTextSize(key ? 15.5f : 15);
         h.headline.setTypeface(Theme.weight(key ? 800 : 500));
         show(h.summary, e.optInt("importance") >= 3 ? e.optString("summary") : "");
-        h.meta.setText(meta("", e));
+        h.meta.setText(meta("", e, t.ink));
         bindCover(h, e);
     }
 
-    /** “大模型 · IT之家 等 3 家”：话题用墨色写在来源前面，不再上色；prefix 是前面的时间。 */
-    private CharSequence meta(String prefix, JSONObject e) {
+    /** “大模型 · IT之家 等 3 家”：话题用 ink（行里是墨色，彩色卡片上是卡片的文字色）写在来源前面；prefix 是前面的时间。 */
+    private CharSequence meta(String prefix, JSONObject e, int ink) {
         SpannableStringBuilder s = new SpannableStringBuilder(prefix);
         String topic = Theme.topicOf(e);
-        if (!topic.isEmpty()) s.append(topic, new ForegroundColorSpan(t.ink), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE).append(" · ");
+        if (!topic.isEmpty()) s.append(topic, new ForegroundColorSpan(ink), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE).append(" · ");
         return s.append(sources(e));
     }
 

@@ -404,14 +404,37 @@ class ImagesTest(unittest.TestCase):
             self.assertIsNone(images.cover(self.config, 9, [github, plain]))
         self.assertNotIn("https://opengraph.githubassets.com/1/a/b", [c.args[0] for c in get.call_args_list])
 
+    @staticmethod
+    def webp(pixel):
+        ppm = b"P6\n64 36\n255\n" + b"".join(pixel(i) for i in range(64 * 36))
+        return subprocess.run(["cwebp", "-quiet", "-o", "-", "--", "-"], input=ppm, capture_output=True).stdout
+
     @unittest.skipUnless(shutil.which("cwebp") and shutil.which("dwebp"), "需要系统包 webp")
     def test_flat_tells_logos_from_photos(self):
-        def webp(pixel):
-            ppm = b"P6\n64 36\n255\n" + b"".join(pixel(i) for i in range(64 * 36))
-            return subprocess.run(["cwebp", "-quiet", "-o", "-", "--", "-"], input=ppm, capture_output=True).stdout
-        logo = webp(lambda i: b"\xff\xff\xff" if i % 64 < 50 else b"\x30\x40\xf0")  # 白底，右边一块蓝
-        photo = webp(lambda i: bytes(((i * 37) % 256, (i * 91) % 256, (i * 53) % 256)))
+        logo = self.webp(lambda i: b"\xff\xff\xff" if i % 64 < 50 else b"\x30\x40\xf0")  # 白底，右边一块蓝
+        photo = self.webp(lambda i: bytes(((i * 37) % 256, (i * 91) % 256, (i * 53) % 256)))
         self.assertEqual((images.flat(logo), images.flat(photo), images.flat(b"RIFF")), (True, False, False))
+
+    @unittest.skipUnless(shutil.which("cwebp") and shutil.which("dwebp"), "需要系统包 webp")
+    def test_cover_palette_comes_with_the_feed(self):
+        event_id = self.store.signal_event("https://a/1")
+        self.store.record_push(event_id, NOW)
+        self.assertIsNone(self.feed()[0]["palette"])  # 没有封面
+        covers = Path(self.dir.name) / "data/images/covers"
+        covers.mkdir(parents=True)
+        (covers / f"{event_id}.webp").write_bytes(b"RIFF")
+        self.assertIsNone(self.feed()[0]["palette"])
+        self.assertFalse((covers / f"{event_id}.palette").exists())  # 解不开不记，下次再算
+        # 上面大半是蓝天，最下面一条深绿：底边取深绿，主色取蓝
+        (covers / f"{event_id}.webp").write_bytes(self.webp(
+            lambda i: b"\x30\x60\xe0" if i < 64 * 28 else b"\x10\x40\x20"))
+        colors = self.feed()[0]["palette"]
+        self.assertEqual((covers / f"{event_id}.palette").read_text(), " ".join(colors))
+        rgb = [tuple(int(c[j:j + 2], 16) for j in (1, 3, 5)) for c in colors]
+        self.assertTrue(rgb[0][1] > rgb[0][2] and rgb[0][0] < 0x30, rgb)  # 偏绿、偏暗
+        self.assertTrue(rgb[1][2] > 0xc0 > rgb[1][0], rgb)  # 蓝
+        gray = [(128, 128, 128)] * 300 + [(240, 40, 40)] * 5
+        self.assertEqual(images.main_color(gray), (130, 127, 127))  # 彩色太少，用平均色
 
     def test_site_icons(self):
         missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
