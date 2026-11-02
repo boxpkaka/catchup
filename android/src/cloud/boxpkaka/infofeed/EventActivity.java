@@ -1,10 +1,12 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -26,6 +28,7 @@ import org.json.JSONObject;
 
 /**
  * 事件详情：卡片色的头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
+ * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的渐变底色和文字色，封面铺满头部顶上、融进底色，和卡片一个样子。
  * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
@@ -34,6 +37,8 @@ public class EventActivity extends Activity {
     static final String EXTRA_JSON = "json";
     static final String EXTRA_DISMISSED = "dismissed";
     static final String EXTRA_FROM = "from"; // 从哪打开的（feed / push / topic …），埋点用，见 Track
+    static final String EXTRA_TONE = "tone"; // 彩色卡片的颜色 {上, 下, 文字色, 点缀色}，见 MainActivity.tone
+    static final String EXTRA_COVER = "cover"; // 那张彩色卡片有没有封面
 
     private static final int FOLDED_SOURCES = 4;
 
@@ -42,6 +47,10 @@ public class EventActivity extends Activity {
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
+    private FrameLayout headBox; // 头部的底色和铺满顶上的封面，head 叠在上面
+    private RoundImage headCover;
+    private int[] tone; // 从彩色卡片点开时卡片的颜色，其余为 null
+    private boolean iconsLight;
     private LinearLayout points, insight, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
     private TextView useful, follow, summary, topicChip, badge, headline, meta, original;
     private String shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
@@ -62,6 +71,7 @@ public class EventActivity extends Activity {
         id = getIntent().getLongExtra(EXTRA_ID, -1);
         from = getIntent().getStringExtra(EXTRA_FROM);
         if (from == null) from = "other";
+        tone = getIntent().getIntArrayExtra(EXTRA_TONE);
         nav = Nav.of(this, build(), t.bg);
         setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
@@ -118,9 +128,12 @@ public class EventActivity extends Activity {
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(0, 0, 0, t.dp(120));
+        headBox = new FrameLayout(this);
         head = new LinearLayout(this);
         head.setOrientation(LinearLayout.VERTICAL);
-        page.addView(head);
+        headBox.addView(head, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        page.addView(headBox);
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(t.dp(22), t.dp(4), t.dp(22), 0);
@@ -139,6 +152,7 @@ public class EventActivity extends Activity {
         root.addView(bottomFade, bfl);
         scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
             topFade.setAlpha(Math.max(0f, Math.min(1f, (y - head.getHeight() + topFade.getHeight()) / (float) t.dp(32))));
+            statusIcons(y);
             noteDepth();
         });
 
@@ -189,7 +203,7 @@ public class EventActivity extends Activity {
                 back.setLayoutParams(bl);
                 fl.topMargin = bars.top + t.dp(10);
                 follow.setLayoutParams(fl);
-                head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
+                padHead();
                 tfl.height = bars.top + t.dp(72);
                 topFade.setLayoutParams(tfl);
                 bfl.height = bars.bottom + t.dp(132);
@@ -354,24 +368,44 @@ public class EventActivity extends Activity {
         original.setOnClickListener(v -> openUrl(e.optString("url")));
     }
 
+    /** 头部：底色是卡片色，从彩色卡片点开时是那张卡片的渐变；有封面的话封面铺满顶上、下半截融进底色。 */
     private void buildHead() {
-        head.setBackground(t.round(t.sheet, 0, 0, 44, 44));
-        head.setPadding(t.dp(22), topInset + t.dp(68), t.dp(22), t.dp(26));
+        int[] z = tone != null ? tone : new int[]{t.sheet, t.sheet, t.ink, t.ink};
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{z[0], z[1]});
+        float r = t.dp(44);
+        bg.setCornerRadii(new float[]{0, 0, 0, 0, r, r, r, r});
+        headBox.setBackground(bg);
+        String coverPath = "/v1/events/" + id + "/cover";
+        if (tone != null && getIntent().getBooleanExtra(EXTRA_COVER, false)) {
+            headCover = new RoundImage(this, 0);
+            headCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            headCover.fadeBottom(0.4f);
+            headBox.addView(headCover, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)); // 高度见 padHead
+            Bitmap ready = Images.cached(coverPath); // 卡片上刚显示过，多半还在内存里，第一帧就有图
+            if (ready != null) headCover.setImageBitmap(ready);
+            else Images.load(this, coverPath, b -> {
+                headCover.setImageAlpha(0);
+                headCover.setImageBitmap(b);
+                ObjectAnimator.ofInt(headCover, "imageAlpha", 0, 255).setDuration(320).start();
+            });
+        }
+        padHead();
+        statusIcons(0);
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        topicChip = t.text(this, "", 12, t.ink, 700);
+        topicChip = t.text(this, "", 12, z[2], 700);
         topicChip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
-        topicChip.setBackground(t.round(t.chip, 99));
+        topicChip.setBackground(t.round(tone != null ? z[2] & 0xFFFFFF | 0x24000000 : t.chip, 99));
         top.addView(topicChip);
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        badge = t.text(this, "要闻", 12, t.onInv, 800); // 和首页一样是墨色反白
+        badge = t.text(this, "要闻", 12, tone != null ? z[0] : t.onInv, 800); // 和首页一样是墨色（彩色卡片上是文字色）反白
         badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
-        badge.setBackground(t.round(t.inv, Theme.R_XS));
+        badge.setBackground(t.round(tone != null ? z[2] : t.inv, Theme.R_XS));
         top.addView(badge);
         head.addView(top);
 
-        headline = t.text(this, "", 27, t.ink, 900);
+        headline = t.text(this, "", 27, z[2], 900);
         headline.setLineSpacing(t.dp(7), 1f);
         headline.setLetterSpacing(-0.01f);
         headline.setPadding(0, t.dp(14), 0, 0);
@@ -380,16 +414,39 @@ public class EventActivity extends Activity {
         LinearLayout metaRow = new LinearLayout(this);
         metaRow.setGravity(Gravity.CENTER_VERTICAL);
         metaRow.setPadding(0, t.dp(16), 0, 0);
-        meta = t.text(this, "", 13, t.sub, 700);
+        meta = t.text(this, "", 13, tone != null ? z[2] & 0xFFFFFF | 0xB8000000 : t.sub, 700);
         meta.setTypeface(Theme.flex(this, 92, 700));
         metaRow.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        original = t.text(this, "看原文 ↗", 13, t.onInv, 700);
+        original = t.text(this, "看原文 ↗", 13, tone != null ? z[0] : t.onInv, 700);
         original.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-        original.setBackground(t.ripple(t.inv, 99));
+        original.setBackground(t.ripple(tone != null ? z[2] : t.inv, 99));
         metaRow.addView(original);
         head.addView(metaRow);
         Theme.smooth(head, top);
-        Images.load(this, "/v1/events/" + id + "/cover", this::showCover);
+        if (headCover == null) Images.load(this, coverPath, this::showCover);
+    }
+
+    /** 头部的留白：顶上让出状态栏和返回按钮；铺了封面的，封面高度算上状态栏，标题从封面融开的地方开始。 */
+    private void padHead() {
+        int top = topInset + t.dp(68);
+        if (headCover != null) {
+            int h = topInset + getResources().getDisplayMetrics().widthPixels * 9 / 16;
+            headCover.getLayoutParams().height = h;
+            headCover.requestLayout();
+            top = Math.max(top, h - t.dp(36));
+        }
+        head.setPadding(t.dp(22), top, t.dp(22), t.dp(26));
+    }
+
+    /** 浅色模式下从深色卡片点开：深色头部还在状态栏下面时状态栏图标用浅色，滚过去以后换回深色。 */
+    private void statusIcons(int scrollY) {
+        boolean light = !t.night && tone != null && Color.luminance(tone[2]) > 0.5f
+                && (headBox.getHeight() == 0 || scrollY < headBox.getHeight() - topInset); // 还没量出高度时就在顶上
+        if (light == iconsLight) return;
+        iconsLight = light;
+        View d = getWindow().getDecorView();
+        int f = d.getSystemUiVisibility();
+        d.setSystemUiVisibility(light ? f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
     }
 
     /** 封面：16:9 圆角大图，插在头部最上面，下面的内容平滑让位（见 Theme.smooth）；没有封面时头部和原来一样。 */
