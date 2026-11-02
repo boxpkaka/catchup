@@ -101,10 +101,11 @@ final class Markdown {
         out.append(text, last, text.length());
     }
 
-    /** 来源引用：小圆角方块，主色容器底，编号用粗体小字，垂直居中在文字中线上。 */
-    private static final class Cite extends ReplacementSpan {
+    /** 来源引用：小圆角方块，主色容器底，编号用粗体小字，垂直居中在文字中线上。alpha 给逐字浮现用，见 Reveal。 */
+    static final class Cite extends ReplacementSpan {
         private final Theme t;
         private final RectF box = new RectF();
+        float alpha = 1f;
 
         Cite(Theme t) {
             this.t = t;
@@ -128,11 +129,13 @@ final class Markdown {
             float size = p.getTextSize(), w = measure(p, text, start, end), h = size * 1.1f;
             float mid = y - size * 0.36f;
             box.set(x + t.dp(2), mid - h / 2, x + t.dp(2) + w, mid + h / 2);
-            int color = p.getColor();
+            int color = p.getColor(), a = Math.round(alpha * 255);
             Typeface face = p.getTypeface();
             p.setColor(t.pc);
+            p.setAlpha(a);
             c.drawRoundRect(box, t.dp(6), t.dp(6), p);
             p.setColor(t.onPc);
+            p.setAlpha(a);
             p.setTextSize(size * 0.7f);
             p.setTypeface(Typeface.create(Typeface.DEFAULT, 800, false));
             p.setTextAlign(Paint.Align.CENTER);
