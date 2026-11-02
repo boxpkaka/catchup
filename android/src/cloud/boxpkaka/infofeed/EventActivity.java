@@ -599,16 +599,16 @@ public class EventActivity extends Activity {
         }, "want").start();
     }
 
-    /** “想多看”之后的提示：记住了哪条、加强了哪条记忆；都没有时说会多推这类。 */
+    /** “想多看”之后的提示：记下或加强了哪条记忆，说成“以后多帮你留意「…」”；都没有时说这类内容。 */
     static String wantNote(JSONObject r) {
         JSONObject m = r.optJSONObject("memory");
         for (String key : new String[]{"added", "updated", "related"}) {
             JSONArray items = m == null ? null : m.optJSONArray(key);
             if (items != null && items.length() > 0) {
-                return ("added".equals(key) ? "记住了：" : "加强了：") + items.optJSONObject(0).optString("text");
+                return "好的，以后多帮你留意「" + MemoryBubbles.label(items.optJSONObject(0).optString("text")) + "」";
             }
         }
-        return "好的，会多推这类内容";
+        return "好的，以后多帮你留意这类内容";
     }
 
     private void notNeeded() {

@@ -658,7 +658,7 @@ class MemoryAskTest(unittest.TestCase):
         llm = mock.Mock()
         llm.json.return_value = {"text": "FunASR 评估得怎么样了！"}  # 不是问句：用模板
         a = personal.ask(self.store, NOW, llm)
-        self.assertEqual((a["text"], a["keep"], a["drop"]), ("「评估 FunASR」还在做吗？", "还在做", "做完了"))
+        self.assertEqual((a["text"], a["keep"], a["drop"]), ("「评估 FunASR」还在忙吗？", "还在忙", "已经忙完了"))
         self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=7)))  # 已经挂着一个
         self.assertEqual(personal.open_ask(self.store, NOW)["id"], a["id"])
         changes = personal.answer(self.store, a["id"], "keep", NOW)

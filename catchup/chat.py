@@ -22,6 +22,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 
 from . import personal, reader
+from .tone import TONE
 from .config import Config
 from .pipeline.events import group_events
 from .sources import build_sources, source_of
@@ -49,6 +50,8 @@ EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正�
 回答要求：中文，直接、具体，先给结论；基于来源回答，用到的句子末尾标注 [编号]；原文没写到的用网页搜索结果补充，同样标注编号；
 都没有提到的要说明没有找到，可以补充你的背景知识但要说明是背景知识；结合用户的情况给出和他相关的判断。不要寒暄，不要复述问题，篇幅够用就好。
 
+{tone}
+
 用户是谁：
 {focus}
 
@@ -59,7 +62,9 @@ EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正�
 
 ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你最近两周替用户整理过的事件（每条以 [E编号] 开头），以及针对这个问题的网页搜索结果（编号 [1]、[2]…）。
 回答用户的问题：中文，直接，先给结论；优先用事件库，提到某个事件时在句末标注 [E编号]；事件库里没有或不够的用网页搜索结果补充，句末标注 [编号]；
-都没有相关内容就直说没有，并建议他可以追踪什么。不要寒暄，不要复述问题。
+都没有相关内容就直说没有，可以提一句能替他追踪哪件事。不要寒暄，不要复述问题。
+
+{tone}
 
 用户是谁：
 {focus}
@@ -102,14 +107,14 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
         found = _wait(search)
         if found:
             sources += "\n\n网页搜索结果：\n" + _web(found, len(refs) + 1)
-        system = EVENT_SYSTEM.format(focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
+        system = EVENT_SYSTEM.format(tone=TONE, focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
     else:
         search = _pool.submit(_search, message)
         yield {"type": "status", "text": "正在搜索网页"}
         candidates = _retrieve(config, store, message, now)
         found = _wait(search)
         refs = []
-        system = ASK_SYSTEM.format(focus=focus, events="\n".join(
+        system = ASK_SYSTEM.format(tone=TONE, focus=focus, events="\n".join(
             f"[E{e['id']}] {e['headline']}：{e['summary']}（{e['time'][:10]}）" for e in candidates) or "（暂无）",
             web=_web(found, 1) or "（没有搜到）")
     refs += [(r["title"], r["url"]) for r in found]

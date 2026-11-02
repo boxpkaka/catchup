@@ -535,7 +535,7 @@ public class MainActivity extends Activity {
         askNotice.setBackground(t.round(t.sheet, Theme.R_XL));
         LinearLayout askTop = new LinearLayout(this);
         askTop.setGravity(Gravity.CENTER_VERTICAL);
-        askTop.addView(t.text(this, "关于你的记忆", 12, t.sub, 700),
+        askTop.addView(t.text(this, "想跟你确认一下", 12, t.sub, 700),
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView later = t.text(this, "以后再说", 12, t.sub, 700);
         later.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
@@ -1477,8 +1477,8 @@ public class MainActivity extends Activity {
         }).start();
         long id = a.optLong("id");
         boolean task = "task".equals(a.optString("kind"));
-        if ("keep".equals(answer)) toast(task ? "好的，继续帮你留意这件事" : "好的，会继续推这类内容");
-        else if ("drop".equals(answer)) toast(task ? "好的，这件事不再优先推了" : "已删掉这条记忆，以后少推这类");
+        if ("keep".equals(answer)) toast(task ? "好的，继续帮你留意这件事" : "好的，我会继续替你留意");
+        else if ("drop".equals(answer)) toast(task ? "好的，这件事告一段落，不再优先推了" : "好的，以后少打扰你这类内容");
         Context app = getApplicationContext();
         new Thread(() -> {
             try {
