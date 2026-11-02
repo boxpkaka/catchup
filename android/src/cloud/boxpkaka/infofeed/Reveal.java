@@ -16,7 +16,7 @@ import java.util.List;
 /**
  * 流式回答逐字浮现：收到的字先藏着，按积压的多少调速往外放，网络一阵一阵地来，看起来也是匀速的；
  * 放出来的字从透明淡入，末尾总是一小段由浅到深的过渡。同一帧放出的字一起淡入，同时只挂十几个 span。
- * 来源角标是 ReplacementSpan，拿不到字的透明度，单独设它的 alpha。系统关闭动画时直接显示。
+ * 来源角标、代码块和表格的底这些自己画的装饰拿不到字的透明度，单独设（Markdown.Fading）。系统关闭动画时直接显示。
  */
 final class Reveal implements Runnable {
     private static final float MIN_SPEED = 30; // 字/秒：积压很少或已经放完时的速度
@@ -72,7 +72,7 @@ final class Reveal implements Runnable {
         spans.clear();
         while (!fading.isEmpty() && now - fading.peek()[2] >= FADE) {
             long[] f = fading.poll();
-            cites(sp, (int) Math.min(f[0], len), (int) Math.min(f[1], len), 1f);
+            marks(sp, (int) Math.min(f[0], len), (int) Math.min(f[1], len), 1f);
         }
         for (long[] f : fading) {
             fade(sp, (int) Math.min(f[0], len), (int) Math.min(f[1], len),
@@ -86,14 +86,14 @@ final class Reveal implements Runnable {
         Fade f = new Fade(alpha);
         sp.setSpan(f, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         spans.add(f);
-        cites(sp, start, end, alpha);
+        marks(sp, start, end, alpha);
     }
 
-    /** 从这一段开始的角标；只碰到边的不算，不然前面已经显示完的角标会被设回透明。 */
-    private static void cites(Spannable sp, int start, int end, float alpha) {
-        for (Markdown.Cite c : sp.getSpans(start, end, Markdown.Cite.class)) {
+    /** 从这一段开始的装饰（角标、代码块的底等）；只碰到边的不算，不然前面已经显示完的会被设回透明。 */
+    private static void marks(Spannable sp, int start, int end, float alpha) {
+        for (Markdown.Fading c : sp.getSpans(start, end, Markdown.Fading.class)) {
             int s = sp.getSpanStart(c);
-            if (s >= start && s < end) c.alpha = alpha;
+            if (s >= start && s < end) c.fade(alpha);
         }
     }
 
