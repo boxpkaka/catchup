@@ -606,6 +606,54 @@ class MemoryStrengthTest(unittest.TestCase):
         self.assertEqual(llm.json.call_count, 1)
 
 
+class MemoryAskTest(unittest.TestCase):
+    """记忆主动问你：快到期的正在做、好像不再关注的长期关注；每天最多一个，答了就生效。"""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        titles = ["Kokoro TTS beats ElevenLabs in blind test", "Apple ships new TTS voices for Siri",
+                  "Mozilla revives abandoned speech project with TTS", "Startup raises $20M for multilingual TTS",
+                  "Benchmark compares streaming TTS latency", "Crypto coin launch"]
+        self.store.add([sig(f"https://t/{n}", t) for n, t in enumerate(titles)], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        self.events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+
+    def add(self, kind, text, keywords, now):
+        from catchup import personal
+        return personal.apply_ops(self.store, {"add": [{"kind": kind, "text": text, "keywords": keywords}]}, "对话",
+                                  now)["added"][0]["id"]
+
+    def test_task_about_to_expire_is_asked_once(self):
+        from catchup import personal
+        mid = self.add("task", "你在评估 FunASR", ["funasr"], NOW - timedelta(days=19))
+        a = personal.ask(self.store, NOW)
+        self.assertEqual((a["text"], a["keep"], a["drop"]), ("「评估 FunASR」还在做吗？", "还在做", "做完了"))
+        self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=7)))  # 已经挂着一个
+        self.assertEqual(personal.open_ask(self.store, NOW)["id"], a["id"])
+        changes = personal.answer(self.store, a["id"], "keep", NOW)
+        self.assertEqual([m["id"] for m in changes["updated"]], [mid])
+        [m] = self.store.memories()
+        self.assertGreater(m["strength"], personal.FULL)
+        self.assertEqual(m["expires"], to_iso(NOW + timedelta(days=personal.TASK_DAYS)))
+        self.assertIsNone(personal.open_ask(self.store, NOW))
+        self.assertEqual(personal.answer(self.store, a["id"], "drop", NOW)["removed"], [])  # 答过的不再算
+        self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=12)))  # 一天最多问一个
+
+    def test_ignored_interest_is_asked_and_can_be_dropped(self):
+        from catchup import personal
+        self.assertEqual(len(self.events), 6)
+        mid = self.add("interest", "你关注语音合成", ["tts"], NOW - timedelta(days=20))
+        rev = personal.memory_rev(self.store)
+        self.store.add_actions([(e.id, "seen", "feed", NOW - timedelta(days=1)) for e in self.events[:3]])
+        self.assertIsNone(personal.ask(self.store, NOW))  # 只看到 3 条相关的，还不问
+        self.store.add_actions([(e.id, "seen", "feed", NOW) for e in self.events])
+        self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=1)))  # 刚找过，隔 6 小时再找
+        a = personal.ask(self.store, NOW + timedelta(hours=6))
+        self.assertEqual(a["text"], "最近 5 条「语音合成」的内容你都没点开，还关注吗？")
+        self.assertEqual([m["id"] for m in personal.answer(self.store, a["id"], "drop", NOW)["removed"]], [mid])
+        self.assertEqual((self.store.memories(), personal.memory_rev(self.store)), ([], rev + 1))
+
+
 class ChatTest(unittest.TestCase):
     def setUp(self):
         self.store = Store(":memory:")
@@ -744,6 +792,30 @@ class AppApiMoreTest(unittest.TestCase):
         self.call("POST", f"/v1/memories/{m['id']}", {"delete": True})
         self.assertEqual(self.call("GET", "/v1/memories")[1]["memories"], [])
         self.assertFalse(self.call("POST", "/v1/settings", {"personalize": False})[1]["personalize"])
+
+    def test_memory_ask_in_feed_only_for_owner(self):
+        from catchup import personal
+        mid = personal.apply_ops(self.store, {"add": [{"kind": "task", "text": "你在评估 FunASR", "keywords": ["funasr"]}]},
+                                 "对话", NOW - timedelta(days=20))["added"][0]["id"]
+        a = personal.ask(self.store, NOW)
+        self.assertEqual(self.call("GET", "/v1/feed")[1]["ask"]["id"], a["id"])
+        friend = app_api.register(self.store, "f", NOW)[1]
+        self.store.set_device_approved(friend["id"], True, readonly=True)
+        r = app_api.handle(config(), self.store, "GET", "/v1/feed", {"Authorization": f"Bearer {friend['token']}"}, None)[1]
+        self.assertNotIn("ask", r)  # 只读设备看不到本人的记忆
+        self.assertEqual(self.call("POST", f"/v1/asks/{a['id']}", {"answer": "maybe"})[0], 400)
+        r = self.call("POST", f"/v1/asks/{a['id']}", {"answer": "drop"})[1]
+        self.assertEqual([m["id"] for m in r["memory"]["removed"]], [mid])
+        self.assertIsNone(self.call("GET", "/v1/feed")[1]["ask"])
+
+    def test_want_more_says_which_memories_it_strengthens(self):
+        from catchup import personal
+        personal.apply_ops(self.store, {"add": [{"kind": "interest", "text": "你关注语音模型", "keywords": ["voice"]}]},
+                           "对话", NOW)
+        eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        with mock.patch("catchup.personal.from_reason", return_value={"added": [], "updated": [], "removed": []}):
+            r = self.call("POST", f"/v1/events/{eid}/feedback", {"value": "useful", "reason": "topic"})[1]
+        self.assertEqual([m["text"] for m in r["memory"]["related"]], ["你关注语音模型"])
 
     def test_track_saves_views_for_memory(self):
         eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]

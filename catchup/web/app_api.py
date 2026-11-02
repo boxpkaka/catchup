@@ -44,7 +44,7 @@ CHANNELS = {"全部": "全部", "python": "Python", "text-generation": "文本�
             "any-to-any": "全模态", "audio-text-to-text": "音频理解", "automatic-speech-recognition": "语音识别",
             "text-to-speech": "语音合成", "audio-to-audio": "音频处理"}
 # 反馈值和可带的原因：不需要可以说明原因（见 personal.REASONS），不想看这类时带上从 /reasons 里选的那一类；
-# 在“未追踪信息”里点“想看这类”是 useful + topic
+# 在“未追踪信息”里点“想看这类”、详情页和信息流里的“想多看”是 useful + topic
 FEEDBACK_REASONS = {"not_needed": {None, *personal.REASONS}, "useful": {None, "topic"}, None: {None}}
 SKIP_LIMIT = 10
 ANSWER_DAYS = 3
@@ -75,7 +75,10 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         return 403, {"error": "这台设备只能看，不能改"}
 
     if method == "GET" and path == "/v1/feed":
-        return 200, feed(config, store, now, parse_time((query or {}).get("before")))
+        out = feed(config, store, now, parse_time((query or {}).get("before")))
+        if "following" in out and not device["readonly"]:  # 记忆的提问只给本人看
+            out["ask"] = personal.open_ask(store, now)
+        return 200, out
     if method == "GET" and (m := re.fullmatch(r"/v1/reports/(daily|weekly|monthly)(?:/([\d-]+))?", path)):
         out = report(config, store, m.group(1), m.group(2), now)
         return (200, out) if out else (404, {"error": "not found"})
@@ -116,6 +119,13 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         event_id = share.share(config, store, from_config(config.llm), str(body.get("text") or "")[:4000],
                                str(body.get("subject") or ""), now)
         return (200, {"event_id": event_id}) if event_id else (400, {"error": "没有找到链接"})
+    if method == "POST" and (m := re.fullmatch(r"/v1/asks/(\d+)", path)):  # 回答记忆的提问
+        if body.get("answer") not in ("keep", "drop", "later"):
+            return 400, {"error": "bad answer"}
+        changes = personal.answer(store, int(m.group(1)), body["answer"], now)
+        if changes["removed"]:
+            personal.rebrief_async(config)
+        return 200, {"ok": True, "memory": changes}
     if method == "POST" and (m := re.fullmatch(r"/v1/questions/(\d+)", path)):
         if body.get("drop"):  # 不用再替我留意了
             store.update_question(int(m.group(1)), status="dropped")
@@ -164,6 +174,9 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
             changes = {**made, "removed": changes["removed"] + made["removed"]}
         if any(changes.values()):
             personal.rebrief_async(config)
+        if value == "useful" and not changes["added"]:  # 想多看：没有新记下的，告诉他会加强哪几条（下一轮记到强度上）
+            changes["related"] = [m for m in personal.related(store, event_id, now)
+                                  if m["id"] not in {u["id"] for u in changes["updated"]}]
         return 200, {"ok": True, "memory": changes}
     if action == "/follow":
         on = bool(body.get("on"))
