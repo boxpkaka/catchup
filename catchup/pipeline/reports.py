@@ -166,8 +166,11 @@ def _render(report: dict) -> str:
 
 def _system(config: Config, store, kind: str, start: date, now: datetime) -> str:
     topics = "、".join(i["name"] for i in config.interests)
+    # 周报月报的材料里重要性 4 以上的事远超条数上限，要求都列进去时模型会照抄几十条日报，月报写到截断
+    pick = ("重要性 4 以上的事都要列进去，其余挑有具体信息的" if kind == "daily"
+            else f"只挑最重要的，每组不超过 {-(-MAX_ITEMS[kind] // 6)} 条")
     rules = f"""highlights 3～5 条，按重要性排。sections 按领域分组，优先用读者关注的领域（{topics}），其余归入“行业”“研究”“产品”等，
-最多 6 组，组内按重要性排；重要性 4 以上的事都要列进去，其余挑有具体信息的，一共不超过 {MAX_ITEMS[kind]} 条。每条不超过 50 个字。"""
+最多 6 组，组内按重要性排；{pick}，一共不超过 {MAX_ITEMS[kind]} 条。每条不超过 50 个字。编号只写数字，[E83] 写成 83。"""
     if kind != "daily":
         rules += "\ntrends 2～4 条；ongoing 只写跨了好几天、有新进展的事，没有就输出空数组。"
     return f"""你是 Catchup 的编辑，给一名 AI 从业者写{KINDS[kind]}（{label(kind, start)}）。材料里每件事以 [E编号] 开头。输出 JSON：
