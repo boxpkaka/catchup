@@ -36,11 +36,19 @@ class FakeLLM:
     def __init__(self, groups=None, importance=4, memory=None, reply="Dessa 只用语音训练 [1]。", progress=None):
         self.groups, self.importance, self.calls = groups or [], importance, 0
         self.memory = memory or {"add": [], "update": [], "remove": []}
-        self.reply, self.progress, self.prompts = reply, progress, []
+        self.reply, self.progress, self.prompts, self.options = reply, progress, [], []
 
-    def json(self, system, user, max_tokens=800):
+    def json(self, system, user, max_tokens=800, **options):
         self.calls += 1
         self.prompts.append(user)
+        self.options.append(options)
+        if "开头的“观察”" in system:  # 报告的观察：999 不是材料里的事，V9 不是材料里的看法，都该被去掉
+            first = re.findall(r"\[E(\d+)\]", user)[0]
+            return {"lede": "Dessa 说明全双工语音开始拼工程细节。",
+                    "insights": [{"title": "全双工拼的是打断", "body": "只用语音训练，延迟才是关键。", "events": [first, 999],
+                                  "quotes": [{"voice": 1, "text": "延迟比参数重要"}, {"voice": 9, "text": "编的"}]}],
+                    "voices": [{"voice": 2, "text": "先看许可证"}, {"voice": 1, "text": "和上面重复"}],
+                    "for_you": [{"text": "你关注 TTS，可以对照 Moshi", "events": [first]}], "watch": [{"text": "盯权重何时开放"}]}
         if "的编辑，给一名 AI 从业者写" in system:  # 日报、周报、月报
             first = re.findall(r"\[E(\d+)\]", user)[0]
             return {"highlights": [{"text": "Block 发布 Dessa", "events": [first]}], "trends": [], "ongoing": [],
@@ -1054,7 +1062,63 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual((detail["would_miss"], detail["questions"][0], detail["thread"]), (True, "能本地跑吗？", None))
 
 
+class VoicesTest(unittest.TestCase):
+    def test_gathers_comments_search_and_experts(self):
+        from catchup.pipeline import voices
+        store = Store(":memory:")
+        reddit = "https://www.reddit.com/r/LocalLLaMA/comments/abc/dessa/"
+        store.add([Signal(url="https://a/1", title="Block unveils Dessa voice model", source="news",
+                          published=NOW - timedelta(hours=3), extra={"hn": "https://news.ycombinator.com/item?id=5"}),
+                   Signal(url=reddit, title="Block unveils Dessa voice model today", source="news",
+                          published=NOW - timedelta(hours=2)),
+                   Signal(url="https://x.com/kk/status/1", title="Block unveils Dessa voice model, try it", source="x",
+                          channel="kk", published=NOW - timedelta(hours=2)),
+                   Signal(url="https://blog/1", title="Notes on agents", source="news", kind="观点", channel="Simon",
+                          summary="Agents need memory.", published=NOW - timedelta(hours=1))], now=NOW)
+        assign_events(store, store.recent(NOW - timedelta(days=1), NOW), NOW)
+        dessa = store.signal_event("https://a/1")
+        hn = {"children": [{"id": 11, "author": "a", "text": "Nice", "children": []},
+                           {"id": 12, "author": "b", "text": "<p>Latency is what matters</p>", "children": [{}, {}]},
+                           {"id": 13, "author": "c", "text": None, "children": [{}, {}, {}]}]}
+        pages = {reddit: ("t", "正文\n\n评论：\n- u1：I ran it locally and the interruption handling is solid\n- u2：lol")}
+
+        def read(url):
+            if url in pages:
+                return pages[url]
+            raise TimeoutError()
+
+        search = {"results": [{"url": "https://a/1", "site_name": "News", "title": "x", "snippet": "报道本身"},
+                              {"url": "https://c/1", "site_name": "C114", "title": "Dessa 点评", "snippet": "实测不如 Moshi"}]}
+        sources = build_sources({"news": {"type": "feed", "feeds": []}, "x": {"type": "ainews"}})
+        with mock.patch("catchup.pipeline.voices.http.get_json", return_value=hn), \
+                mock.patch("catchup.pipeline.voices.reader.read", side_effect=read), \
+                mock.patch("catchup.pipeline.voices.tool", return_value=search):
+            found = voices.gather(store, sources, [dessa], NOW - timedelta(days=1), NOW, experts=3)
+        said = {(v["who"], v["where"], v["event"]): v["text"] for v in found}
+        self.assertEqual(said, {
+            ("@kk", "X", dessa): "Block unveils Dessa voice model, try it",
+            ("HN 用户 b", "Hacker News", dessa): "Latency is what matters",  # 回复最多的在前，没有正文的跳过
+            ("HN 用户 a", "Hacker News", dessa): "Nice",
+            ("u/u1", "r/LocalLLaMA", dessa): "I ran it locally and the interruption handling is solid",  # 太短的不要
+            ("C114", "网络", dessa): "Dessa 点评：实测不如 Moshi",  # 报道本身的链接不算评论
+            ("Simon", "专家博客", None): "Agents need memory.",  # 读不到正文用摘要
+        })
+
+
 class ReportsTest(unittest.TestCase):
+    def setUp(self):
+        said = [{"who": "HN 用户 a", "where": "Hacker News", "text": "Latency matters more than size",
+                 "url": "https://news.ycombinator.com/item?id=1", "event": None},
+                {"who": "Simon Willison", "where": "专家博客", "title": "Notes on Dessa", "text": "Check the license",
+                 "url": "https://simonwillison.net/1", "event": None}]
+
+        def gather(store, sources, events, since, until, experts):
+            return [{**said[0], "event": events[0]}, said[1]]
+
+        patch = mock.patch("catchup.pipeline.voices.gather", side_effect=gather)  # 不去联网找评论
+        self.gather = patch.start()
+        self.addCleanup(patch.stop)
+
     def test_daily_then_weekly_pushed_once(self):
         store = Store(":memory:")
         store.add([sig("https://a/1", "Block unveils Dessa voice model", hours_ago=20)], now=NOW - timedelta(hours=20))
@@ -1063,6 +1127,17 @@ class ReportsTest(unittest.TestCase):
         llm = FakeLLM()
         self.assertEqual(reports.run(config(), store, llm, NOW.replace(day=23, hour=20)), [])  # 北京时间 4 点还不写
         self.assertEqual(reports.run(config(), store, llm, NOW), ["daily:2026-10-23"])  # 10月24日中午写昨天的日报
+        self.assertIn("[V1] HN 用户 a（Hacker News）：Latency matters more than size", llm.prompts[-1])
+        self.assertIn("[V2] Simon Willison《Notes on Dessa》：Check the license", llm.prompts[-1])
+        self.assertEqual(llm.options[-1], {"model": "deepseek-v4-pro", "think": True})  # 观察用推理模型
+        day = app_api.report(config(), store, "daily", "2026-10-23", NOW)
+        [insight] = day["insights"]
+        self.assertEqual((day["lede"], [e["headline"] for e in insight["events"]]),
+                         ("Dessa 说明全双工语音开始拼工程细节。", ["Block 发布语音模型 Dessa"]))
+        self.assertEqual([(q["who"], q["url"], q["text"]) for q in insight["quotes"]],
+                         [("HN 用户 a", "https://news.ycombinator.com/item?id=1", "延迟比参数重要")])  # 出处用材料里的
+        self.assertEqual([q["who"] for q in day["voices"]], ["Simon Willison"])  # 上面引过的不重复
+        self.assertEqual((day["for_you"][0]["text"], day["watch"][0]["events"]), ("你关注 TTS，可以对照 Moshi", []))
         self.assertEqual(reports.run(config(), store, llm, NOW), [])
         monday = NOW + timedelta(days=2)  # 10月26日周一中午：写上周的周报；九月还没开始采集，不写月报
         self.assertEqual(reports.run(config(), store, llm, monday), ["weekly:2026-10-19"])
@@ -1071,11 +1146,26 @@ class ReportsTest(unittest.TestCase):
             self.assertEqual(reports.deliver({}, store, monday), 1)  # 只推周报，日报不推
             self.assertEqual(reports.deliver({}, store, monday), 0)
         self.assertEqual(post.call_args.args[1]["title"], "周报 · 10月19日–25日")
+        self.assertEqual(post.call_args.args[1]["message"], "Dessa 说明全双工语音开始拼工程细节。")  # 推送正文是开头的判断
         self.assertEqual(post.call_args.args[1]["click"], "catchup://report/weekly/2026-10-19")
         week = app_api.report(config(), store, "weekly", None, monday)
         self.assertEqual((week["label"], week["highlights"][0]["events"][0]["headline"], week["prev"]),
                          ("10月19日–25日", "Block 发布语音模型 Dessa", None))
         self.assertIn("10月23日 周五的日报", llm.prompts[-1])  # 周报由日报汇总
+        self.assertIn("观察：Dessa 说明全双工语音开始拼工程细节。", llm.prompts[-1])
         self.assertEqual(app_api.report(config(), store, "daily", "2026-10-23", monday)["sections"][0]["items"][0]["text"],
                          "只用语音训练")
         self.assertEqual(app_api.report(config(), store, "monthly", None, monday)["upcoming"], "11月1日")
+
+    def test_observation_is_skipped_when_the_model_fails(self):
+        store = Store(":memory:")
+        store.add([sig("https://a/1", "Block unveils Dessa voice model", hours_ago=20)], now=NOW - timedelta(hours=20))
+        assign_events(store, store.recent(NOW - timedelta(days=3), NOW), NOW)
+        brief.write_briefs(store, group_events(store.recent(NOW - timedelta(days=3), NOW)), "", FakeLLM(), {}, NOW)
+        llm = FakeLLM()
+        index = llm.json
+        llm.json = lambda system, user, max_tokens=800, **o: (_ for _ in ()).throw(TimeoutError()) if o else \
+            index(system, user, max_tokens)
+        self.assertEqual(reports.run(config(), store, llm, NOW), ["daily:2026-10-23"])
+        content = store.report("daily", "2026-10-23")["content"]
+        self.assertEqual((bool(content["highlights"]), "lede" in content), (True, False))  # 只有清单

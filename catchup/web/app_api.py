@@ -537,7 +537,7 @@ def _on_boards(sources, boards: dict[str, list[dict]], key: str, listed: set[int
 
 def report(config: Config, store: Store, kind: str, period: str | None, now: datetime) -> dict | None:
     """一份报告，period 为空时是最新一份；还没有这类报告时 period 为空，upcoming 是第一份出来的日期。
-    要点、趋势里的事件和分领域的条目都带上事件标题，App 点开进详情。"""
+    要点、趋势、观察里的事件和分领域的条目都带上事件标题，App 点开进详情；观察的引语带出处和链接。"""
     periods = store.report_periods(kind)
     period = period or (periods[0] if periods else None)
     out = {"kind": kind, "name": reports.KINDS[kind], "period": period}
@@ -549,7 +549,10 @@ def report(config: Config, store: Store, kind: str, period: str | None, now: dat
     if r is None:
         return None
     c = r["content"]
-    ids = {i for key in ("highlights", "trends", "ongoing") for x in c.get(key, []) for i in x["events"]}
+    observed = c.get("insights", []) + c.get("voices", []) + [q for x in c.get("insights", []) for q in x["quotes"]]
+    ids = {i for key in ("highlights", "trends", "ongoing", "for_you", "watch") for x in c.get(key, [])
+           for i in x["events"]}
+    ids |= {i for x in observed for i in x["events"]}
     ids |= {item["event"] for s in c["sections"] for item in s["items"]}
     briefs = store.briefs(ids)
 
@@ -559,8 +562,14 @@ def report(config: Config, store: Store, kind: str, period: str | None, now: dat
     def notes(key):
         return [{"text": x["text"], "events": refs(x["events"])} for x in c.get(key, [])]
 
+    def quotes(items):
+        return [{**q, "events": refs(q["events"])} for q in items]
+
     i = periods.index(period)
     return {**out, "label": reports.label(kind, reports.start_of(kind, period)),
+            "lede": c.get("lede"), "insights": [{**x, "events": refs(x["events"]), "quotes": quotes(x["quotes"])}
+                                                for x in c.get("insights", [])],
+            "voices": quotes(c.get("voices", [])), "for_you": notes("for_you"), "watch": notes("watch"),
             "highlights": notes("highlights"), "trends": notes("trends"), "ongoing": notes("ongoing"),
             "sections": [{"name": s["name"], "items": [{"id": item["event"], "headline": briefs[item["event"]]["headline"],
                                                         "text": item["text"]} for item in s["items"] if item["event"] in briefs]}

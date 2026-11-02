@@ -2,7 +2,9 @@ package cloud.boxpkaka.infofeed;
 
 import android.animation.LayoutTransition;
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
@@ -17,8 +19,9 @@ import org.json.JSONObject;
 
 /**
  * 首页的“报告”页：日报、周报、月报三页横向排开，左右滑时相邻的一页跟着手指进来（也可以点上面的分段按钮）。
- * 每类最新一期在最上面，往下滚到底就接着出上一期，一直往前看，不用点。要点、趋势、持续发展的事和分领域的条目
- * 点开从那一行展开成事件详情。
+ * 每类最新一期在最上面，往下滚到底就接着出上一期，一直往前看，不用点。每期先是“观察”（开头的判断、几条观察和引语、
+ * 大家怎么看、和你有关、接下来盯什么；旧报告没有），再是要点、趋势、持续发展的事和分领域的条目。
+ * 提到的事件点开从那一行展开成事件详情，引语点开是原文。
  * 报告由服务器在每个时间段结束后写好（见 catchup/pipeline/reports.py），这里只负责读和显示；第一次进来时三类一起加载，
  * 滑过去就已经有内容。
  */
@@ -214,7 +217,7 @@ final class ReportView extends FrameLayout {
             }, "report-load").start();
         }
 
-        /** 接上一期：期名做标题，下面是要点、趋势、持续发展的事和各领域。 */
+        /** 接上一期：期名做标题，下面是观察，再是要点、趋势、持续发展的事和各领域。 */
         private void append(JSONObject r) {
             LinearLayout section = new LinearLayout(a);
             section.setOrientation(LinearLayout.VERTICAL);
@@ -228,6 +231,7 @@ final class ReportView extends FrameLayout {
             TextView label = t.text(a, r.optString("label"), 22, t.ink, 900);
             label.setPadding(t.dp(10), t.dp(view.getChildCount() == 0 ? 18 : 44), t.dp(10), t.dp(2));
             section.addView(label);
+            observe(section, r);
 
             JSONArray highlights = r.optJSONArray("highlights");
             if (highlights != null && highlights.length() > 0) {
@@ -272,6 +276,110 @@ final class ReportView extends FrameLayout {
             v.setOnClickListener(x -> show(period));
             view.addView(v);
         }
+    }
+
+    // ---------- 观察 ----------
+
+    /** 开头的判断、几条观察、大家怎么看、和你有关、接下来盯什么；旧报告没有这些就什么都不加。 */
+    private void observe(LinearLayout into, JSONObject r) {
+        String lede = r.isNull("lede") ? "" : r.optString("lede");
+        if (!lede.isEmpty()) {
+            TextView v = t.text(a, lede, 17, t.ink, 700);
+            v.setLineSpacing(t.dp(7), 1f);
+            v.setPadding(t.dp(10), t.dp(12), t.dp(10), t.dp(2));
+            into.addView(v);
+        }
+        JSONArray insights = r.optJSONArray("insights");
+        if (insights != null && insights.length() > 0) {
+            into.addView(heading("观察"));
+            for (int i = 0; i < insights.length(); i++) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.topMargin = i == 0 ? 0 : t.dp(10);
+                into.addView(insight(insights.optJSONObject(i)), lp);
+            }
+        }
+        JSONArray voices = r.optJSONArray("voices");
+        if (voices != null && voices.length() > 0) {
+            into.addView(heading("大家怎么看"));
+            LinearLayout list = new LinearLayout(a);
+            list.setOrientation(LinearLayout.VERTICAL);
+            for (int i = 0; i < voices.length(); i++) {
+                View q = quote(voices.optJSONObject(i), false);
+                q.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
+                list.addView(q);
+            }
+            t.segments(list);
+            into.addView(list);
+        }
+        notes(into, "和你有关", r.optJSONArray("for_you"));
+        notes(into, "接下来盯什么", r.optJSONArray("watch"));
+    }
+
+    /** 一条观察：一句判断做标题，下面是理由，再是支撑或反驳它的引语和提到的事。 */
+    private View insight(JSONObject x) {
+        LinearLayout card = new LinearLayout(a);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(12));
+        card.setBackground(t.round(t.sheet, Theme.R_XL));
+        TextView title = t.text(a, x.optString("title"), 16.5f, t.ink, 800);
+        title.setLineSpacing(t.dp(4), 1f);
+        card.addView(title);
+        TextView body = t.text(a, x.optString("body"), 14.5f, t.ink, 400);
+        body.setLineSpacing(t.dp(6), 1f);
+        body.setPadding(0, t.dp(8), 0, t.dp(4));
+        card.addView(body);
+        JSONArray quotes = x.optJSONArray("quotes");
+        for (int i = 0; quotes != null && i < quotes.length(); i++) {
+            View q = quote(quotes.optJSONObject(i), true);
+            q.setPadding(0, t.dp(8), 0, t.dp(2));
+            card.addView(q);
+        }
+        JSONArray events = x.optJSONArray("events");
+        for (int i = 0; events != null && i < Math.min(events.length(), 2); i++) {
+            JSONObject e = events.optJSONObject(i);
+            TextView v = t.text(a, "› " + e.optString("headline"), 13, t.pri, 700);
+            v.setSingleLine();
+            v.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            v.setPadding(0, t.dp(8), 0, t.dp(4));
+            long id = e.optLong("id", -1);
+            v.setOnClickListener(view -> onOpen.open(view, id));
+            card.addView(v);
+        }
+        return card;
+    }
+
+    /** 一条看法：意译的原话和“谁 · 在哪”；观察卡片里的左边带一道主色竖线。点开是原文。 */
+    private View quote(JSONObject q, boolean inCard) {
+        LinearLayout row = new LinearLayout(a);
+        if (inCard) {
+            View bar = new View(a);
+            bar.setBackground(t.round(t.pri, 99));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(t.dp(3), ViewGroup.LayoutParams.MATCH_PARENT);
+            bl.rightMargin = t.dp(12);
+            row.addView(bar, bl);
+        }
+        LinearLayout col = new LinearLayout(a);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView text = t.text(a, q.optString("text"), 14, t.ink, 500);
+        text.setLineSpacing(t.dp(5), 1f);
+        col.addView(text);
+        TextView by = t.text(a, "— " + q.optString("who") + " · " + q.optString("where"), 12, t.sub, 600);
+        by.setPadding(0, t.dp(5), 0, 0);
+        col.addView(by);
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        String url = q.optString("url");
+        if (!url.isEmpty()) {
+            row.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_S));
+            row.setOnClickListener(v -> {
+                try {
+                    a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                } catch (Exception e) {
+                    Trace.log(a, "report.open.fail", url + " " + e);
+                }
+            });
+        }
+        return row;
     }
 
     /** 要点里的一条：点开从这一行展开成它说的第一件事。 */
