@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="24 24 60 60" width="120" height="120" role="img" aria-label="Catchup">
+  <!-- 与 App 自适应图标同一图形（android/res/drawable/ic_launcher_fg.xml）：钴蓝底、白色粗体 c、缺口处一颗酸橙色的点 -->
+  <rect x="24" y="24" width="60" height="60" rx="14" fill="#3443F5"/>
+  <path d="M64.93,40.98 A17,17 0 1 0 64.93,67.02" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="71" cy="54" r="6" fill="#D6F36B"/>
+</svg>
