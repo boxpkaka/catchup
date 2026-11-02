@@ -148,7 +148,8 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
     if any(changes.values()):
         yield {"type": "memory", **changes}
         personal.rebrief_async(config)
-    if pending:  # 暂时没有答案的问题，之后每次采集都替他看看有没有答案，见 pipeline/answers.py
+    # 暂时没有答案的问题，之后每次采集都替他看看有没有答案，见 pipeline/answers.py；别的对话里问过同一个问题的不再记一条
+    if pending and not any(_key(q["text"]) == _key(pending["text"]) for q in store.questions("open")):
         qid = store.add_question(thread["id"], event_id, pending["text"], pending["keywords"], now)
         yield {"type": "watch", "id": qid, "text": pending["text"]}
     yield {"type": "done"}
