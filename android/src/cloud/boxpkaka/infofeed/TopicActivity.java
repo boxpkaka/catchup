@@ -5,6 +5,7 @@ import android.app.Dialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -32,7 +33,10 @@ import org.json.JSONObject;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 /**
@@ -61,6 +65,8 @@ public class TopicActivity extends Activity {
     private JSONObject data;
     private int channel;
     private boolean related;
+    private final Map<View, String[]> unseen = new HashMap<>(); // 还没露出来过的事件行 → {事件 id, 哪个列表}，见 noteSeen
+    private final Rect visible = new Rect();
 
     @Override
     protected void onCreate(Bundle state) {
@@ -81,6 +87,33 @@ public class TopicActivity extends Activity {
         nav.finish(super::finish); // 先收回卡片或滑出去再关
     }
 
+    @Override
+    protected void onPause() {
+        super.onPause();
+        Track.flush(this);
+    }
+
+    /** 专题页的行是一次建好的，建出来不等于看到了：登记下来，露出一半以上时才记一次曝光。 */
+    private void watch(View row, long eventId, String from) {
+        if (eventId <= 0) return;
+        unseen.put(row, new String[]{String.valueOf(eventId), from});
+    }
+
+    /** 滚动、布局变化、榜单翻页停下时检查：露出一半以上的事件行记曝光（Track 同一件事一天只记一次）。 */
+    private void noteSeen() {
+        for (Iterator<Map.Entry<View, String[]>> it = unseen.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<View, String[]> e = it.next();
+            View v = e.getKey();
+            if (!v.isAttachedToWindow()) { // 重新加载后换掉的行
+                it.remove();
+            } else if (v.isShown() && v.getGlobalVisibleRect(visible) && visible.height() * 2 >= v.getHeight()
+                    && visible.width() * 2 >= v.getWidth()) {
+                Track.seen(this, Long.parseLong(e.getValue()[0]), e.getValue()[1]);
+                it.remove();
+            }
+        }
+    }
+
     /** fresh（不是转屏之类的重建）时从点开的卡片展开，或者从右边推进来。 */
     private View build(boolean fresh) {
         FrameLayout root = new FrameLayout(this);
@@ -88,6 +121,8 @@ public class TopicActivity extends Activity {
         scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
+        scroll.getViewTreeObserver().addOnScrollChangedListener(this::noteSeen);
+        scroll.getViewTreeObserver().addOnGlobalLayoutListener(this::noteSeen);
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(0, 0, 0, t.dp(48));
@@ -187,6 +222,7 @@ public class TopicActivity extends Activity {
         @Override
         public void settled(int index) {
             channel = index;
+            noteSeen(); // 翻到的这个榜露出来了
         }
     };
 
@@ -303,6 +339,7 @@ public class TopicActivity extends Activity {
         col.addView(meta(sources(e)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> openEvent(v, e.optLong("id"), e));
+        watch(row, e.optLong("id"), "topic");
         return row;
     }
 
@@ -441,6 +478,7 @@ public class TopicActivity extends Activity {
                 intro(x);
             }
         });
+        if (!x.isNull("event_id")) watch(row, x.optLong("event_id"), "board");
         return row;
     }
 

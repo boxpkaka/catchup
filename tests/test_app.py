@@ -626,7 +626,9 @@ class MemoryAskTest(unittest.TestCase):
     def test_task_about_to_expire_is_asked_once(self):
         from catchup import personal
         mid = self.add("task", "你在评估 FunASR", ["funasr"], NOW - timedelta(days=19))
-        a = personal.ask(self.store, NOW)
+        llm = mock.Mock()
+        llm.json.return_value = {"text": "FunASR 评估得怎么样了！"}  # 不是问句：用模板
+        a = personal.ask(self.store, NOW, llm)
         self.assertEqual((a["text"], a["keep"], a["drop"]), ("「评估 FunASR」还在做吗？", "还在做", "做完了"))
         self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=7)))  # 已经挂着一个
         self.assertEqual(personal.open_ask(self.store, NOW)["id"], a["id"])
@@ -648,8 +650,13 @@ class MemoryAskTest(unittest.TestCase):
         self.assertIsNone(personal.ask(self.store, NOW))  # 只看到 3 条相关的，还不问
         self.store.add_actions([(e.id, "seen", "feed", NOW) for e in self.events])
         self.assertIsNone(personal.ask(self.store, NOW + timedelta(hours=1)))  # 刚找过，隔 6 小时再找
-        a = personal.ask(self.store, NOW + timedelta(hours=6))
-        self.assertEqual(a["text"], "最近 5 条「语音合成」的内容你都没点开，还关注吗？")
+        llm = mock.Mock()
+        llm.json.return_value = {"text": "Kokoro、Siri 新声音这些语音合成的消息你都跳过了，还想看吗？"}
+        a = personal.ask(self.store, NOW + timedelta(hours=6), llm)
+        self.assertEqual(a["text"], "Kokoro、Siri 新声音这些语音合成的消息你都跳过了，还想看吗？")  # 模型写的问法
+        prompt = llm.json.call_args[0][1]
+        self.assertIn("你关注语音合成", prompt)
+        self.assertIn("- Apple ships new TTS voices for Siri", prompt)  # 给了没点开的例子
         self.assertEqual([m["id"] for m in personal.answer(self.store, a["id"], "drop", NOW)["removed"]], [mid])
         self.assertEqual((self.store.memories(), personal.memory_rev(self.store)), ([], rev + 1))
 

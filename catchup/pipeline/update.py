@@ -76,7 +76,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
         _, events = ranked(config, store, now)
-    stats["asked"] = bool(personal.ask(store, now))  # 记忆主动问一句（有就挂在信息流顶部）
+    stats["asked"] = bool(personal.ask(store, now, llm))  # 记忆主动问一句（有就挂在信息流顶部）
     if deliver:
         picked = push.select(config.push, store, events, now, push.strict_sources(sources))
         for e in picked:  # 先取好封面，手机收到推送时马上拿得到大图

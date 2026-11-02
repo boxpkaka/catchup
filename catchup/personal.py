@@ -476,6 +476,12 @@ ASK_CHECK = timedelta(hours=6)   # 找不到要问的时，隔这么久再找（
 FADE_DAYS, FADE_SHOWN = 14, 5    # 长期关注 14 天没被印证，期间又有 5 件以上相关的事显示过或推送过却没点开，就问还关不关注
 TASK_ASK_DAYS = 3                # 正在做的事快到期时问还在不在做
 ASK_LABELS = {"fading": {"keep": "还关注", "drop": "不关注了"}, "task": {"keep": "还在做", "drop": "做完了"}}
+ASK_MAX_CHARS = 60  # 信息流顶部的卡片放三行
+ASK_SYSTEM = """你在替一位 AI 从业者打理他的个人偏好，要在他的信息流顶部问他一句，确认下面这条还成不成立。
+写一句自然、口语的中文问句，第二人称，不超过 40 个字，像熟悉他的助手随口一问：说出具体的方向，
+有例子时可以提一两条他没点开的内容（缩成几个字）。不要提“记忆”“系统”“数据”，不要客套，不要感叹号，以问号结尾。
+他会在下面的两个按钮里选：长期关注是“还关注 / 不关注了”，正在做的事是“还在做 / 做完了”，问法要能用这两个按钮回答。
+输出 JSON：{"text": "..."}"""
 ASK_PREFIX = re.compile(r"^你(长期)?(关注|在|正在)\s*")
 
 
@@ -488,9 +494,10 @@ def open_ask(store, now: datetime) -> dict | None:
     return None
 
 
-def ask(store, now: datetime) -> dict | None:
-    """需要时新出一个问题（每轮更新时调用，不调用模型）：先问快到期的“正在做”，再问好像不再关注的“长期关注”。
-    已有没回答的、一天内问过、或 ASK_CHECK 内找过没找到的，都不再找。"""
+def ask(store, now: datetime, llm=None) -> dict | None:
+    """需要时新出一个问题（每轮更新时调用）：先问快到期的“正在做”，再问好像不再关注的“长期关注”。
+    已有没回答的、一天内问过、或 ASK_CHECK 内找过没找到的，都不再找。问的话请模型写（见 _wording），
+    所以最多一天调用一次模型。"""
     if not personalized(store) or open_ask(store, now) or store.asks(now - ASK_EVERY):
         return None
     checked = parse_time(store.setting("asks_checked") or "")
@@ -502,7 +509,9 @@ def ask(store, now: datetime) -> dict | None:
     for m in memories:
         expires = parse_time(m["expires"]) if m["expires"] else None
         if m["kind"] == "task" and expires and expires - now < timedelta(days=TASK_ASK_DAYS):
-            text = f"「{ASK_PREFIX.sub('', m['text'])}」还在做吗？"
+            days = max(0, (expires - now).days)
+            text = _wording(llm, f"记忆（他正在做的事）：{m['text']}\n情况：这条{days or '不到 1'} 天后过期，过期后不再优先推相关内容。",
+                            f"「{ASK_PREFIX.sub('', m['text'])}」还在做吗？")
             return {"id": store.add_ask(m["id"], "task", text, now), "kind": "task", "text": text,
                     **ASK_LABELS["task"]}
     since = now - timedelta(days=FADE_DAYS)
@@ -512,14 +521,31 @@ def ask(store, now: datetime) -> dict | None:
         return None
     shown = {e for _, e, kind, _, _ in store.actions(since) if kind == "seen"}
     shown |= {e for e, at in store.pushed().items() if at >= to_iso(since)}
-    texts = [t for t in (_texts(store, e) for e in shown) if t]
+    texts = {e: t for e in shown if (t := _texts(store, e))}
     for m in fading:  # 记忆的印证时间早于 since，说明这期间相关的事都没有读过、追踪过
-        n = sum(_matches(m, t) for t in texts)
-        if n >= FADE_SHOWN:
-            text = f"最近 {n} 条「{ASK_PREFIX.sub('', m['text'])}」的内容你都没点开，还关注吗？"
+        hits = sorted((e for e, t in texts.items() if _matches(m, t)), reverse=True)  # 新的在前
+        if len(hits) >= FADE_SHOWN:
+            briefs = store.briefs(hits[:5])
+            titles = "\n".join("- " + (briefs[e]["headline"] if e in briefs else store.event_signals(e)[0].title)
+                               for e in hits[:5])
+            text = _wording(llm, f"记忆（长期关注）：{m['text']}\n情况：最近 {FADE_DAYS} 天有 {len(hits)} 条相关内容显示给他"
+                                 f"或推送过，他一条都没点开，也没有追踪、提问。其中几条：\n{titles}",
+                            f"最近 {len(hits)} 条「{ASK_PREFIX.sub('', m['text'])}」的内容你都没点开，还关注吗？")
             return {"id": store.add_ask(m["id"], "fading", text, now), "kind": "fading", "text": text,
                     **ASK_LABELS["fading"]}
     return None
+
+
+def _wording(llm, situation: str, fallback: str) -> str:
+    """请模型把要问的话写得像随口一问；没有模型、调用失败或写得不合格（太长、没有问句）时用模板。"""
+    if llm is None:
+        return fallback
+    try:
+        text = str(llm.json(ASK_SYSTEM, situation, max_tokens=200).get("text") or "").strip()
+    except Exception as e:
+        log.warning("ask wording failed: %r", e)
+        return fallback
+    return text if 0 < len(text) <= ASK_MAX_CHARS and ("？" in text or "?" in text) else fallback
 
 
 def answer(store, ask_id: int, value: str, now: datetime) -> dict:
