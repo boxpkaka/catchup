@@ -38,8 +38,8 @@ import java.util.Locale;
 /**
  * 一个专题。标题栏是专题卡片的颜色和放大的徽记，从卡片的位置揭开，看起来像卡片长大了。
  * 话题专题按天列这个话题的事件（和信息流的时间线一样），下面是“榜单上的”这个话题的条目；
- * 榜单专题按名次列全部条目，几个榜之间左右滑切换（也可以点标签），可以只看和你相关的。点有事件的条目进事件详情，
- * 没有的弹出简介和“问一问”。右滑返回：榜单专题在第一个榜上再右滑。
+ * 榜单专题按名次列全部条目，几个榜之间左右滑切换（也可以点标签），可以只看和你相关的。HF 模型都进模型页，
+ * 别的条目有事件的进事件详情，没有的弹出简介和“问一问”。右滑返回：榜单专题在第一个榜上再右滑。
  * 数据见服务器的 /v1/topics/<key>。
  */
 public class TopicActivity extends Activity {
@@ -433,8 +433,13 @@ public class TopicActivity extends Activity {
         col.addView(meta(itemMeta(x, inTopic)));
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> {
-            if (!x.isNull("event_id")) openEvent(v, x.optLong("event_id"), null);
-            else intro(x);
+            if (x.optString("url").startsWith(ModelActivity.HF)) {
+                Card.open(this, v, new Intent(this, ModelActivity.class).putExtra(ModelActivity.EXTRA_JSON, x.toString()));
+            } else if (!x.isNull("event_id")) {
+                openEvent(v, x.optLong("event_id"), null);
+            } else {
+                intro(x);
+            }
         });
         return row;
     }
@@ -480,7 +485,7 @@ public class TopicActivity extends Activity {
         return String.format(Locale.US, "%,d", n);
     }
 
-    /** 还没有对应事件的条目（多是早就发布、刚上榜的模型）：弹出简介，可以打开原页面或问一问。 */
+    /** 还没有对应事件的 GitHub 仓库和 Product Hunt 产品：弹出简介，可以打开原页面或问一问。 */
     private void intro(JSONObject x) {
         String name = x.optString("name"), shortName = TopicsView.shortName(name);
         LinearLayout box = new LinearLayout(this);
