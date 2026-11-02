@@ -30,8 +30,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 记忆页：Catchup 记得的关于你的事，按类别列出，都能改、能删、能手动添加；
- * 顶部是“根据记忆个性化”的总开关（关掉后不使用任何个人信息排序）。
+ * 记忆页：Catchup 记得的关于你的事，画成气泡（见 MemoryBubbles），分“你关注的”和“你不想看的”两片；
+ * 点气泡能改、能删，也能手动添加。顶部是“根据记忆个性化”的总开关（关掉后不使用任何个人信息排序）。
  */
 public class MemoryActivity extends Activity {
     private Theme t;
@@ -40,6 +40,8 @@ public class MemoryActivity extends Activity {
     private final Map<String, String> kinds = new LinkedHashMap<>();
     private boolean personalize = true;
     private boolean shown; // 第一次画出来时整页淡入
+    private boolean rendered; // 只有第一次画出来时气泡依次浮上来，改完重画不再浮
+    private final List<MemoryBubbles> fields = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle state) {
@@ -160,28 +162,25 @@ public class MemoryActivity extends Activity {
 
         body.addView(toggleRow());
 
-        Map<String, List<JSONObject>> groups = new LinkedHashMap<>();
-        for (String k : kinds.keySet()) groups.put(k, new ArrayList<>());
+        // 关注的一片（正在做、长期关注、偏好来源、写法），不想看的一片；同一片里按强度从大到小
+        boolean entrance = !rendered;
+        rendered = true;
+        List<JSONObject> keep = new ArrayList<>(), avoid = new ArrayList<>();
         JSONArray ms = r.optJSONArray("memories");
         for (int i = 0; ms != null && i < ms.length(); i++) {
             JSONObject m = ms.optJSONObject(i);
-            List<JSONObject> g = groups.get(m.optString("kind"));
-            if (g != null) g.add(m);
+            if (!kinds.containsKey(m.optString("kind"))) continue;
+            (m.optString("kind").startsWith("avoid") ? avoid : keep).add(m);
         }
-        boolean any = false;
-        for (Map.Entry<String, List<JSONObject>> g : groups.entrySet()) {
-            if (g.getValue().isEmpty()) continue;
-            any = true;
-            body.addView(groupLabel(kinds.get(g.getKey())));
-            LinearLayout list = new LinearLayout(this);
-            list.setOrientation(LinearLayout.VERTICAL);
-            for (JSONObject m : g.getValue()) {
-                list.addView(deletable(item(m), "删除",
-                        () -> post("/v1/memories/" + m.optLong("id"), "{\"delete\": true}", this::load)));
-            }
-            deletableSegments(list);
-            body.addView(list);
+        fields.clear();
+        boolean any = !keep.isEmpty() || !avoid.isEmpty();
+        if (any) {
+            TextView legend = t.text(this, "气泡越大越强 · 越亮越近被你的行为印证 · 变淡的快忘了", 12, t.sub, 400);
+            legend.setPadding(t.dp(10), t.dp(14), t.dp(10), 0);
+            body.addView(legend);
         }
+        addField("你关注的", keep, entrance);
+        addField("你不想看的", avoid, entrance);
         if (!any) {
             TextView empty = t.text(this, "还没有记忆。\n打开任意一件事点“问一问”，聊聊你在做什么，Catchup 会记住。",
                     14, t.sub, 400);
@@ -204,6 +203,35 @@ public class MemoryActivity extends Activity {
             deletableSegments(list);
             body.addView(list);
         }
+    }
+
+    /** 一片气泡：强的在前（排布时先放），点一下打开编辑。 */
+    private void addField(String title, List<JSONObject> memories, boolean entrance) {
+        if (memories.isEmpty()) return;
+        memories.sort((a, b) -> Double.compare(b.optDouble("strength", 3), a.optDouble("strength", 3)));
+        body.addView(groupLabel(title));
+        MemoryBubbles field = new MemoryBubbles(this, t, memories, entrance, this::editor);
+        fields.add(field);
+        body.addView(field, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    /** 点开一条记忆时的说明：类别、强弱、最近一次被印证、到期、出处。 */
+    private String describe(JSONObject m) {
+        StringBuilder s = new StringBuilder(kinds.containsKey(m.optString("kind")) ? kinds.get(m.optString("kind")) : "");
+        double v = m.optDouble("strength", 3);
+        s.append(" · ").append(v >= 6 ? "很强" : v >= 3 ? "较强" : v >= 1.5 ? "一般" : "快忘了");
+        String seen = m.isNull("seen") ? "" : m.optString("seen");
+        if (!seen.isEmpty()) s.append(" · ").append(Theme.ago(Theme.millis(seen))).append("被印证");
+        if (m.optBoolean("expired")) s.append(" · 已过期，保存即续期");
+        else if (!m.isNull("days_left")) s.append(" · ").append(m.optInt("days_left")).append(" 天后到期");
+        String origin = m.optString("origin");
+        String event = m.isNull("event") ? "" : m.optString("event");
+        s.append("\n");
+        if ("对话".equals(origin) && !event.isEmpty()) s.append("来自关于「").append(event).append("」的对话");
+        else if ("对话".equals(origin)) s.append("来自你和 Catchup 的对话");
+        else s.append("来自").append(origin.isEmpty() ? "你" : origin);
+        return s.toString();
     }
 
     /**
@@ -334,52 +362,18 @@ public class MemoryActivity extends Activity {
         return row;
     }
 
-    private View item(JSONObject m) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.TOP);
-        row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        row.addView(col, weight());
-        TextView text = t.text(this, m.optString("text"), 15, t.ink, 600);
-        text.setLineSpacing(t.dp(3), 1f);
-        if (m.optBoolean("expired")) text.setAlpha(0.45f);
-        col.addView(text);
-        StringBuilder meta = new StringBuilder();
-        String origin = m.optString("origin");
-        String event = m.isNull("event") ? "" : m.optString("event");
-        if ("对话".equals(origin) && !event.isEmpty()) meta.append("来自关于「").append(event).append("」的对话");
-        else if ("对话".equals(origin)) meta.append("来自你和 Catchup 的对话");
-        else meta.append("来自").append(origin.isEmpty() ? "你" : origin);
-        meta.append("，").append(Theme.ago(Theme.millis(m.optString("updated"))));
-        if (m.optBoolean("expired")) meta.append("，已过期，点开可续期");
-        TextView mv = t.text(this, meta.toString(), 12, t.sub, 400);
-        mv.setLineSpacing(t.dp(2), 1f);
-        mv.setPadding(0, t.dp(4), 0, 0);
-        col.addView(mv);
-        if (!m.optBoolean("expired") && !m.isNull("days_left")) {
-            LinearLayout days = new LinearLayout(this);
-            days.setOrientation(LinearLayout.VERTICAL);
-            days.setGravity(Gravity.CENTER_HORIZONTAL);
-            days.setPadding(t.dp(12), t.dp(3), 0, 0);
-            TextView n = t.text(this, String.valueOf(m.optInt("days_left")), 20, t.pri, 900);
-            n.setTypeface(Theme.flex(this, 151, 900));
-            days.addView(n);
-            TextView unit = t.text(this, "天后到期", 11, t.sub, 600);
-            unit.setPadding(0, t.dp(3), 0, 0);
-            days.addView(unit);
-            row.addView(days);
-        }
-        row.setOnClickListener(v -> editor(m));
-        return row;
-    }
-
     /** 编辑或新增一条记忆：选择类别、改文字；已有的可以删除。 */
     private void editor(JSONObject m) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(t.dp(22), t.dp(4), t.dp(22), 0);
         box.addView(t.text(this, m == null ? "告诉 Catchup 一件关于你的事" : "编辑这条记忆", 18, t.ink, 800));
+        if (m != null) {
+            TextView info = t.text(this, describe(m), 12.5f, t.sub, 400);
+            info.setLineSpacing(t.dp(3), 1f);
+            info.setPadding(0, t.dp(6), 0, 0);
+            box.addView(info);
+        }
         String[] chosen = {m == null ? "task" : m.optString("kind")};
         LinearLayout chips = new LinearLayout(this);
         chips.setPadding(0, t.dp(14), 0, t.dp(12));
@@ -416,7 +410,10 @@ public class MemoryActivity extends Activity {
             del.setBackground(t.ripple(t.err, 99));
             del.setOnClickListener(v -> {
                 d[0].dismiss();
-                post("/v1/memories/" + m.optLong("id"), "{\"delete\": true}", this::load);
+                Runnable send = () -> post("/v1/memories/" + m.optLong("id"), "{\"delete\": true}", this::load);
+                boolean popped = false; // 气泡先破掉再删
+                for (MemoryBubbles f : fields) popped = popped || f.pop(m.optLong("id"), send);
+                if (!popped) send.run();
             });
             buttons.addView(del, weight());
             buttons.addView(new View(this), new LinearLayout.LayoutParams(t.dp(10), 1));
