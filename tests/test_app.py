@@ -430,6 +430,8 @@ class ImagesTest(unittest.TestCase):
             lambda i: b"\x30\x60\xe0" if i < 64 * 28 else b"\x10\x40\x20"))
         colors = self.feed()[0]["palette"]
         self.assertEqual((covers / f"{event_id}.palette").read_text(), " ".join(colors))
+        with mock.patch("catchup.chat.prefetch"):
+            self.assertEqual(self.call(f"/v1/events/{event_id}")[1]["palette"], colors)  # 详情页也有
         rgb = [tuple(int(c[j:j + 2], 16) for j in (1, 3, 5)) for c in colors]
         self.assertTrue(rgb[0][1] > rgb[0][2] and rgb[0][0] < 0x30, rgb)  # 偏绿、偏暗
         self.assertTrue(rgb[1][2] > 0xc0 > rgb[1][0], rgb)  # 蓝

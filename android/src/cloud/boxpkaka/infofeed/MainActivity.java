@@ -75,7 +75,7 @@ import java.util.Set;
 
 /**
  * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
- * 一件一张彩色大卡片、带编号：有封面的大图在上面、融进照着封面铺的渐变底色，没有的用话题的专题色和徽记。其余按时间排成一条线，
+ * 一件一张彩色大卡片、带编号：有封面的大图在上面，下半截融进流动的模糊封面（Flow），没有的用话题的专题色和徽记。其余按时间排成一条线，
  * 不上色：重要性 4 以上加粗，3 以上带一行概要，其他只有标题；服务器已经取到封面的右边带小图，话题写在来源前面。
  * 行里的颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
  * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销；追踪中的行右滑是取消追踪、答案不再显示），点开看详情。
@@ -1041,6 +1041,7 @@ public class MainActivity extends Activity {
         TextView label, badge, num, headline, summary, meta, time;
         ImageView cover;
         FrameLayout mark; // 最值得看的卡片右上角，没有封面时放话题的徽记
+        Flow flow; // 最值得看的卡片底下流动的模糊封面
     }
 
     /** 每天的标题：大字，是这一天的起点。 */
@@ -1085,9 +1086,14 @@ public class MainActivity extends Activity {
      */
     private View newTop() {
         Holder h = new Holder();
+        FrameLayout front = new FrameLayout(this); // 点按、右滑、展开都认它；里面的内容不接点按
+        h.flow = new Flow(this);
+        h.flow.corners(front);
+        front.addView(h.flow, match());
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setClickable(true);
+        front.addView(card, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
         RoundImage cover = new RoundImage(this, t.dp(Theme.R_XL)); // 和卡片一样的圆角，上面两个角贴着卡片的角
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -1131,7 +1137,7 @@ public class MainActivity extends Activity {
         body.addView(h.meta);
         card.addView(body);
 
-        FrameLayout frame = swipeFrame(h, card);
+        FrameLayout frame = swipeFrame(h, front);
         frame.setPadding(t.dp(12), t.dp(5), t.dp(12), t.dp(5));
         return frame;
     }
@@ -1309,7 +1315,8 @@ public class MainActivity extends Activity {
         boolean cover = look.optBoolean("cover");
         String topic = Theme.topicOf(look);
         int[] z = tone(look, cover, topic);
-        paint(h, z);
+        paint(h, z, cover);
+        bindFlow(h, e, cover, z);
         h.mark.removeAllViews();
         if (!cover && !topic.isEmpty()) h.mark.addView(TopicsView.emblem(this, t, topic), match());
         h.num.setText(r.label);
@@ -1336,9 +1343,34 @@ public class MainActivity extends Activity {
         return new int[]{z[0], Theme.mix(z[0], z[2], 0.22f), z[1], z[2]};
     }
 
-    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。 */
-    private void paint(Holder h, int[] z) {
+    /**
+     * 有封面的卡片底下是流动的模糊封面（Flow）：封面已经模糊过或在内存里的直接上，要等的先是卡片色的渐变，图下来后淡入。
+     * 行复用来显示同一件事时不重来，接着流。
+     */
+    private void bindFlow(Holder h, JSONObject e, boolean cover, int[] z) {
+        Flow flow = h.flow;
+        flow.setVisibility(cover ? View.VISIBLE : View.GONE);
+        long id = e.optLong("id");
+        String path = "/v1/events/" + id + "/cover";
+        if (!cover || path.equals(flow.getTag())) return;
+        flow.setTag(path);
+        flow.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, true, id);
+        Bitmap blurred = Flow.cachedBlur(path), ready = blurred == null ? Images.cached(path) : null;
+        if (blurred != null || ready != null) {
+            flow.cover(blurred != null ? blurred : Flow.blurred(path, ready), false);
+            return;
+        }
+        Images.load(this, path, b -> {
+            if (path.equals(flow.getTag())) flow.cover(Flow.blurred(path, b), true);
+        });
+    }
+
+    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。有封面的按下效果画在最上面，不被流动的底盖住。 */
+    private void paint(Holder h, int[] z, boolean cover) {
         h.front.setBackground(t.ripple(z[0], z[1], Theme.R_XL));
+        h.front.setForeground(cover ? new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.luminance(z[2]) > 0.5f ? 0x22FFFFFF : 0x14000000),
+                null, t.round(Color.WHITE, Theme.R_XL)) : null);
         h.num.setTextColor(z[3]);
         h.headline.setTextColor(z[2]);
         h.summary.setTextColor(z[2] & 0xFFFFFF | 0xD0000000);
