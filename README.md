@@ -4,6 +4,8 @@
 
 产品思路见 `~/Catchup_for_AI_Product_Thesis.pdf`：Push-first、Event-first、Follow-up-first，而不是 Feed-first。
 
+调性：Catchup 是你的私人助手，像一位和蔼、体贴、靠得住的管家或秘书，替你留意、帮你整理、把要紧的先告诉你。App 文案、推送和模型写给你的话（对话、报告、记忆的提问）都是这个口吻：温和、有分寸，有看法但不说教，建议说成可选的，不催促、不制造焦虑。写给模型的语气要求在 `catchup/tone.py`。
+
 ## 现状
 
 | 阶段 | 状态 |

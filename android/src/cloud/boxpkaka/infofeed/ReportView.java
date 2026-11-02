@@ -20,7 +20,7 @@ import org.json.JSONObject;
 /**
  * 首页的“报告”页：日报、周报、月报三页横向排开，左右滑时相邻的一页跟着手指进来（也可以点上面的分段按钮）。
  * 每类最新一期在最上面，往下滚到底就接着出上一期，一直往前看，不用点。每期先是“观察”（开头的判断、几条观察和引语、
- * 大家怎么看、和你有关、接下来盯什么；旧报告没有），再是要点、趋势、持续发展的事和分领域的条目。
+ * 大家怎么看、和你有关、还在等下文的事；旧报告没有），再是要点、趋势、持续发展的事和分领域的条目。
  * 提到的事件点开从那一行展开成事件详情，引语点开是原文。
  * 报告由服务器在每个时间段结束后写好（见 catchup/pipeline/reports.py），这里只负责读和显示；第一次进来时三类一起加载，
  * 滑过去就已经有内容。
@@ -280,7 +280,7 @@ final class ReportView extends FrameLayout {
 
     // ---------- 观察 ----------
 
-    /** 开头的判断、几条观察、大家怎么看、和你有关、接下来盯什么；旧报告没有这些就什么都不加。 */
+    /** 开头的判断、几条观察、大家怎么看、和你有关、还在等下文的事；旧报告没有这些就什么都不加。 */
     private void observe(LinearLayout into, JSONObject r) {
         String lede = r.isNull("lede") ? "" : r.optString("lede");
         if (!lede.isEmpty()) {
@@ -313,7 +313,7 @@ final class ReportView extends FrameLayout {
             into.addView(list);
         }
         notes(into, "和你有关", r.optJSONArray("for_you"));
-        notes(into, "接下来盯什么", r.optJSONArray("watch"));
+        notes(into, "还在等下文的事", r.optJSONArray("watch"));
     }
 
     /** 一条观察：一句判断做标题，下面是理由，再是支撑或反驳它的引语和提到的事。 */

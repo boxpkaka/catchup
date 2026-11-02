@@ -20,6 +20,7 @@ from .config import Config
 from .pipeline.events import group_events
 from .pipeline.ranking import Interest, Ranker, keyword_in
 from .sources import build_sources, source_of
+from .tone import TONE
 from .util import parse_time, to_iso
 
 log = logging.getLogger(__name__)
@@ -475,12 +476,16 @@ ASK_AGAIN = timedelta(days=30)   # 同一条记忆问过（不论怎么答）这
 ASK_CHECK = timedelta(hours=6)   # 找不到要问的时，隔这么久再找（要扫一遍最近显示过的事件）
 FADE_DAYS, FADE_SHOWN = 14, 5    # 长期关注 14 天没被印证，期间又有 5 件以上相关的事显示过或推送过却没点开，就问还关不关注
 TASK_ASK_DAYS = 3                # 正在做的事快到期时问还在不在做
-ASK_LABELS = {"fading": {"keep": "还关注", "drop": "不关注了"}, "task": {"keep": "还在做", "drop": "做完了"}}
+ASK_LABELS = {"fading": {"keep": "继续留意", "drop": "先不用了"}, "task": {"keep": "还在忙", "drop": "已经忙完了"}}
 ASK_MAX_CHARS = 60  # 信息流顶部的卡片放三行
-ASK_SYSTEM = """你在替一位 AI 从业者打理他的个人偏好，要在他的信息流顶部问他一句，确认下面这条还成不成立。
-写一句自然、口语的中文问句，第二人称，不超过 40 个字，像熟悉他的助手随口一问：说出具体的方向，
-有例子时可以提一两条他没点开的内容（缩成几个字）。不要提“记忆”“系统”“数据”，不要客套，不要感叹号，以问号结尾。
-他会在下面的两个按钮里选：长期关注是“还关注 / 不关注了”，正在做的事是“还在做 / 做完了”，问法要能用这两个按钮回答。
+ASK_SYSTEM = """你是 Catchup，一位 AI 从业者的私人助手，要在他的信息流顶部轻轻问他一句，确认下面这条偏好还成不成立。
+
+""" + TONE + """
+
+写一句自然、口语的中文问句，第二人称，不超过 40 个字，像体贴的秘书顺口一问：说出具体的方向，
+有例子时可以提一两条他没打开的内容（缩成几个字）；是你想确认还要不要替他留意，不是追问他为什么没看。
+不要提“记忆”“系统”“数据”，以问号结尾。
+他会在下面的两个按钮里选：长期关注是“继续留意 / 先不用了”，正在做的事是“还在忙 / 已经忙完了”，问法要能用这两个按钮回答。
 输出 JSON：{"text": "..."}"""
 ASK_PREFIX = re.compile(r"^你(长期)?(关注|在|正在)\s*")
 
@@ -511,7 +516,7 @@ def ask(store, now: datetime, llm=None) -> dict | None:
         if m["kind"] == "task" and expires and expires - now < timedelta(days=TASK_ASK_DAYS):
             days = max(0, (expires - now).days)
             text = _wording(llm, f"记忆（他正在做的事）：{m['text']}\n情况：这条{days or '不到 1'} 天后过期，过期后不再优先推相关内容。",
-                            f"「{ASK_PREFIX.sub('', m['text'])}」还在做吗？")
+                            f"「{ASK_PREFIX.sub('', m['text'])}」还在忙吗？")
             return {"id": store.add_ask(m["id"], "task", text, now), "kind": "task", "text": text,
                     **ASK_LABELS["task"]}
     since = now - timedelta(days=FADE_DAYS)
@@ -530,7 +535,7 @@ def ask(store, now: datetime, llm=None) -> dict | None:
                                for e in hits[:5])
             text = _wording(llm, f"记忆（长期关注）：{m['text']}\n情况：最近 {FADE_DAYS} 天有 {len(hits)} 条相关内容显示给他"
                                  f"或推送过，他一条都没点开，也没有追踪、提问。其中几条：\n{titles}",
-                            f"最近 {len(hits)} 条「{ASK_PREFIX.sub('', m['text'])}」的内容你都没点开，还关注吗？")
+                            f"最近几条「{ASK_PREFIX.sub('', m['text'])}」的消息你好像都没打开，还需要我继续留意吗？")
             return {"id": store.add_ask(m["id"], "fading", text, now), "kind": "fading", "text": text,
                     **ASK_LABELS["fading"]}
     return None
