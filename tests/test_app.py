@@ -659,6 +659,9 @@ class AppApiMoreTest(unittest.TestCase):
         with mock.patch("catchup.reader.tool", return_value={"content": "原文"}):
             out = list(chat.chat(config(), self.store, llm, {"event_id": eid, "message": "权重会开源吗？"}, NOW))
         self.assertEqual([e["text"] for e in out if e["type"] == "watch"], ["Dessa 什么时候开放权重？"])
+        with mock.patch("catchup.reader.tool", return_value={"content": "原文"}):  # 换个问法再问一次，不重复留意
+            out = list(chat.chat(config(), self.store, llm, {"message": "Dessa 开放权重了吗？"}, NOW))
+        self.assertEqual([e for e in out if e["type"] == "watch"], [])
         later = NOW + timedelta(hours=2)
         self.store.add([sig("https://b/2", "Dessa weights now on Hugging Face")], now=later)
         judge = mock.Mock()
