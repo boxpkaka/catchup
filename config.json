@@ -175,7 +175,21 @@
         "MiniMaxAI",
         "mistralai",
         "openai",
-        "google"
+        "google",
+        "stepfun-ai",
+        "ByteDance-Seed",
+        "XiaomiMiMo"
+      ]
+    },
+    "hf_new_busy": {
+      "type": "hf_new",
+      "title": "HF 新模型",
+      "interval": 60,
+      "important_only": true,
+      "authors": [
+        "tencent",
+        "openbmb",
+        "inclusionAI"
       ]
     },
     "openrouter": {
@@ -437,6 +451,19 @@
         {
           "name": "中文大模型",
           "q": "大模型 OR 语音大模型",
+          "lang": "zh"
+        }
+      ]
+    },
+    "cn_venture_news": {
+      "type": "google_news",
+      "title": "Google News",
+      "interval": 30,
+      "important_only": true,
+      "queries": [
+        {
+          "name": "AI 创投",
+          "q": "(大模型 OR AI) 融资",
           "lang": "zh"
         }
       ]
