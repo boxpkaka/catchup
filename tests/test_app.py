@@ -58,6 +58,8 @@ class FakeLLM:
             return {"substantive": self.progress is not None, "update": self.progress or ""}
         if system.startswith("把输入"):
             return {"items": ["译：" + t for t in json.loads(user)]}
+        if "只凭标题" in system:  # 初筛：融资的够格，其余不够
+            return {"importance": {i: 4 if "raises" in t else 2 for i, t in re.findall(r"^(\d+): (.+)$", user, re.M)}}
         if system.startswith("给每个 Hugging Face 模型"):
             return {"items": [{"id": x["id"], "intro": "简介：" + x["card"]} for x in json.loads(user)]}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
@@ -189,6 +191,30 @@ class PushTest(unittest.TestCase):
             stats = update.update(config(), self.store, NOW, FakeLLM())
         cover.assert_called_once()  # 推送前先取好封面
         self.assertEqual((at_push, stats["pushed"], stats["briefs"]), ([1], 1, 6))  # 先推新事件，推完再重写旧的
+
+    def test_new_reports_outside_the_pool_are_screened_by_title(self):
+        from catchup.pipeline import update
+        for e in self.events:
+            self.store.record_push(e.id, NOW - timedelta(hours=1))
+        self.store.add([sig("https://a/chips", "Startup raises $2B for AI chips"),
+                        sig("https://b/cat", "Cat video goes viral")], now=NOW)
+        cfg, llm = config(), FakeLLM()
+        cfg.llm = {"brief_top": 5}  # 前 5 名是语音事件，新来的两件排不进候选池
+
+        def run(now):
+            with mock.patch("catchup.pipeline.push._send", return_value=True), \
+                    mock.patch("catchup.reader.tool", side_effect=OSError("offline")):
+                stats = update.update(cfg, self.store, now, llm)
+            return stats, [p.split("\n新闻：\n")[1] for p in llm.prompts if "\n新闻：\n" in p]
+
+        stats, screens = run(NOW)
+        chips, cat = (self.store.signal_event(u) for u in ("https://a/chips", "https://b/cat"))
+        self.assertEqual((stats["screened"], stats["pushed"], len(screens)), (1, 1, 1))  # 融资那件当轮写简报、推送
+        self.assertEqual(set(self.store.briefs([chips, cat])), {chips})
+        self.assertEqual(len(run(NOW + timedelta(minutes=10))[1]), 1)  # 没有新报道不再筛
+        self.store.add([sig("https://c/cat", "Cat video goes viral on TikTok")], now=NOW + timedelta(minutes=20))
+        screens = run(NOW + timedelta(minutes=20))[1]
+        self.assertEqual(screens[1:], [f"{cat}: Cat video goes viral / Cat video goes viral on TikTok（News）"])  # 来了新报道再筛
 
     def test_low_importance_is_not_pushed(self):
         self.store.con.execute("update briefs set importance = 2")  # 边缘信息不推，一般动态就推

@@ -1,7 +1,8 @@
 """用大模型给事件写简报、合并同一件事的多条报道。
 
 规则版聚类会把同一次发布的不同报道拆成几个事件，规则打分也挡不住标题里恰好带关键词的噪声；
-这里让模型做两件规则做不好的事：判断“是不是同一件事”和“重不重要”。模型只看候选池（排名靠前的事件），成本可控。
+这里让模型做两件规则做不好的事：判断“是不是同一件事”和“重不重要”。模型只看候选池（排名靠前的事件），成本可控；
+排不进候选池的事件来了新报道时只看标题初筛，够格的当轮写简报。
 简报先读主来源的原文（和对话共用原文缓存），概要和要点写的是原文里的具体内容，读者不用再点开链接；
 另写一段 AI 解读（insight），说模型怎么看这件事，和只写事实的概要、要点分开。
 """
@@ -16,6 +17,8 @@ from ..sources import Source, source_of
 
 log = logging.getLogger(__name__)
 
+IMPORTANCE = "importance 的含义：5 = 行业重大发布，或读者关注领域的关键进展；4 = 值得当天知道；3 = 一般动态；2 = 边缘信息；1 = 噪声、营销或与 AI 无关。"
+
 BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下面是同一事件的若干条报道，可能附有主来源的原文，请输出 JSON：
 {"headline": "中文标题，不超过 24 个字，说清谁做了什么",
  "summary": "1～2 句中文概要，不超过 80 个字：说清谁做了什么，以及最关键的具体内容（能力、数字、价格、时间、怎么获取），让读者不点原文也知道主要内容；不夸大、不评价",
@@ -23,9 +26,16 @@ BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下�
  "importance": 1～5 的整数,
  "insight": "AI 解读，2～3 句、不超过 150 个字。概要和要点写发生了什么，这里写怎么看：新在哪（和之前的版本、同类产品或常见做法比），可能带来什么影响，有没有值得留意的局限或疑点（比如只有厂商自己的测试数据）。要有判断、判断要有依据；不复述概要，不写和读者个人有什么关系。importance 为 1～2 时输出空字符串",
  "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"]}
-importance 的含义：5 = 行业重大发布，或读者关注领域的关键进展；4 = 值得当天知道；3 = 一般动态；2 = 边缘信息；1 = 噪声、营销或与 AI 无关。
+""" + IMPORTANCE + """
 headline、summary、points 只写材料里有的信息，不要编造数字和结论；也不要写“未披露”“原文没有提到”这类说明缺了什么的话。
 insight 可以结合你了解的行业背景，但你的知识可能过时：拿不准的对比和“首个”“最强”这类说法不要写，数字只用材料里的。"""
+
+SCREEN_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下面是刚出现、还没写简报的新闻，每行一件事，格式为“编号: 标题（来源）”，几篇报道的标题用“ / ”隔开。
+只凭标题判断每件事的重要性，输出 JSON：{"importance": {"编号": 1～5 的整数}}。
+""" + IMPORTANCE + """
+标题看不出具体是什么事的往低里给。"""
+SCREEN_BATCH = 40
+SCREEN_MIN = 4  # 初筛只把“值得当天知道”的提前写简报，一般动态照旧等排名上来
 
 MERGE_SYSTEM = """下面是若干 AI 领域的新闻事件，每行一个，格式为“编号: 标题（来源）”。
 找出报道的是同一件事的编号，分组输出。只合并确定是同一件事的（同一次发布、同一篇论文、同一个产品更新），
@@ -59,6 +69,26 @@ def candidates(events: list[Event], top: int, sources: dict[str, Source]) -> lis
     榜单在榜单专题里按名次全列，不用逐条判断。"""
     judged = {name for name, s in sources.items() if s.important_only and not s.board}
     return events[:top] + [e for e in events[top:] if hot(e, sources) or any(s.source in judged for s in e.signals)]
+
+
+def screen(events: list[Event], focus: str, llm, sources: dict[str, Source]) -> set[int]:
+    """排不进候选池的事件只看标题（前 3 篇报道）让模型初筛，返回重要性至少 SCREEN_MIN、这一轮就该写简报的事件 id。
+    新事件往往只有一篇报道，排名靠后，要等后续报道把排名抬上来才写简报、推送，常常晚几个小时；
+    只看标题，比逐条读原文写简报便宜得多。每来一篇新报道再筛一次，没选上的照旧等排名。"""
+    picked = set()
+    for n in range(0, len(events), SCREEN_BATCH):
+        batch = events[n:n + SCREEN_BATCH]
+        titles = {e.id: " / ".join(dict.fromkeys(s.title for s in e.signals[:3])) for e in batch}
+        lines = "\n".join(f"{e.id}: {titles[e.id]}（{_label(e.lead, sources)}）" for e in batch)
+        try:
+            raw = llm.json(SCREEN_SYSTEM, f"读者是谁：\n{focus}\n\n新闻：\n{lines}", max_tokens=800).get("importance")
+        except Exception as err:
+            log.warning("screen failed: %r", err)
+            continue
+        ids = {e.id for e in batch}
+        picked |= {int(i) for i, v in (raw.items() if isinstance(raw, dict) else [])
+                   if str(i).isdigit() and int(i) in ids and str(v).isdigit() and int(v) >= SCREEN_MIN}
+    return picked
 
 
 def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source], top: int = 40) -> int:
