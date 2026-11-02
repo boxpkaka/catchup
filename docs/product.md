@@ -1,9 +1,11 @@
-# Catchup 产品思路
+# 产品思路
+
+[← 返回文档目录](../README.md#-文档)
 
 > **不用刷，重要的不会错过。**<br>
 > Stop checking. You won't miss it.
 
-这篇文档讲 Catchup 要解决什么问题、为什么先做 AI、产品应该是什么样、怎么判断做对了。功能和用法见 [README](../README.md)。
+这篇文档讲 Catchup 要解决什么问题、为什么先做 AI、产品应该是什么样、怎么判断做对了。功能见 [功能说明](features.md)，实现见 [工作原理](architecture.md)。
 
 ## 核心判断
 
