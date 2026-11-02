@@ -353,11 +353,12 @@ final class Card implements Nav {
         float is = cw / Math.max(1, shot.rect.width());
         frame(image, shotClip, l, t, is, ch, radius);
 
-        image.setAlpha(fade ? 0 : 1 - clamp((k - 0.1f) / 0.3f));
-        page.setAlpha(clamp((k - 0.2f) / 0.4f));
+        // 页面先在截图下面完全显出来，截图再淡出：两层不会同时半透明，封面中途不会变暗
+        image.setAlpha(fade ? 0 : 1 - clamp((k - 0.32f) / 0.3f));
+        page.setAlpha(clamp((k - 0.05f) / 0.3f));
         box.setAlpha(fade ? clamp(k / 0.5f) : 1);
         // 页面完全显出来以前容器一直是卡片色：页面头部接着卡片的颜色，下面的部分直接从卡片色淡成页面底色，中途不发白
-        ((ColorDrawable) box.getBackground()).setColor((int) argb.evaluate(clamp((k - 0.6f) / 0.4f), shot.color, bg));
+        ((ColorDrawable) box.getBackground()).setColor((int) argb.evaluate(clamp((k - 0.35f) / 0.4f), shot.color, bg));
         a.getWindow().getDecorView().setBackgroundColor(Color.argb(Math.round(SCRIM * k * (1 - 0.6f * d)), 0, 0, 0));
     }
 

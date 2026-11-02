@@ -77,7 +77,7 @@ public class MemoryActivity extends Activity {
         scroll.addView(body);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        View bottomFade = t.fade(this, true); // 底部按钮下面垫渐隐底，不用阴影
+        View bottomFade = t.fade(this, true, t.bg); // 底部按钮下面垫渐隐底，不用阴影
         FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
                 Gravity.BOTTOM);
         root.addView(bottomFade, bfl);

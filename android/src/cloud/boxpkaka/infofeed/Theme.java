@@ -26,6 +26,7 @@ import android.view.animation.DecelerateInterpolator;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -130,6 +131,23 @@ final class Theme {
         return new int[]{hsv(e[0], Math.min(e[1], 0.2f), clamp(e[2], 0.92f, 1)),
                 hsv(m[0], Math.min(m[1], 0.3f), 0.93f), hsv(m[0], Math.min(m[1], 0.75f), 0.28f),
                 hsv(m[0], Math.min(m[1], 0.7f), 0.62f)};
+    }
+
+    /**
+     * 详情页正文里的点缀色（要点编号、AI 解读、展开全部）：照封面的主色（e 的 palette，见 catchup/images.py），
+     * 压到白底上看得清；灰调的封面用钴蓝；没有封面的用话题的形状色，没有话题的用钴蓝。
+     */
+    int accent(JSONObject e) {
+        JSONArray palette = e == null ? null : e.optJSONArray("palette");
+        if (palette != null && palette.length() == 2) {
+            float[] m = new float[3];
+            Color.colorToHSV(Color.parseColor(palette.optString(1)), m);
+            if (m[1] < 0.12f) return pri;
+            return night ? hsv(m[0], Math.min(m[1], 0.45f), 1) : hsv(m[0], clamp(m[1], 0.5f, 0.8f), 0.56f);
+        }
+        String topic = topicOf(e);
+        int[] z = topic.isEmpty() ? null : zone(topic);
+        return z == null || z[0] == sheet ? pri : z[2];
     }
 
     /** a 往 b 走 f（0 到 1）的颜色。 */
@@ -288,12 +306,12 @@ final class Theme {
 
     /**
      * 浮动按钮下面垫的渐隐底：内容滚到按钮下面时逐渐淡成底色，按钮落在干净的底色上，不用阴影也分得清层次
-     * （系统阴影在 vivo 上边缘整齐、像描边，看着假）。bottom 为 true 时贴底部，否则贴顶部；靠边的一半是实色。
+     * （系统阴影在 vivo 上边缘整齐、像描边，看着假）。bottom 为 true 时贴底部，否则贴顶部；靠边的一半是实色 color（页面底色）。
      */
-    View fade(Context c, boolean bottom) {
+    View fade(Context c, boolean bottom, int color) {
         GradientDrawable g = new GradientDrawable(bottom ? GradientDrawable.Orientation.BOTTOM_TOP
                 : GradientDrawable.Orientation.TOP_BOTTOM, null);
-        g.setColors(new int[]{bg, bg, bg & 0x00FFFFFF}, new float[]{0f, 0.55f, 1f});
+        g.setColors(new int[]{color, color, color & 0x00FFFFFF}, new float[]{0f, 0.55f, 1f});
         View v = new View(c);
         v.setBackground(g);
         return v;

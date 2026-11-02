@@ -370,6 +370,7 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     out["points"] = (brief.get("points") or []) if brief else []
     out["insight"] = (brief.get("insight") or "") if brief else ""
     out["questions"] = brief.get("questions", []) if brief else []
+    out["palette"] = images.palette(config, event_id)  # 正文的点缀色照封面，从推送打开时也和首页卡片一致
     out["would_miss"] = store.rating(event_id)
     thread = store.latest_thread(event_id)
     out["thread"] = {"id": thread["id"], "count": len(store.messages(thread["id"]))} if thread else None

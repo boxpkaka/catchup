@@ -4,13 +4,24 @@ import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
 import android.graphics.Insets;
+import android.graphics.LinearGradient;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.Shader;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,9 +37,12 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.Locale;
+
 /**
- * 事件详情：卡片色的头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
- * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的渐变底色和文字色，封面铺满头部顶上、融进底色，和卡片一个样子。
+ * 事件详情：头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、AI 解读、进展、问一问、全部来源。
+ * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的颜色：封面铺满顶上，底下是和卡片一样流动的模糊封面（Flow），
+ * 往下淌进白色页面，一侧淌得深、一侧早收住。页面底色就是卡片白，正文不用方框，靠留白和小标题分段。
  * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
@@ -41,13 +55,18 @@ public class EventActivity extends Activity {
     static final String EXTRA_COVER = "cover"; // 那张彩色卡片有没有封面
 
     private static final int FOLDED_SOURCES = 4;
+    private static final int BLEED_DP = 360; // 头部的颜色往下淌进正文的长度
 
     private Theme t;
     private Nav nav;
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
-    private FrameLayout headBox; // 头部的底色和铺满顶上的封面，head 叠在上面
+    private FrameLayout content; // 滚动的内容：底下垫着头部往下淌的颜色（backdrop），上面是 page
+    private Flow backdrop;
+    private int accent; // 正文的点缀色，第一次显示时定下来，见 Theme.accent
+    private boolean accented;
+    private FrameLayout headBox; // 头部和铺满顶上的封面，head 叠在上面
     private RoundImage headCover;
     private int[] tone; // 从彩色卡片点开时卡片的颜色，其余为 null
     private boolean iconsLight;
@@ -72,7 +91,7 @@ public class EventActivity extends Activity {
         from = getIntent().getStringExtra(EXTRA_FROM);
         if (from == null) from = "other";
         tone = getIntent().getIntArrayExtra(EXTRA_TONE);
-        nav = Nav.of(this, build(), t.bg);
+        nav = Nav.of(this, build(), t.sheet);
         setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
         if (cached != null) {
@@ -121,7 +140,7 @@ public class EventActivity extends Activity {
 
     private View build() {
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(t.bg);
+        root.setBackgroundColor(t.sheet);
         scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
@@ -137,16 +156,31 @@ public class EventActivity extends Activity {
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(t.dp(22), t.dp(4), t.dp(22), 0);
+        body.setClipToPadding(false); // AI 解读的色带越过左右留白铺满整个宽度，不能被裁成方块
+        body.setClipChildren(false);
         page.addView(body);
-        scroll.addView(page);
+        content = new FrameLayout(this) {
+            /** 头部往下淌的颜色比头部长出一截：先量出头部多高，再定它的高度，第一帧就对，不会等布局完再跳。 */
+            @Override
+            protected void onMeasure(int widthSpec, int heightSpec) {
+                if (backdrop != null) {
+                    page.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+                    backdrop.getLayoutParams().height = headBox.getMeasuredHeight() + t.dp(BLEED_DP);
+                }
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        };
+        content.addView(page, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        scroll.addView(content);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         // 按钮下面垫渐隐底，不用阴影：顶部的等页头滚出去才出现，免得盖住页头
-        View topFade = t.fade(this, false);
+        View topFade = t.fade(this, false, t.sheet);
         topFade.setAlpha(0f);
         FrameLayout.LayoutParams tfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(80));
         root.addView(topFade, tfl);
-        View bottomFade = t.fade(this, true);
+        View bottomFade = t.fade(this, true, t.sheet);
         FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
                 Gravity.BOTTOM);
         root.addView(bottomFade, bfl);
@@ -242,6 +276,10 @@ public class EventActivity extends Activity {
      */
     private void render(JSONObject e) {
         event = e;
+        if (!accented) { // 只定一次：服务器的数据回来时颜色不跟着变
+            accent = t.accent(e);
+            accented = true;
+        }
         feedback = e.isNull("feedback") ? null : e.optString("feedback");
         renderHead(e);
         if (summary == null) buildBody();
@@ -254,14 +292,15 @@ public class EventActivity extends Activity {
         if (!String.valueOf(ps).equals(shownPoints)) {
             shownPoints = String.valueOf(ps);
             points.removeAllViews();
-            for (int i = 0; ps != null && i < ps.length(); i++) points.addView(pointRow(ps.optString(i), i == 0));
+            if (ps != null && ps.length() > 0) points.addView(sectionHead("要点", ps.length() + " 条"));
+            for (int i = 0; ps != null && i < ps.length(); i++) points.addView(pointRow(ps.optString(i), i));
         }
 
         String in = e.optString("insight"); // AI 解读：模型怎么看这件事，详情接口才有
         if (!in.equals(shownInsight)) {
             shownInsight = in;
             insight.removeAllViews();
-            if (!in.isEmpty()) insight.addView(insightCard(in));
+            if (!in.isEmpty()) insight.addView(insightBand(in));
         }
 
         JSONArray us = e.optJSONArray("updates");
@@ -269,7 +308,7 @@ public class EventActivity extends Activity {
             shownUpdates = String.valueOf(us);
             updates.removeAllViews();
             if (us != null && us.length() > 0) {
-                updates.addView(sectionLabel("进展"));
+                updates.addView(sectionHead("进展", null));
                 for (int i = 0; i < us.length(); i++) {
                     updates.addView(updateRow(us.optJSONObject(i), i == 0, i == us.length() - 1));
                 }
@@ -288,30 +327,30 @@ public class EventActivity extends Activity {
             shownSignals = String.valueOf(signals);
             if (signals == null) {
                 sources.removeAllViews();
-                TextView wait = t.text(this, "正在加载来源…", 14, t.sub, 400);
-                wait.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-                sources.addView(wait);
+                sources.addView(sectionHead("来源", null));
+                sources.addView(t.text(this, "正在加载来源…", 14, t.sub, 400));
             } else {
                 showSources(signals, signals.length() <= FOLDED_SOURCES + 1);
             }
-            t.segments(sources);
         }
         following = e.optBoolean("following");
         updateActions();
     }
 
-    /** 正文的骨架：概要、要点、AI 解读、进展、问一问、来源，各块只建一次。 */
+    /**
+     * 正文的骨架：概要、要点、AI 解读、进展、问一问、来源，各块只建一次。不用方框，直接排在白页上，靠留白和小标题分段；
+     * 从彩色卡片点开时概要往下让一段，留给头部的颜色融开。
+     */
     private void buildBody() {
-        summary = t.text(this, "", 17, t.ink, 400);
-        summary.setLineSpacing(t.dp(9), 1f);
-        summary.setPadding(0, t.dp(22), 0, 0);
+        summary = t.text(this, "", 17.5f, t.ink, 400);
+        summary.setLineSpacing(t.dp(10), 1f);
+        summary.setPadding(0, t.dp(tone != null ? 74 : 22), 0, 0);
         body.addView(summary);
         points = column();
         insight = column();
         updates = column();
-        body.addView(sectionLabel("问一问"));
+        body.addView(sectionHead("问一问", null));
         ask = column();
-        body.addView(sectionLabel("来源"));
         sources = column();
         Theme.smooth(body, points, insight, updates, ask, sources);
     }
@@ -323,37 +362,126 @@ public class EventActivity extends Activity {
         return v;
     }
 
-    private View pointRow(String text, boolean first) {
+    /** 小标题：左边是名字，右边是条数之类的小字（可以为 null）；和上一块之间留一段空白。 */
+    private View sectionHead(String label, String note) {
         LinearLayout row = new LinearLayout(this);
-        row.setPadding(0, t.dp(first ? 14 : 10), 0, 0);
-        View dot = new View(this);
-        dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(14), t.dp(14));
-        dl.topMargin = t.dp(5);
-        row.addView(dot, dl);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, t.dp(34), 0, t.dp(12));
+        TextView name = t.text(this, label, 13, t.sub, 800);
+        name.setLetterSpacing(0.04f);
+        row.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (note != null) {
+            TextView n = t.text(this, note, 12, t.sub, 600);
+            n.setTypeface(Theme.flex(this, 96, 600));
+            row.addView(n);
+        }
+        return row;
+    }
+
+    /** 一条要点：左边是加宽数字的编号（点缀色），右边是正文。 */
+    private View pointRow(String text, int index) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(0, index == 0 ? 0 : t.dp(12), 0, 0);
+        TextView num = t.text(this, String.format(Locale.ROOT, "%02d", index + 1), 15, accent, 800);
+        num.setTypeface(Theme.flex(this, 125, 800));
+        num.setPadding(0, t.dp(3), 0, 0);
+        row.addView(num, new LinearLayout.LayoutParams(t.dp(34), ViewGroup.LayoutParams.WRAP_CONTENT));
         TextView p = t.text(this, text, 15.5f, t.ink, 400);
         p.setLineSpacing(t.dp(7), 1f);
-        p.setPadding(t.dp(12), 0, 0, 0);
         row.addView(p, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         return row;
     }
 
-    /** AI 解读和只写事实的概要、要点分开：单独一张浅色卡片，标明是 AI 的看法。 */
-    private View insightCard(String text) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(18));
-        card.setBackground(t.round(t.pc, Theme.R_L));
-        card.addView(t.text(this, "AI 解读", 13, t.onPc, 800));
-        TextView p = t.text(this, text, 15.5f, t.onPc, 400);
-        p.setLineSpacing(t.dp(7), 1f);
-        p.setPadding(0, t.dp(8), 0, 0);
-        card.addView(p);
+    /**
+     * AI 解读和只写事实的概要、要点分开：一条横贯全宽的淡色带（点缀色），上下两头融进白页，没有边角；
+     * 四角星标记，注明是模型的看法。
+     */
+    private View insightBand(String text) {
+        LinearLayout band = new LinearLayout(this);
+        band.setOrientation(LinearLayout.VERTICAL);
+        band.setPadding(t.dp(22), t.dp(34), t.dp(22), t.dp(36));
+        int tint = (accent & 0x00FFFFFF) | (t.night ? 0x29000000 : 0x17000000);
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, null);
+        g.setColors(new int[]{tint & 0x00FFFFFF, tint, tint, tint & 0x00FFFFFF}, new float[]{0, 0.26f, 0.74f, 1});
+        band.setBackground(g);
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView label = t.text(this, "AI 解读", 14, accent, 800);
+        Drawable spark = new Spark(accent, Theme.mix(accent, t.night ? Color.BLACK : Color.WHITE, 0.45f));
+        spark.setBounds(0, 0, t.dp(16), t.dp(16));
+        label.setCompoundDrawablesRelative(spark, null, null, null);
+        label.setCompoundDrawablePadding(t.dp(7));
+        head.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        head.addView(t.text(this, "模型的看法，不是报道原文", 12, t.sub, 600));
+        band.addView(head);
+        TextView p = t.text(this, text, 15.5f, t.ink, 400);
+        p.setLineSpacing(t.dp(8), 1f);
+        p.setPadding(0, t.dp(12), 0, 0);
+        band.addView(p);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = t.dp(24);
-        card.setLayoutParams(lp);
-        return card;
+        lp.topMargin = t.dp(26);
+        lp.leftMargin = -t.dp(22); // 铺满整个宽度，越过正文的左右留白
+        lp.rightMargin = -t.dp(22);
+        band.setLayoutParams(lp);
+        return band;
+    }
+
+    /** 四角星：AI 解读的标记，从点缀色渐变到更浅（深色模式更深）的同色。 */
+    private static final class Spark extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+        private final int from, to;
+
+        Spark(int from, int to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        @Override
+        protected void onBoundsChange(Rect b) {
+            float s = b.width() / 24f;
+            path.reset();
+            path.moveTo(12, 1.5f);
+            path.cubicTo(12.8f, 7.5f, 16.4f, 11.1f, 22.5f, 12);
+            path.cubicTo(16.4f, 12.9f, 12.8f, 16.5f, 12, 22.5f);
+            path.cubicTo(11.2f, 16.5f, 7.6f, 12.9f, 1.5f, 12);
+            path.cubicTo(7.6f, 11.1f, 11.2f, 7.5f, 12, 1.5f);
+            path.close();
+            Matrix m = new Matrix();
+            m.setScale(s, s);
+            m.postTranslate(b.left, b.top);
+            path.transform(m);
+            paint.setShader(new LinearGradient(b.left, b.top, b.right, b.bottom, from, to, Shader.TileMode.CLAMP));
+        }
+
+        @Override
+        public void draw(Canvas c) {
+            c.drawPath(path, paint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+        }
+
+        @Override
+        public void setColorFilter(ColorFilter cf) {
+            paint.setColorFilter(cf);
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
+    }
+
+    /** 列表里两行之间的细线。 */
+    private View hairline() {
+        View v = new View(this);
+        v.setBackgroundColor((t.ink & 0x00FFFFFF) | 0x14000000);
+        v.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, t.dp(0.6f))));
+        return v;
     }
 
     /** 头部：卡片色延伸到状态栏下面，底部两个大圆角；从首页点进来时颜色和列表项一样，不跳变。控件只建一次，之后只改字。 */
@@ -368,26 +496,38 @@ public class EventActivity extends Activity {
         original.setOnClickListener(v -> openUrl(e.optString("url")));
     }
 
-    /** 头部：底色是卡片色，从彩色卡片点开时是那张卡片的渐变；有封面的话封面铺满顶上、下半截融进底色。 */
+    /**
+     * 头部：页面是卡片白，头部不再单独上色。从彩色卡片点开时，底下垫一层和卡片一样流动的模糊封面（没有封面的是话题色渐变），
+     * 比头部长出一截、往下淌进正文，跟着内容一起滚走；有封面的话封面铺满顶上、下半截融进去。
+     */
     private void buildHead() {
         int[] z = tone != null ? tone : new int[]{t.sheet, t.sheet, t.ink, t.ink};
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{z[0], z[1]});
-        float r = t.dp(44);
-        bg.setCornerRadii(new float[]{0, 0, 0, 0, r, r, r, r});
-        headBox.setBackground(bg);
         String coverPath = "/v1/events/" + id + "/cover";
-        if (tone != null && getIntent().getBooleanExtra(EXTRA_COVER, false)) {
+        boolean cover = tone != null && getIntent().getBooleanExtra(EXTRA_COVER, false);
+        if (tone != null) {
+            backdrop = new Flow(this);
+            backdrop.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, false, id);
+            content.addView(backdrop, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)); // 高度见 content
+        }
+        if (cover) {
             headCover = new RoundImage(this, 0);
             headCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
             headCover.fadeBottom(0.4f);
             headBox.addView(headCover, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)); // 高度见 padHead
-            Bitmap ready = Images.cached(coverPath); // 卡片上刚显示过，多半还在内存里，第一帧就有图
+            // 卡片上刚显示过，多半还在内存里：第一帧就有图和流动的底，往哪边淌也按封面定
+            Bitmap ready = Images.cached(coverPath), blurred = Flow.cachedBlur(coverPath);
+            if (blurred == null && ready != null) blurred = Flow.blurred(coverPath, ready);
             if (ready != null) headCover.setImageBitmap(ready);
-            else Images.load(this, coverPath, b -> {
+            if (blurred != null) backdrop.cover(blurred, false);
+            backdrop.bleed(blurred != null ? Flow.lean(blurred) : 0, id);
+            if (ready == null) Images.load(this, coverPath, b -> {
                 headCover.setImageAlpha(0);
                 headCover.setImageBitmap(b);
                 ObjectAnimator.ofInt(headCover, "imageAlpha", 0, 255).setDuration(320).start();
+                backdrop.cover(Flow.blurred(coverPath, b), true);
             });
+        } else if (backdrop != null) {
+            backdrop.bleed(0, id);
         }
         padHead();
         statusIcons(0);
@@ -468,26 +608,26 @@ public class EventActivity extends Activity {
         head.addView(cover, 0, lp);
     }
 
-    /** 来源超过 5 条时先显示 4 条，最后一行“展开全部来源”。 */
+    /** 来源：小标题写共几家；一行一条，中间细线隔开；超过 5 条时先显示 4 条，最后一行“展开全部 N 个来源”。 */
     private void showSources(JSONArray signals, boolean all) {
         sources.removeAllViews();
+        sources.addView(sectionHead("来源", signals.length() + " 家报道"));
         int n = all ? signals.length() : FOLDED_SOURCES;
-        for (int i = 0; i < n; i++) sources.addView(sourceRow(signals.optJSONObject(i)));
+        for (int i = 0; i < n; i++) {
+            if (i > 0) sources.addView(hairline());
+            sources.addView(sourceRow(signals.optJSONObject(i)));
+        }
         if (!all) {
-            TextView more = t.text(this, "展开全部来源", 13.5f, t.pri, 700);
-            more.setPadding(t.dp(16), t.dp(13), t.dp(16), t.dp(13));
-            more.setOnClickListener(v -> {
-                showSources(signals, true);
-                t.segments(sources);
-            });
+            sources.addView(hairline());
+            LinearLayout more = new LinearLayout(this);
+            more.setPadding(0, t.dp(13), 0, t.dp(13));
+            more.addView(t.text(this, "展开全部 " + signals.length() + " 个来源", 14, accent, 800),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            more.addView(t.text(this, "›", 15, accent, 800));
+            more.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_XS));
+            more.setOnClickListener(v -> showSources(signals, true));
             sources.addView(more);
         }
-    }
-
-    private TextView sectionLabel(String text) {
-        TextView v = t.text(this, text, 18, t.ink, 800);
-        v.setPadding(0, t.dp(30), 0, t.dp(12));
-        return v;
     }
 
     /** 追踪发现的实质进展，最新的在上：时间线，最新一条用太阳形节点。 */
@@ -519,39 +659,40 @@ public class EventActivity extends Activity {
         return row;
     }
 
-    /** 问一问：建议问题直接发出；有过对话的可以接着聊。放进 ask 里，标题在外面不动。 */
+    /** 问一问：建议问题一行一个，点了直接发出；有过对话的第一行是接着聊。细线隔开，不用方框；标题在外面不动。 */
     private void askSection(JSONObject e) {
         LinearLayout box = ask;
         JSONObject thread = e.optJSONObject("thread");
         if (thread != null && thread.optInt("count") > 0) {
-            LinearLayout resume = new LinearLayout(this);
-            resume.setGravity(Gravity.CENTER_VERTICAL);
-            resume.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
-            resume.setBackground(t.ripple(t.pc, 20));
-            resume.addView(t.text(this, "继续上次的对话", 15, t.onPc, 700),
-                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            TextView count = t.text(this, thread.optInt("count") + " 条", 14, t.onPc, 700);
-            count.setTypeface(Theme.flex(this, 110, 700));
-            resume.addView(count);
-            resume.setOnClickListener(v -> openChat(null));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = t.dp(8);
-            box.addView(resume, lp);
+            box.addView(askRow("继续上次的对话", thread.optInt("count") + " 条", true, v -> openChat(null)));
         }
         JSONArray qs = e.optJSONArray("questions");
         for (int i = 0; qs != null && i < qs.length(); i++) {
             String q = qs.optString(i);
-            TextView chip = t.text(this, q, 14.5f, t.ink, 600);
-            chip.setLineSpacing(t.dp(3), 1f);
-            chip.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
-            chip.setBackground(t.ripple(t.sheet, 18));
-            chip.setOnClickListener(v -> openChat(q));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = t.dp(8);
-            box.addView(chip, lp);
+            if (box.getChildCount() > 0) box.addView(hairline());
+            box.addView(askRow(q, null, false, v -> openChat(q)));
         }
+    }
+
+    private View askRow(String text, String note, boolean resume, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, t.dp(13), 0, t.dp(13));
+        TextView q = t.text(this, text, 15, resume ? accent : t.ink, resume ? 800 : 500);
+        q.setLineSpacing(t.dp(4), 1f);
+        row.addView(q, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (note != null) {
+            TextView n = t.text(this, note, 12.5f, t.sub, 700);
+            n.setTypeface(Theme.flex(this, 110, 700));
+            n.setPadding(t.dp(10), 0, 0, 0);
+            row.addView(n);
+        }
+        TextView go = t.text(this, "›", 16, accent, 800);
+        go.setPadding(t.dp(12), 0, 0, 0);
+        row.addView(go);
+        row.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_XS));
+        row.setOnClickListener(click);
+        return row;
     }
 
     private void toggleFollow() {
@@ -587,18 +728,68 @@ public class EventActivity extends Activity {
         }, "post").start();
     }
 
+    /** 一条来源：网站图标，来源名和时间，下面是这篇报道的标题。Google 新闻的标题末尾带着“ - 媒体”，去掉。 */
     private View sourceRow(JSONObject s) {
+        String url = s.optString("url"), label = s.optString("label"), title = s.optString("title");
+        String host = Uri.parse(url).getHost(), domain = host == null ? "" : host.replaceFirst("^(www|m)\\.", "");
+        if (domain.equals("news.google.com")) {
+            int i = title.lastIndexOf(" - ");
+            if (i > 0) title = title.substring(0, i);
+            domain = ""; // 不知道媒体的域名，图标只显示首字
+        }
         LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
-        row.addView(t.text(this, s.optString("label") + "，" + Theme.ago(Theme.millis(s.optString("time"))),
-                12, t.sub, 700));
-        TextView title = t.text(this, s.optString("title"), 14, t.ink, 400);
-        title.setLineSpacing(t.dp(3), 1f);
-        title.setPadding(0, t.dp(3), 0, 0);
-        row.addView(title);
-        row.setOnClickListener(v -> openUrl(s.optString("url")));
+        row.setPadding(0, t.dp(13), 0, t.dp(13));
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(26), t.dp(26));
+        il.rightMargin = t.dp(12);
+        il.topMargin = t.dp(1);
+        row.addView(siteIcon(label, domain), il);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = t.text(this, label, 13, t.ink, 800);
+        name.setSingleLine();
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        top.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView time = t.text(this, Theme.ago(Theme.millis(s.optString("time"))), 12, t.sub, 600);
+        time.setTypeface(Theme.flex(this, 96, 600));
+        time.setPadding(t.dp(8), 0, 0, 0);
+        top.addView(time);
+        col.addView(top);
+        TextView head = t.text(this, title, 14.5f, t.ink, 400);
+        head.setLineSpacing(t.dp(4), 1f);
+        head.setMaxLines(2);
+        head.setEllipsize(TextUtils.TruncateAt.END);
+        head.setPadding(0, t.dp(4), 0, 0);
+        col.addView(head);
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView go = t.text(this, "↗", 12, t.sub, 700);
+        go.setPadding(t.dp(10), t.dp(1), 0, 0);
+        row.addView(go);
+        row.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_XS));
+        row.setOnClickListener(v -> openUrl(url));
         return row;
+    }
+
+    /** 网站图标：先显示网站名的首字（点缀色），服务器有这个网站的图标再换上；domain 为空（Google 新闻）时只有首字。 */
+    private View siteIcon(String site, String domain) {
+        FrameLayout box = new FrameLayout(this);
+        box.setBackground(t.round((accent & 0x00FFFFFF) | (t.night ? 0x38000000 : 0x1F000000), Theme.R_XS));
+        box.setClipToOutline(true);
+        TextView letter = t.text(this, site.isEmpty() ? "" : site.substring(0, 1).toUpperCase(Locale.ROOT), 12.5f,
+                accent, 800);
+        letter.setGravity(Gravity.CENTER);
+        box.addView(letter, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (!domain.isEmpty()) Images.load(this, "/v1/icons/" + domain, b -> {
+            ImageView image = new ImageView(this);
+            image.setImageBitmap(b);
+            ((GradientDrawable) box.getBackground()).setColor(Color.WHITE); // 图标多是按白底画的，透明处垫白
+            box.removeView(letter);
+            box.addView(image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        });
+        return box;
     }
 
     private TextView action(String label, View.OnClickListener l) {
