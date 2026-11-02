@@ -63,14 +63,16 @@ class Ranker:
         opt = self.opt
         lead = event.lead
         text = " ".join([lead.title, lead.summary] + [s.title for s in event.signals]).lower()
-        score, reasons, topics = 0.0, [], []
+        score, reasons, topics, gains = 0.0, [], [], []
 
         for interest in self.interests:
             if hits := interest.hits(text):
-                score += interest.weight + 0.3 * (len(hits) - 1)
+                gains.append(interest.weight + 0.3 * (len(hits) - 1))
                 topics.append(interest.name)
                 reasons.append(f"和你说过的「{interest.said}」有关" if interest.said
                                else f"命中你关注的「{interest.name}」：{'、'.join(hits[:3])}")
+        # 命中几条关注时从高到低每条减半再加：同一方向的几条记忆不会把分数叠得过高，挤掉别的方向
+        score += sum(g * 0.5 ** i for i, g in enumerate(sorted(gains, reverse=True)))
 
         origin = " ".join(f"{s.source} {s.channel} {s.author}" for s in event.signals).lower()
         for pref in self.sources:

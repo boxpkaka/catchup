@@ -231,6 +231,7 @@ public class MainActivity extends Activity {
         super.onPause();
         Trace.log(this, "ui.pause", "");
         visible = false;
+        Track.flush(this);
         if (receiving) {
             unregisterReceiver(receiver);
             receiving = false;
@@ -465,7 +466,8 @@ public class MainActivity extends Activity {
 
     /** 报告里的一条展开成它说的那件事。 */
     private void openEvent(View from, long id) {
-        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT);
+        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                .putExtra(EventActivity.EXTRA_FROM, "report"), REQ_EVENT);
     }
 
     /**
@@ -946,6 +948,7 @@ public class MainActivity extends Activity {
             h.id = id;
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
+            if (visible && tab == FEED) Track.seen(MainActivity.this, id, r.type == 1 ? "top" : "feed"); // 列表只为看得见的行取视图
             h.front.setOnClickListener(v -> open(v, r.e));
             h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismissRow(id)));
             if (id == expanding) { // 撤销移除：内容绑好以后量出高度，从无到有展开
@@ -1173,7 +1176,8 @@ public class MainActivity extends Activity {
         long id = f.optLong("id");
         h.id = id;
         h.front.setOnClickListener(v -> Card.open(this, v, rowAnchor(id, true),
-                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT));
+                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                        .putExtra(EventActivity.EXTRA_FROM, "following"), REQ_EVENT));
     }
 
     /** 替你留意的问题有了答案：点开回到当时的对话，答案已经写在里面。 */
@@ -1318,7 +1322,8 @@ public class MainActivity extends Activity {
     private void open(View card, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
-                .putExtra(EventActivity.EXTRA_JSON, e.toString());
+                .putExtra(EventActivity.EXTRA_JSON, e.toString())
+                .putExtra(EventActivity.EXTRA_FROM, "feed");
         Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
     }
 
@@ -1681,8 +1686,8 @@ public class MainActivity extends Activity {
         wl.leftMargin = t.dp(12);
         row.addView(want, wl);
         long id = s.optLong("id");
-        row.setOnClickListener(v -> Card.open(this, v,
-                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id), REQ_EVENT));
+        row.setOnClickListener(v -> Card.open(this, v, new Intent(this, EventActivity.class)
+                .putExtra(EventActivity.EXTRA_ID, id).putExtra(EventActivity.EXTRA_FROM, "skipped"), REQ_EVENT));
         want.setOnClickListener(v -> {
             want.setEnabled(false);
             want.setText("记下中…");

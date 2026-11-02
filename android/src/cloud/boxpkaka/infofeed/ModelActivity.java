@@ -185,7 +185,7 @@ public class ModelActivity extends Activity {
             more.setPadding(0, t.dp(6), 0, 0);
             row.addView(more);
             row.setOnClickListener(v -> Card.open(this, v, new Intent(this, EventActivity.class)
-                    .putExtra(EventActivity.EXTRA_ID, x.optLong("event_id"))));
+                    .putExtra(EventActivity.EXTRA_ID, x.optLong("event_id")).putExtra(EventActivity.EXTRA_FROM, "model")));
             events.addView(row);
             body.addView(events);
             t.segments(events);

@@ -1,5 +1,5 @@
 """采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报 → 追踪进展
-→ 从反馈学习 → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
+→ 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次） → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
@@ -50,7 +50,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     signals, _ = ranked(config, store, now)
     arrived = {s.url for s in signals if s.event_id is None}
     stats = {"new_events": assign_events(store, signals, now), "merged": 0, "screened": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "intros": 0, "translated": 0}
+             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "intros": 0, "translated": 0,
+             "tidied": 0, "reinforced": personal.reinforce(store, now)}  # 先把新行为记到记忆强度上，这一轮排序就用上
     _, events = ranked(config, store, now)
     boards = {name for name, s in sources.items() if s.board}
     updates = []
@@ -67,7 +68,9 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
                                 llm, sources)
         stats["screened"] = len(screened)
         learned = personal.learn_from_feedback(config, store, llm, now)
+        tidied = personal.consolidate(store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
+        stats["tidied"] = len(tidied["updated"]) + len(tidied["removed"])
         stats["briefs"] = refresh_briefs(config, store, llm, now, rewrites=0, also=screened)  # 新事件先写，赶上这一轮推送
         updates = follow.run(store, llm, now)
         stats["follow_updates"] = len(updates)

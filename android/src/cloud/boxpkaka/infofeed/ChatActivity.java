@@ -723,12 +723,14 @@ public class ChatActivity extends Activity {
     }
 
     private void openEvent(View from, long id) {
-        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                .putExtra(EventActivity.EXTRA_FROM, "chat"));
     }
 
     /** 回答正文里的事件链接：不是卡片，从右边推进来。 */
     private void openEvent(long id) {
-        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                .putExtra(EventActivity.EXTRA_FROM, "chat"));
     }
 
     private void postAsync(String path, String json) {

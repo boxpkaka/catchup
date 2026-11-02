@@ -503,6 +503,109 @@ class PersonalTest(unittest.TestCase):
                       Ranker([Interest("AI 语音", 3, ["tts"])], avoid_sources=mute).score(event, NOW).reasons)
 
 
+class MemoryStrengthTest(unittest.TestCase):
+    """记忆强度：换个说法不重复记、行为加强或减弱、长期关注会淡忘、归纳的门槛和节奏、每天整理。"""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.store.add([sig("https://a/1", "Open-source TTS model with simultaneous interpretation"),
+                        sig("https://b/2", "Crypto coin launch"), sig("https://c/3", "Kokoro-TTS beats ElevenLabs in blind test")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        self.ids = {e.lead.url: e.id for e in group_events(self.store.recent(NOW - timedelta(days=3), NOW))}
+
+    def add(self, kind, text, keywords, origin="对话", now=NOW):
+        from catchup import personal
+        return personal.apply_ops(self.store, {"add": [{"kind": kind, "text": text, "keywords": keywords}]}, origin, now)
+
+    def memory(self, mid):
+        return next(m for m in self.store.memories() if m["id"] == mid)
+
+    def test_paraphrase_reinforces_instead_of_adding(self):
+        from catchup import personal
+        first = self.add("interest", "你关注开源语音大模型（同声传译、空间音频、语音转录）的发布进展",
+                         ["同声传译", "空间音频", "语音转录", "开源"])["added"][0]
+        again = self.add("interest", "你关注开源语音大模型（同声传译、空间音频、语音转录）的发布与进展",
+                         ["同声传译", "空间音频", "语音转录"], personal.FEEDBACK_ORIGIN, NOW + timedelta(days=1))
+        self.assertEqual((again["added"], [m["id"] for m in again["updated"]]), ([], [first["id"]]))
+        [m] = self.store.memories()
+        self.assertGreater(m["strength"], personal.FULL)
+        self.assertEqual(len(self.add("interest", "你关注 AI 模型聚合平台", ["模型聚合", "Token Factory"])["added"]), 1)
+
+    def test_interest_fades_and_duplicates_do_not_stack(self):
+        from catchup import personal
+        from catchup.pipeline.ranking import Interest
+        cfg = Config(root=Path("."), sources=SOURCES, interests=[], ranking={})
+        self.add("interest", "你关注语音合成", ["tts"])
+        self.add("avoid", "你不想看加密货币", ["crypto"])
+        self.assertEqual([i.weight for i in personal.build_ranker(cfg, self.store, NOW).interests], [2.0])
+        later = NOW + timedelta(days=60)  # 两个半衰期没被印证：权重降到下限，但不会消失
+        self.assertAlmostEqual(personal.build_ranker(cfg, self.store, later).interests[0].weight, 2.0 * personal.FLOOR)
+        self.assertEqual([personal.strength(m, later) for m in self.store.memories() if m["kind"] == "avoid"], [3.0])
+        [event] = group_events(self.store.event_signals(self.ids["https://c/3"]))
+        s1, s2, s3 = (Ranker([Interest(str(n), 2, ["tts"]) for n in range(k)]).score(event, NOW).score for k in (1, 2, 3))
+        self.assertLess(s3 - s2, s2 - s1)  # 同一方向的几条记忆递减累加
+
+    def test_behaviour_moves_strength(self):
+        from catchup import personal
+        tts = self.add("interest", "你关注语音合成", ["tts"])["added"][0]["id"]
+        crypto = self.add("avoid", "你不想看加密货币", ["crypto"])["added"][0]["id"]
+        a, b, c = (self.ids[u] for u in ("https://a/1", "https://b/2", "https://c/3"))
+        self.store.add_actions([(a, "follow", None, NOW)])  # 和记忆同时发生的（当场因它记下的）不再加强一遍
+        self.assertEqual(personal.reinforce(self.store, NOW), 0)
+        now = NOW + timedelta(minutes=1)
+        self.store.add_actions([(c, "read", json.dumps({"secs": 5}), now), (c, "seen", "feed", now)])
+        self.assertEqual(personal.reinforce(self.store, now), 0)  # 点开就走、只是显示过：不算
+        self.store.add_actions([(a, "read", json.dumps({"secs": 60}), now), (c, "follow", None, now),
+                                (b, "not_needed", "topic", now)])
+        self.assertEqual(personal.reinforce(self.store, now), 2)
+        self.assertEqual((round(self.memory(tts)["strength"], 3), self.memory(crypto)["strength"]), (7.0, 6.0))
+        later = now + timedelta(hours=1)
+        self.store.add_actions([(b, "restore", None, later), (b, "not_needed", "source", later),
+                                (c, "not_needed", "known", later), (a, "not_needed", "other", later)])
+        personal.reinforce(self.store, later)
+        self.assertEqual(self.memory(crypto)["strength"], 3.0)  # 撤回了“不需要”；再标“不想看这个来源”不算内容
+        m = self.memory(tts)  # 不需要（已经知道了）不算；其他原因的稍微减弱，但不算一次印证
+        self.assertAlmostEqual(personal.strength(m, later), 7.0 * 0.5 ** (1 / 720) - 1, places=3)
+        self.assertEqual(m["seen"], to_iso(now))
+
+    def test_learning_needs_active_evidence_and_waits(self):
+        from catchup import personal
+        a, c = self.ids["https://a/1"], self.ids["https://c/3"]
+        for e in (a, c):
+            self.store.add_action(e, "ask", None, NOW)
+            self.store.add_action(e, "open_source", None, NOW)
+            self.store.add_actions([(e, "read", json.dumps({"secs": 300}), NOW)])
+        llm = mock.Mock()
+        llm.json.side_effect = lambda *_, **__: {"add": [{"kind": "interest", "text": "你关注语音合成", "keywords": ["tts"],
+                                                         "evidence": [1, 2]}]}
+        self.assertEqual(personal.learn_from_feedback(config(), self.store, llm, NOW)["added"], [])  # 各问一次、看过：不够
+        self.assertNotIn("看原文", llm.json.call_args[0][1])
+        self.store.add_action(c, "follow", None, NOW + timedelta(hours=1))
+        self.assertEqual(personal.learn_from_feedback(config(), self.store, llm, NOW + timedelta(hours=1))["added"], [])
+        self.assertEqual(llm.json.call_count, 1)  # 6 小时内不再归纳
+        added = personal.learn_from_feedback(config(), self.store, llm, NOW + timedelta(hours=6))["added"]
+        self.assertEqual([m["text"] for m in added], ["你关注语音合成"])  # 又追踪了，够了
+
+    def test_daily_consolidation_merges_and_retires(self):
+        from catchup import personal
+        said = self.add("interest", "你关注语音合成", ["tts"], "你手动添加")["added"][0]["id"]
+        dup = self.add("interest", "你关注 TTS 模型发布", ["voice"], personal.FEEDBACK_ORIGIN)["added"][0]["id"]
+        self.add("interest", "你关注加密货币", ["crypto"], personal.FEEDBACK_ORIGIN, NOW - timedelta(days=90))
+        avoid = self.add("avoid", "你不想看人事任命", ["任命"])["added"][0]["id"]
+        rev = personal.memory_rev(self.store)
+        llm = mock.Mock()
+        llm.json.return_value = {"merge": [{"ids": [dup, said], "text": "你关注语音合成模型", "keywords": ["tts", "voice"]},
+                                           {"ids": [said, avoid], "text": "x"}]}  # 已经合并过的、跨类别的都不合
+        personal.consolidate(self.store, llm, NOW)
+        left = {m["id"]: m for m in self.store.memories()}
+        self.assertEqual(sorted(left), [said, avoid])  # 重复的合进手动添加的那条，90 天没印证的归纳记忆删掉
+        self.assertEqual(left[said]["text"], "你关注语音合成")  # 手动添加的不改写
+        self.assertGreater(left[said]["strength"], personal.FULL)
+        self.assertEqual(personal.memory_rev(self.store), rev + 1)
+        self.assertFalse(any(personal.consolidate(self.store, llm, NOW + timedelta(hours=12)).values()))  # 一天一次
+        self.assertEqual(llm.json.call_count, 1)
+
+
 class ChatTest(unittest.TestCase):
     def setUp(self):
         self.store = Store(":memory:")
@@ -635,12 +738,22 @@ class AppApiMoreTest(unittest.TestCase):
     def test_memories_crud_and_personalize_switch(self):
         self.assertEqual(self.call("POST", "/v1/memories", {"kind": "task", "text": "你在评估 FunASR"})[0], 200)
         [m] = self.call("GET", "/v1/memories")[1]["memories"]
-        self.assertEqual((m["kind_label"], m["days_left"], m["origin"]), ("正在做", 21, "你手动添加"))
+        self.assertEqual((m["kind_label"], m["days_left"], m["origin"], m["strength"]), ("正在做", 21, "你手动添加", 3.0))
         self.call("POST", f"/v1/memories/{m['id']}", {"text": "你在用 FunASR"})
         self.assertEqual(self.store.memories()[0]["keywords"], ["funasr", "asr"])
         self.call("POST", f"/v1/memories/{m['id']}", {"delete": True})
         self.assertEqual(self.call("GET", "/v1/memories")[1]["memories"], [])
         self.assertFalse(self.call("POST", "/v1/settings", {"personalize": False})[1]["personalize"])
+
+    def test_track_saves_views_for_memory(self):
+        eid = self.call("GET", "/v1/feed")[1]["events"][0]["id"]
+        items = [{"event": eid, "kind": "seen", "from": "feed", "at": to_iso(NOW - timedelta(minutes=5))},
+                 {"event": eid, "kind": "read", "from": "push", "secs": 75, "depth": 180, "at": "2020-01-01T00:00:00Z"},
+                 {"event": "x", "kind": "read"}, {"event": eid, "kind": "useful"}]
+        self.assertEqual(self.call("POST", "/v1/track", {"items": items})[1], {"saved": 2})
+        self.assertEqual([(k, v, at) for _, _, k, v, at in self.store.actions(NOW - timedelta(days=1))],
+                         [("seen", "feed", to_iso(NOW - timedelta(minutes=5))),
+                          ("read", json.dumps({"from": "push", "secs": 75, "depth": 100}), to_iso(NOW))])
 
     def test_share_link_becomes_event_and_is_never_pushed_back(self):
         from catchup.pipeline.update import ranked

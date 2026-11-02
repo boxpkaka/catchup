@@ -101,6 +101,14 @@ MIGRATIONS = [
     "alter table briefs add column insight text;",
     # 只读设备（devices mirror）：看到的和本人一样，但不能反馈、对话或改记忆
     "alter table devices add column readonly integer not null default 0;",
+    # 记忆强度：被行为印证就加强、长期没印证就减弱（见 personal.strength）；seen 是最近一次被印证的时间。
+    # 已有的行为当初已经变成了记忆，不再拿来加强一遍
+    """
+    alter table memories add column strength real not null default 3;
+    alter table memories add column seen text;
+    update memories set seen = updated;
+    insert or replace into settings (key, value) select 'actions_reinforced', coalesce(max(id), 0) from actions;
+    """,
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
@@ -283,10 +291,20 @@ class Store:
                          (event_id, kind, value, to_iso(now)))
         self.con.commit()
 
+    def add_actions(self, rows: list[tuple[int, str, str | None, datetime]]) -> None:
+        """批量记下 App 上报的行为 (event_id, kind, value, at)。"""
+        self.con.executemany("insert into actions (event_id, kind, value, at) values (?, ?, ?, ?)",
+                             [(e, k, v, to_iso(at)) for e, k, v, at in rows])
+        self.con.commit()
+
     def actions(self, since: datetime) -> list[tuple[int, int, str, str | None, str]]:
         """(id, event_id, kind, value, at)，按发生顺序。"""
         return self.con.execute("select id, event_id, kind, value, at from actions where at >= ? order by id",
                                 (to_iso(since),)).fetchall()
+
+    def actions_after(self, action_id: int) -> list[tuple[int, int, str, str | None, str]]:
+        return self.con.execute("select id, event_id, kind, value, at from actions where id > ? order by id",
+                                (action_id,)).fetchall()
 
     def set_rating(self, event_id: int, would_miss: bool, now: datetime) -> None:
         self.con.execute("insert or replace into ratings values (?, ?, ?)", (event_id, int(would_miss), to_iso(now)))
@@ -310,10 +328,10 @@ class Store:
 
     def memories(self, include_deleted: bool = False) -> list[dict]:
         rows = self.con.execute("select id, kind, text, keywords, origin, thread_id, event_id, created, updated, "
-                                "expires, deleted from memories" + ("" if include_deleted else " where deleted = 0")
-                                + " order by updated desc").fetchall()
+                                "expires, deleted, strength, seen from memories"
+                                + ("" if include_deleted else " where deleted = 0") + " order by updated desc").fetchall()
         keys = ("id", "kind", "text", "keywords", "origin", "thread_id", "event_id", "created", "updated", "expires",
-                "deleted")
+                "deleted", "strength", "seen")
         out = [dict(zip(keys, r)) for r in rows]
         for m in out:
             m["keywords"] = json.loads(m["keywords"] or "[]")
@@ -323,10 +341,10 @@ class Store:
     def add_memory(self, kind: str, text: str, keywords: list[str], origin: str, now: datetime,
                    expires: datetime | None = None, thread_id: int | None = None, event_id: int | None = None) -> int:
         cur = self.con.execute(
-            "insert into memories (kind, text, keywords, origin, thread_id, event_id, created, updated, expires) "
-            "values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "insert into memories (kind, text, keywords, origin, thread_id, event_id, created, updated, expires, seen) "
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (kind, text, json.dumps(keywords, ensure_ascii=False), origin, thread_id, event_id, to_iso(now),
-             to_iso(now), to_iso(expires)))
+             to_iso(now), to_iso(expires), to_iso(now)))
         self.con.commit()
         return cur.lastrowid
 
@@ -342,6 +360,12 @@ class Store:
                              (*fields.values(), to_iso(now), memory_id)).rowcount
         self.con.commit()
         return n > 0
+
+    def set_strength(self, memory_id: int, strength: float, seen: datetime | None) -> None:
+        """只改强度，不动 updated（那是内容最后一次改写的时间）；seen 为 None 时保持原来的印证时间。"""
+        self.con.execute("update memories set strength = ?, seen = coalesce(?, seen) where id = ?",
+                         (strength, to_iso(seen), memory_id))
+        self.con.commit()
 
     # ---------- 对话 ----------
 

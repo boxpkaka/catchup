@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -49,6 +50,9 @@ SKIP_LIMIT = 10
 ANSWER_DAYS = 3
 FOLLOW_DAYS = 30
 DISMISSED_DAYS = 30
+TRACK_KINDS = {"seen", "read"}  # App 上报的行为，见 track()
+TRACK_BATCH = 200
+TRACK_DAYS = 7  # 手机离线攒下的埋点，太早的时间不可信，按收到的时间记
 
 
 def handle(config: Config, store: Store, method: str, path: str, headers, body: dict | None,
@@ -87,6 +91,8 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         if llm is None:
             return 503, {"error": "没有配置大模型"}
         return 200, chat.chat(config, store, llm, body, now)
+    if method == "POST" and path == "/v1/track":
+        return 200, {"saved": track(store, body.get("items"), now)}
     if path == "/v1/memories":
         return (200, memories(config, store, now)) if method == "GET" else add_memory(config, store, body, now)
     if method == "POST" and (m := re.fullmatch(r"/v1/memories/(\d+)", path)):
@@ -173,6 +179,38 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
         store.add_action(event_id, "open_source", None, now)
         return 200, {"ok": True}
     return 404, {"error": "not found"}
+
+
+def track(store: Store, items, now: datetime) -> int:
+    """App 批量上报的行为，记进 actions，用来加强或减弱记忆（personal.reinforce）：
+    seen 是在信息流里显示过（value 是哪个列表），read 是打开过详情（value 是 {from, secs, depth}：从哪进来、
+    停留几秒、读到多深的百分比）。只读设备在 handle() 里就被拒绝了，不会影响本人的记忆。"""
+    rows = []
+    for x in (items if isinstance(items, list) else [])[:TRACK_BATCH]:
+        if not isinstance(x, dict) or x.get("kind") not in TRACK_KINDS:
+            continue
+        try:
+            event_id = int(x.get("event"))
+        except (TypeError, ValueError):
+            continue
+        at = parse_time(str(x.get("at") or ""))
+        if at is None or at > now or at < now - timedelta(days=TRACK_DAYS):
+            at = now
+        source = str(x.get("from") or "")[:20]
+        if x["kind"] == "read":
+            value = json.dumps({"from": source, "secs": _clamp(x.get("secs"), 3600), "depth": _clamp(x.get("depth"), 100)})
+        else:
+            value = source
+        rows.append((event_id, x["kind"], value, at))
+    store.add_actions(rows)
+    return len(rows)
+
+
+def _clamp(value, top: int) -> int:
+    try:
+        return max(0, min(int(value), top))
+    except (TypeError, ValueError):
+        return 0
 
 
 def register(store: Store, name: str, now: datetime) -> tuple[int, dict]:
@@ -535,6 +573,7 @@ def memories(config: Config, store: Store, now: datetime) -> dict:
                     "text": m["text"], "origin": m["origin"], "created": m["created"], "updated": m["updated"],
                     "event": briefs[m["event_id"]]["headline"] if m["event_id"] in briefs else None,
                     "days_left": max(0, (expires - now).days) if expires else None,
+                    "strength": round(personal.strength(m, now), 2), "seen": m["seen"],
                     "expired": bool(expires and expires <= now)})
     week_ago = to_iso(now - timedelta(days=7))
     questions = [{"id": q["id"], "text": q["text"], "status": q["status"], "answer": q["answer"], "created": q["created"],
