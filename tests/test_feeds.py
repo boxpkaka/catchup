@@ -237,6 +237,28 @@ class RealtimeSourcesTest(unittest.TestCase):
         self.assertEqual((s.url, s.channel), ("https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-ai"))
         self.assertEqual(s.published.isoformat(), "2026-10-17T02:40:00+00:00")
 
+    def test_hf_models_carry_size_license_and_base_model(self):
+        src = build_sources({"hf": {"type": "hf_models", "pipeline_tags": ["text-generation"]}})["hf"]
+        data = [
+            {"id": "acme/Chat-8B", "likes": 9, "safetensors": {"parameters": {"F32": 10, "BF16": 8_190_735_360},
+                                                               "total": 8_190_735_370},
+             "tags": ["base_model:acme/Chat-8B-Base", "base_model:finetune:acme/Chat-8B-Base", "license:apache-2.0"]},
+            {"id": "acme/Chat-8B-GGUF", "gguf": {"total": 8_190_735_400},
+             "tags": ["base_model:quantized:acme/Chat-8B", "license:mit"]},
+            {"id": "acme/voice-0.6b", "tags": []},  # .pth 权重，HF 算不出参数量
+            {"id": "acme/voice", "tags": ["base_model:acme/x"]},
+        ]
+        with mock.patch("catchup.http.get_json", return_value=data) as get:
+            a, b, c, d = src.fetch()
+        self.assertIn("expand[]=safetensors", get.call_args[0][0])
+        self.assertEqual(a.extra, {"likes": 9, "downloads": None, "trending": None, "params": 8_190_735_370,
+                                   "precision": "BF16", "license": "apache-2.0", "base_model": "acme/Chat-8B-Base",
+                                   "base_relation": "finetune"})
+        self.assertEqual({k: b.extra[k] for k in ("params", "precision", "license", "base_relation")},
+                         {"params": 8_190_735_400, "precision": "GGUF", "license": "mit", "base_relation": "quantized"})
+        self.assertEqual((c.extra["params_name"], "params" in c.extra), ("0.6B", False))
+        self.assertEqual(set(d.extra), {"likes", "downloads", "trending"})
+
 
 if __name__ == "__main__":
     unittest.main()

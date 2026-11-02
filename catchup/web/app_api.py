@@ -452,7 +452,8 @@ def _boards(config: Config, store: Store, now: datetime, sources) -> dict[str, l
             items.append({"board": name, "channel": r["channel"], "rank": r["rank"], "url": r["url"], "name": r["title"],
                           "summary": zh((r["summary"] or "")[:translate.SUMMARY_CHARS]),
                           "topic": _item_topic(b, interests, f"{r['title']} {r['summary']} {r['channel']}"),
-                          "event_id": ids[r["url"]], "importance": b["importance"] if b else None,
+                          "event_id": ids[r["url"]], "headline": b["headline"] if b else None,
+                          "importance": b["importance"] if b else None,
                           "time": r["first_seen"], "days": days, "new": days == 1 and started < today,
                           "task": CHANNELS.get(r["channel"], "") if sources[name].type == "hf_models" else "",
                           "extra": r["extra"]})
