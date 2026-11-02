@@ -66,7 +66,8 @@ import java.util.Set;
  * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
  * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗、带一行概要，其他只有标题。不按话题上色，话题写在来源前面；
  * 颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
- * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销），点开看详情。三页之间左右滑切换（左滑下一页），也可以点标签。
+ * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销；追踪中的行右滑是取消追踪、答案不再显示），点开看详情。
+ * 三页之间左右滑切换（左滑下一页），也可以点标签。
  * 专题页见 TopicsView，报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
@@ -121,6 +122,7 @@ public class MainActivity extends Activity {
     private final Set<Long> hidden = new HashSet<>();
     private long pendingDismiss = -1;
     private final Set<Long> collapsing = new HashSet<>(); // 正在收起的行，列表重绑时别打断它的动画
+    private final Set<String> leaving = new HashSet<>(); // 追踪中正在收起的行（按 rowKey）
     private long expanding = -1; // 撤销后要展开的那一行
     private long answeredFor = -1; // 撤销条正在等哪件事的“记住了”回应
     private final Runnable commitDismiss = () -> commitDismiss(null);
@@ -466,7 +468,7 @@ public class MainActivity extends Activity {
 
     /**
      * 列表里显示这件事的那张卡片：行会被复用，关详情页时按 id 重新找。同一件事可能既在“追踪中”又在下面的时间线里，
-     * follow 说明要找的是哪一种（追踪行后面没有“不需要”）。
+     * follow 说明要找的是哪一种。
      */
     private Card.Anchor rowAnchor(long id, boolean follow) {
         return () -> {
@@ -474,7 +476,7 @@ public class MainActivity extends Activity {
                 Object tag = list.getChildAt(i).getTag();
                 if (tag instanceof Holder) {
                     Holder h = (Holder) tag;
-                    if (h.id == id && (h.behind == null) == follow) return h.front;
+                    if (h.id == id && h.follow == follow) return h.front;
                 }
             }
             return null;
@@ -913,11 +915,20 @@ public class MainActivity extends Activity {
             if (r.type == 5) return convert != null ? convert : skippedEntry();
             // 追踪中、最值得看和按时间的行是分段列表：一组的头尾用大圆角
             boolean first = rows.get(i - 1).type != r.type, last = i == rows.size() - 1 || rows.get(i + 1).type != r.type;
+            float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
             if (r.type == 3) {
                 if (convert == null) convert = newFollowRow();
-                SwipeDismiss.unfold(convert);
-                if (ANSWER.equals(r.label)) bindAnswer((Holder) convert.getTag(), r.e, first, last);
-                else bindFollow((Holder) convert.getTag(), r.e, first, last);
+                Holder h = (Holder) convert.getTag();
+                boolean answer = ANSWER.equals(r.label);
+                if (!leaving.contains(rowKey(r))) {
+                    SwipeDismiss.reset(h.front, h.behind);
+                    SwipeDismiss.unfold(convert);
+                }
+                h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
+                ((TextView) h.behind).setText(answer ? "✕  不用了" : "✕  取消追踪");
+                if (answer) bindAnswer(h, r.e, first, last);
+                else bindFollow(h, r.e, first, last);
+                h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> leaveFollow((View) v.getParent(), r)));
                 return convert;
             }
             if (convert == null) convert = r.type == 1 ? newTop() : newRow();
@@ -928,7 +939,6 @@ public class MainActivity extends Activity {
                 SwipeDismiss.unfold(convert);
             }
             h.front.setBackground(t.segment(t.sheet, first, last));
-            float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
             h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
             h.id = id;
             if (r.type == 1) bindTop(h, r);
@@ -949,6 +959,7 @@ public class MainActivity extends Activity {
 
     private static final class Holder {
         long id = -1; // 显示的是哪件事，追踪行和答案行以外的分组标题等都是 -1
+        boolean follow; // 追踪中的行（追踪的事件和有了答案的问题）
         View front, behind;
         TextView label, badge, num, headline, summary, meta, time;
     }
@@ -967,7 +978,7 @@ public class MainActivity extends Activity {
         return v;
     }
 
-    /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”，从左边露出来。 */
+    /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”（追踪中的行绑定时换成“取消追踪”“不用了”），从左边露出来。 */
     private FrameLayout swipeFrame(Holder h, View front) {
         FrameLayout frame = new FrameLayout(this) {
             /** 右滑归这一行（移除），首页不拿它拉橡皮筋。 */
@@ -1107,11 +1118,9 @@ public class MainActivity extends Activity {
         h.meta.setTypeface(Theme.flex(this, 90, 600));
         h.meta.setPadding(0, t.dp(8), 0, 0);
         card.addView(h.meta);
-        h.front = card;
-        FrameLayout frame = new FrameLayout(this);
+        h.follow = true;
+        FrameLayout frame = swipeFrame(h, card);
         frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
-        frame.addView(card);
-        frame.setTag(h);
         return frame;
     }
 
@@ -1290,6 +1299,38 @@ public class MainActivity extends Activity {
             collapsing.remove(id);
             dismiss(id);
         });
+    }
+
+    /**
+     * 右滑追踪中的一行：追踪的事件取消追踪，有了答案的问题不再显示（服务器上记成不用再留意）。
+     * 这一行平滑收起，收完从列表里拿掉；没有撤销，取消追踪的可以在详情页重新追踪。
+     */
+    private void leaveFollow(View row, Row r) {
+        boolean answer = ANSWER.equals(r.label);
+        long id = r.e.optLong("id");
+        String key = rowKey(r);
+        leaving.add(key);
+        SwipeDismiss.collapse(row, () -> {
+            leaving.remove(key);
+            JSONArray rows = feed == null ? null : feed.optJSONArray(answer ? "answers" : "following");
+            for (int i = 0; rows != null && i < rows.length(); i++) {
+                if (rows.optJSONObject(i).optLong("id") == id) {
+                    rows.remove(i);
+                    break;
+                }
+            }
+            render();
+        });
+        Trace.log(this, answer ? "ui.answer.drop" : "ui.unfollow", "id=" + id);
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            try {
+                if (answer) Api.post(app, "/v1/questions/" + id, new JSONObject().put("drop", true));
+                else Api.post(app, "/v1/events/" + id + "/follow", new JSONObject().put("on", false));
+            } catch (Exception err) {
+                Trace.log(app, "follow.leave.fail", "id=" + id + " " + err);
+            }
+        }, "follow").start();
     }
 
     private void dismiss(long id) {
