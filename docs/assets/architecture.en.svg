@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 404" width="1120" height="404" role="img" aria-label="How Catchup works: sources, collect, events, rank, brief, deliver; memory feeds back into ranking and briefs">
+  <title>How Catchup works</title>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }
+    .panel { fill: #F6F6FA; }
+    .card { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .db { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .db-icon { fill: #DCE0FF; stroke: #3443F5; stroke-width: 1.5; }
+    .step { fill: #3443F5; font-size: 13px; font-weight: 700; letter-spacing: .06em; }
+    .title { fill: #15161F; font-size: 17px; font-weight: 800; }
+    .text { fill: #5E6072; font-size: 12px; }
+    .caption { fill: #5E6072; font-size: 12px; }
+    .tag { fill: #DCE0FF; }
+    .tag-t { fill: #0E1C8F; font-size: 11px; font-weight: 700; }
+    .flow { fill: none; stroke: #3443F5; stroke-width: 2; stroke-linecap: round; }
+    .flow-head { fill: #3443F5; }
+    .loop { fill: none; stroke: #6E8F00; stroke-width: 2; stroke-linecap: round; stroke-dasharray: 5 5; }
+    .loop-head { fill: #6E8F00; }
+    .chip { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .chip-t { fill: #5E6072; font-size: 11px; font-weight: 600; }
+    .loop-chip { fill: #EEF8CC; stroke: #B5D44A; stroke-width: 1; }
+    .loop-chip-t { fill: #3A4D00; font-size: 11px; font-weight: 600; }
+    .mem { fill: #D6F36B; }
+    .mem-title { fill: #1F2E00; font-size: 17px; font-weight: 800; }
+    .mem-sub { fill: #3A4D00; font-size: 12px; }
+    .pill { fill: #FFFFFF; fill-opacity: .6; }
+    .pill-t { fill: #1F2E00; font-size: 11px; font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+      .panel { fill: #121319; }
+      .card, .db, .chip { fill: #1D1E26; stroke: #33354A; }
+      .db-icon { fill: #283180; stroke: #B9C0FF; }
+      .step { fill: #B9C0FF; }
+      .title { fill: #E6E6EF; }
+      .text, .caption, .chip-t { fill: #A2A4B6; }
+      .tag { fill: #283180; }
+      .tag-t { fill: #DCE0FF; }
+      .flow { stroke: #8F99FF; }
+      .flow-head { fill: #8F99FF; }
+      .loop { stroke: #C4E65A; }
+      .loop-head { fill: #C4E65A; }
+      .loop-chip { fill: #26300C; stroke: #6E8F00; }
+      .loop-chip-t { fill: #DDF2A0; }
+      .mem { fill: #C4E65A; }
+      .mem-title, .pill-t { fill: #1C2A00; }
+      .mem-sub { fill: #2E3D00; }
+      .pill { fill-opacity: .5; }
+    }
+  </style>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#15161F" flood-opacity=".07"/>
+    </filter>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="flow-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="loop-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="loop-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="panel" width="1120" height="404" rx="24"/>
+  <text class="caption" x="34" y="36">Every 10 minutes: collect the sources that are due, then run the whole pipeline</text>
+
+  <!-- 处理流程 -->
+  <g transform="translate(34,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">01</text>
+    <text class="title" x="18" y="66">Sources</text>
+    <text class="text" x="18" y="94">GitHub · HF · arXiv</text>
+    <text class="text" x="18" y="114">HN · Reddit · X</text>
+    <text class="text" x="18" y="134">Blogs · podcasts</text>
+  </g>
+  <g transform="translate(214,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">02</text>
+    <text class="title" x="18" y="66">Collect</text>
+    <text class="text" x="18" y="94">Per-source schedule</text>
+    <text class="text" x="18" y="114">Failures isolated</text>
+    <text class="text" x="18" y="134">Retry after 20 min</text>
+  </g>
+  <g transform="translate(394,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">03</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">LLM</text></g>
+    <text class="title" x="18" y="66">Events</text>
+    <text class="text" x="18" y="94">Rule clustering</text>
+    <text class="text" x="18" y="114">LLM merges stories</text>
+    <text class="text" x="18" y="134">Stable ids</text>
+  </g>
+  <g transform="translate(574,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">04</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">LLM</text></g>
+    <text class="title" x="18" y="66">Rank</text>
+    <text class="text" x="18" y="94">Rules × importance</text>
+    <text class="text" x="18" y="114">Interest · source</text>
+    <text class="text" x="18" y="134">Reason per bonus</text>
+  </g>
+  <g transform="translate(754,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">05</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">LLM</text></g>
+    <text class="title" x="18" y="66">Brief</text>
+    <text class="text" x="18" y="94">Reads the source</text>
+    <text class="text" x="18" y="114">Summary · points</text>
+    <text class="text" x="18" y="134">AI analysis</text>
+  </g>
+  <g transform="translate(934,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">06</text>
+    <text class="title" x="18" y="66">Deliver</text>
+    <text class="text" x="18" y="94">Push to phone</text>
+    <text class="text" x="18" y="114">Morning digest</text>
+    <text class="text" x="18" y="134">Day · week · month</text>
+  </g>
+
+  <path class="flow" d="M195,131 H208" marker-end="url(#head)"/>
+  <path class="flow" d="M375,131 H388" marker-end="url(#head)"/>
+  <path class="flow" d="M555,131 H568" marker-end="url(#head)"/>
+  <path class="flow" d="M735,131 H748" marker-end="url(#head)"/>
+  <path class="flow" d="M915,131 H928" marker-end="url(#head)"/>
+
+  <!-- 存储 -->
+  <path class="flow" d="M292,212 V255" marker-end="url(#head)"/>
+  <path class="flow" d="M472,212 V255" marker-end="url(#head)"/>
+  <g transform="translate(250,222)"><rect class="chip" width="84" height="22" rx="11"/><text class="chip-t" x="42" y="15" text-anchor="middle">URL dedupe</text></g>
+  <g transform="translate(436,222)"><rect class="chip" width="72" height="22" rx="11"/><text class="chip-t" x="36" y="15" text-anchor="middle">Persisted</text></g>
+
+  <g transform="translate(214,262)">
+    <rect class="db" width="336" height="110" rx="16" filter="url(#shadow)"/>
+    <path class="db-icon" d="M24,36 v36 a20,7 0 0 0 40,0 v-36"/>
+    <ellipse class="db-icon" cx="44" cy="36" rx="20" ry="7"/>
+    <path class="db-icon" d="M24,54 a20,7 0 0 0 40,0" fill="none"/>
+    <text class="title" x="84" y="44">SQLite</text>
+    <text class="text" x="84" y="68">signals · events · memories</text>
+    <text class="text" x="84" y="88">Re-rank without re-collecting</text>
+  </g>
+
+  <!-- 记忆反馈 -->
+  <path class="loop" d="M1012,212 V255" marker-end="url(#loop-head)"/>
+  <path class="loop" d="M652,258 V213" marker-end="url(#loop-head)"/>
+  <path class="loop" d="M832,258 V213" marker-end="url(#loop-head)"/>
+  <g transform="translate(934,222)"><rect class="loop-chip" width="156" height="22" rx="11"/><text class="loop-chip-t" x="78" y="15" text-anchor="middle">Chat · feedback · reads</text></g>
+  <g transform="translate(618,222)"><rect class="loop-chip" width="68" height="22" rx="11"/><text class="loop-chip-t" x="34" y="15" text-anchor="middle">Weights</text></g>
+  <g transform="translate(780,222)"><rect class="loop-chip" width="104" height="22" rx="11"/><text class="loop-chip-t" x="52" y="15" text-anchor="middle">Rewrites briefs</text></g>
+
+  <g transform="translate(574,262)">
+    <rect class="mem" width="516" height="110" rx="16"/>
+    <text class="mem-title" x="22" y="34">Memory</text>
+    <text class="mem-sub" x="104" y="34">learns who you are</text>
+    <g transform="translate(22,48)">
+      <rect class="pill" x="0" width="72" height="24" rx="12"/><text class="pill-t" x="36" y="16.5" text-anchor="middle">Interests</text>
+      <rect class="pill" x="78" width="80" height="24" rx="12"/><text class="pill-t" x="118" y="16.5" text-anchor="middle">Working on</text>
+      <rect class="pill" x="164" width="80" height="24" rx="12"/><text class="pill-t" x="204" y="16.5" text-anchor="middle">Not wanted</text>
+      <rect class="pill" x="250" width="62" height="24" rx="12"/><text class="pill-t" x="281" y="16.5" text-anchor="middle">Sources</text>
+      <rect class="pill" x="318" width="98" height="24" rx="12"/><text class="pill-t" x="367" y="16.5" text-anchor="middle">Avoid sources</text>
+      <rect class="pill" x="422" width="48" height="24" rx="12"/><text class="pill-t" x="446" y="16.5" text-anchor="middle">Style</text>
+    </g>
+    <text class="mem-sub" x="22" y="94">Each has a strength: confirmed by what you do, fades when unused, tidied daily</text>
+  </g>
+
+  <!-- 图例 -->
+  <path class="flow" d="M34,288 H66" marker-end="url(#head)"/>
+  <text class="caption" x="80" y="292">Pipeline</text>
+  <path class="loop" d="M34,316 H66" marker-end="url(#loop-head)"/>
+  <text class="caption" x="80" y="320">Memory feedback</text>
+  <g transform="translate(34,333)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">LLM</text></g>
+  <text class="caption" x="80" y="348">Uses an LLM</text>
+</svg>

@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 404" width="1120" height="404" role="img" aria-label="Catchup 工作原理：信息源、采集、事件、排序、简报、送达，记忆反过来影响排序和简报">
+  <title>Catchup 工作原理</title>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }
+    .panel { fill: #F6F6FA; }
+    .card { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .db { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .db-icon { fill: #DCE0FF; stroke: #3443F5; stroke-width: 1.5; }
+    .step { fill: #3443F5; font-size: 13px; font-weight: 700; letter-spacing: .06em; }
+    .title { fill: #15161F; font-size: 17px; font-weight: 800; }
+    .text { fill: #5E6072; font-size: 12px; }
+    .caption { fill: #5E6072; font-size: 12px; }
+    .tag { fill: #DCE0FF; }
+    .tag-t { fill: #0E1C8F; font-size: 11px; font-weight: 700; }
+    .flow { fill: none; stroke: #3443F5; stroke-width: 2; stroke-linecap: round; }
+    .flow-head { fill: #3443F5; }
+    .loop { fill: none; stroke: #6E8F00; stroke-width: 2; stroke-linecap: round; stroke-dasharray: 5 5; }
+    .loop-head { fill: #6E8F00; }
+    .chip { fill: #FFFFFF; stroke: #DCDDE8; stroke-width: 1; }
+    .chip-t { fill: #5E6072; font-size: 11px; font-weight: 600; }
+    .loop-chip { fill: #EEF8CC; stroke: #B5D44A; stroke-width: 1; }
+    .loop-chip-t { fill: #3A4D00; font-size: 11px; font-weight: 600; }
+    .mem { fill: #D6F36B; }
+    .mem-title { fill: #1F2E00; font-size: 17px; font-weight: 800; }
+    .mem-sub { fill: #3A4D00; font-size: 12px; }
+    .pill { fill: #FFFFFF; fill-opacity: .6; }
+    .pill-t { fill: #1F2E00; font-size: 12px; font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+      .panel { fill: #121319; }
+      .card, .db, .chip { fill: #1D1E26; stroke: #33354A; }
+      .db-icon { fill: #283180; stroke: #B9C0FF; }
+      .step { fill: #B9C0FF; }
+      .title { fill: #E6E6EF; }
+      .text, .caption, .chip-t { fill: #A2A4B6; }
+      .tag { fill: #283180; }
+      .tag-t { fill: #DCE0FF; }
+      .flow { stroke: #8F99FF; }
+      .flow-head { fill: #8F99FF; }
+      .loop { stroke: #C4E65A; }
+      .loop-head { fill: #C4E65A; }
+      .loop-chip { fill: #26300C; stroke: #6E8F00; }
+      .loop-chip-t { fill: #DDF2A0; }
+      .mem { fill: #C4E65A; }
+      .mem-title, .pill-t { fill: #1C2A00; }
+      .mem-sub { fill: #2E3D00; }
+      .pill { fill-opacity: .5; }
+    }
+  </style>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#15161F" flood-opacity=".07"/>
+    </filter>
+    <marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="flow-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="loop-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path class="loop-head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="panel" width="1120" height="404" rx="24"/>
+  <text class="caption" x="34" y="36">每 10 分钟一轮：采集到期的来源，然后自动跑完整条流程</text>
+
+  <!-- 处理流程 -->
+  <g transform="translate(34,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">01</text>
+    <text class="title" x="18" y="66">信息源</text>
+    <text class="text" x="18" y="94">GitHub · HF · arXiv</text>
+    <text class="text" x="18" y="114">HN · Reddit · X</text>
+    <text class="text" x="18" y="134">博客 · 媒体 · 播客</text>
+  </g>
+  <g transform="translate(214,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">02</text>
+    <text class="title" x="18" y="66">采集</text>
+    <text class="text" x="18" y="94">按来源各自的间隔</text>
+    <text class="text" x="18" y="114">单个来源失败不影响</text>
+    <text class="text" x="18" y="134">失败 20 分钟后重试</text>
+  </g>
+  <g transform="translate(394,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">03</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">模型</text></g>
+    <text class="title" x="18" y="66">事件</text>
+    <text class="text" x="18" y="94">规则聚类</text>
+    <text class="text" x="18" y="114">模型合并同一件事</text>
+    <text class="text" x="18" y="134">固定 id，持续更新</text>
+  </g>
+  <g transform="translate(574,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">04</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">模型</text></g>
+    <text class="title" x="18" y="66">排序</text>
+    <text class="text" x="18" y="94">规则分 × 重要性</text>
+    <text class="text" x="18" y="114">兴趣、来源、热度</text>
+    <text class="text" x="18" y="134">每项加分附理由</text>
+  </g>
+  <g transform="translate(754,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">05</text>
+    <g transform="translate(98,16)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">模型</text></g>
+    <text class="title" x="18" y="66">简报</text>
+    <text class="text" x="18" y="94">先读主来源原文</text>
+    <text class="text" x="18" y="114">概要 · 要点</text>
+    <text class="text" x="18" y="134">AI 解读：新在哪</text>
+  </g>
+  <g transform="translate(934,56)">
+    <rect class="card" width="156" height="150" rx="16" filter="url(#shadow)"/>
+    <text class="step" x="18" y="32">06</text>
+    <text class="title" x="18" y="66">送达</text>
+    <text class="text" x="18" y="94">推送到手机</text>
+    <text class="text" x="18" y="114">夜里攒成早报</text>
+    <text class="text" x="18" y="134">日报 · 周报 · 月报</text>
+  </g>
+
+  <path class="flow" d="M195,131 H208" marker-end="url(#head)"/>
+  <path class="flow" d="M375,131 H388" marker-end="url(#head)"/>
+  <path class="flow" d="M555,131 H568" marker-end="url(#head)"/>
+  <path class="flow" d="M735,131 H748" marker-end="url(#head)"/>
+  <path class="flow" d="M915,131 H928" marker-end="url(#head)"/>
+
+  <!-- 存储 -->
+  <path class="flow" d="M292,212 V255" marker-end="url(#head)"/>
+  <path class="flow" d="M472,212 V255" marker-end="url(#head)"/>
+  <g transform="translate(256,222)"><rect class="chip" width="72" height="22" rx="11"/><text class="chip-t" x="36" y="15" text-anchor="middle">URL 去重</text></g>
+  <g transform="translate(444,222)"><rect class="chip" width="56" height="22" rx="11"/><text class="chip-t" x="28" y="15" text-anchor="middle">持久化</text></g>
+
+  <g transform="translate(214,262)">
+    <rect class="db" width="336" height="110" rx="16" filter="url(#shadow)"/>
+    <path class="db-icon" d="M24,36 v36 a20,7 0 0 0 40,0 v-36"/>
+    <ellipse class="db-icon" cx="44" cy="36" rx="20" ry="7"/>
+    <path class="db-icon" d="M24,54 a20,7 0 0 0 40,0" fill="none"/>
+    <text class="title" x="84" y="44">SQLite</text>
+    <text class="text" x="84" y="68">signals · events · memories</text>
+    <text class="text" x="84" y="88">采集和呈现分开，改排序不用重新采集</text>
+  </g>
+
+  <!-- 记忆反馈 -->
+  <path class="loop" d="M1012,212 V255" marker-end="url(#loop-head)"/>
+  <path class="loop" d="M652,258 V213" marker-end="url(#loop-head)"/>
+  <path class="loop" d="M832,258 V213" marker-end="url(#loop-head)"/>
+  <g transform="translate(956,222)"><rect class="loop-chip" width="112" height="22" rx="11"/><text class="loop-chip-t" x="56" y="15" text-anchor="middle">对话 · 反馈 · 阅读</text></g>
+  <g transform="translate(628,222)"><rect class="loop-chip" width="48" height="22" rx="11"/><text class="loop-chip-t" x="24" y="15" text-anchor="middle">加权</text></g>
+  <g transform="translate(796,222)"><rect class="loop-chip" width="72" height="22" rx="11"/><text class="loop-chip-t" x="36" y="15" text-anchor="middle">重写简报</text></g>
+
+  <g transform="translate(574,262)">
+    <rect class="mem" width="516" height="110" rx="16"/>
+    <text class="mem-title" x="22" y="34">记忆</text>
+    <text class="mem-sub" x="64" y="34">越用越懂你</text>
+    <g transform="translate(22,48)">
+      <rect class="pill" x="0" width="64" height="24" rx="12"/><text class="pill-t" x="32" y="16.5" text-anchor="middle">长期关注</text>
+      <rect class="pill" x="72" width="52" height="24" rx="12"/><text class="pill-t" x="98" y="16.5" text-anchor="middle">正在做</text>
+      <rect class="pill" x="132" width="52" height="24" rx="12"/><text class="pill-t" x="158" y="16.5" text-anchor="middle">不想看</text>
+      <rect class="pill" x="192" width="64" height="24" rx="12"/><text class="pill-t" x="224" y="16.5" text-anchor="middle">偏好来源</text>
+      <rect class="pill" x="264" width="88" height="24" rx="12"/><text class="pill-t" x="308" y="16.5" text-anchor="middle">不想看的来源</text>
+      <rect class="pill" x="360" width="40" height="24" rx="12"/><text class="pill-t" x="380" y="16.5" text-anchor="middle">写法</text>
+    </g>
+    <text class="mem-sub" x="22" y="94">有强度：被你的行为印证就加强，久不印证会淡化，每天整理一次</text>
+  </g>
+
+  <!-- 图例 -->
+  <path class="flow" d="M34,288 H66" marker-end="url(#head)"/>
+  <text class="caption" x="80" y="292">处理流程</text>
+  <path class="loop" d="M34,316 H66" marker-end="url(#loop-head)"/>
+  <text class="caption" x="80" y="320">记忆反馈</text>
+  <g transform="translate(34,333)"><rect class="tag" width="40" height="22" rx="11"/><text class="tag-t" x="20" y="15" text-anchor="middle">模型</text></g>
+  <text class="caption" x="80" y="348">用到大模型</text>
+</svg>
