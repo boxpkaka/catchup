@@ -39,7 +39,8 @@ import java.util.Map;
 
 /**
  * 视觉规范（律动）：钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色反白给“要闻”和选中的标签；
- * 事件不按话题上色，话题写成文字；专题页的几张卡片才有专题色（zone），帮你认路。颜色一律按用途取，深浅色各一套。
+ * 信息流里只有“最值得看”是彩色卡片：有封面的照着封面铺渐变（cover），没有的用话题的专题色；其余的行不上色，话题写成文字。
+ * 专题页的卡片有专题色（zone），帮你认路。颜色一律按用途取，深浅色各一套。
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
  */
@@ -88,8 +89,8 @@ final class Theme {
     }
 
     /**
-     * 专题的颜色 {底色, 文字色, 形状色}，按专题的 key（兴趣名或榜单来源名）。只用在专题页的卡片和专题标题栏上，
-     * 信息流和列表行里不出现；避开了钴蓝（新）、酸橙（问一问）和红色（不需要）。没登记的专题用卡片色。
+     * 专题的颜色 {底色, 文字色, 形状色}，按专题的 key（兴趣名或榜单来源名）。用在专题页的卡片、专题标题栏和信息流里
+     * 没有封面的“最值得看”卡片上，列表行里不出现；避开了钴蓝（新）、酸橙（问一问）和红色（不需要）。没登记的专题用卡片色。
      */
     int[] zone(String key) {
         switch (key) {
@@ -110,6 +111,41 @@ final class Theme {
             default:
                 return new int[]{sheet, ink, sub};
         }
+    }
+
+    /**
+     * 照着封面给卡片配色 {上, 下, 文字色, 点缀色}，像音乐软件按专辑封面铺背景：上面接着图底边的颜色（edge），往下渐变到
+     * 封面的主色（main），两种颜色都是服务器算好随信息流给的（见 catchup/images.py 的 palette）。图底边偏暗的
+     * （深色模式下全部）配深底白字，偏亮的配浅底深字；深浅、浓淡收在好读的范围里，色相还是封面的。
+     */
+    int[] cover(int edge, int main) {
+        float[] e = new float[3], m = new float[3];
+        Color.colorToHSV(edge, e);
+        Color.colorToHSV(main, m);
+        if (night || Color.luminance(edge) < 0.4f) {
+            return new int[]{hsv(e[0], Math.min(e[1], 0.6f), clamp(e[2], 0.2f, 0.42f)),
+                    hsv(m[0], Math.min(m[1], 0.7f), clamp(m[2] * 0.8f, 0.14f, 0.32f)), Color.WHITE,
+                    hsv(m[0], Math.min(m[1], 0.4f), 1)};
+        }
+        return new int[]{hsv(e[0], Math.min(e[1], 0.2f), clamp(e[2], 0.92f, 1)),
+                hsv(m[0], Math.min(m[1], 0.3f), 0.93f), hsv(m[0], Math.min(m[1], 0.75f), 0.28f),
+                hsv(m[0], Math.min(m[1], 0.7f), 0.62f)};
+    }
+
+    /** a 往 b 走 f（0 到 1）的颜色。 */
+    static int mix(int a, int b, float f) {
+        return Color.argb(Math.round(Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * f),
+                Math.round(Color.red(a) + (Color.red(b) - Color.red(a)) * f),
+                Math.round(Color.green(a) + (Color.green(b) - Color.green(a)) * f),
+                Math.round(Color.blue(a) + (Color.blue(b) - Color.blue(a)) * f));
+    }
+
+    private static float clamp(float v, float min, float max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    private static int hsv(float h, float s, float v) {
+        return Color.HSVToColor(new float[]{h, s, v});
     }
 
     int dp(float v) {
@@ -174,6 +210,15 @@ final class Theme {
     Drawable ripple(int color, float tl, float tr, float br, float bl) {
         return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
                 round(color, tl, tr, br, bl), round(Color.WHITE, tl, tr, br, bl));
+    }
+
+    /** 从上往下渐变的圆角背景 + 点按水波纹；深底上的水波纹是浅色的。 */
+    Drawable ripple(int top, int bottom, float radiusDp) {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        float r = dp(radiusDp);
+        g.setCornerRadii(new float[]{r, r, r, r, r, r, r, r}); // 四个角分开给，右滑时 SwipeDismiss 才能改圆角
+        return new RippleDrawable(ColorStateList.valueOf(Color.luminance(top) < 0.3f ? 0x22FFFFFF : 0x14000000),
+                g, round(Color.WHITE, radiusDp));
     }
 
     /** 分段列表里的一项：一组的第一项上面两个角是大圆角，最后一项下面两个角是大圆角，中间都是小圆角。 */

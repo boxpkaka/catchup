@@ -24,7 +24,7 @@ import java.util.Locale;
 /**
  * 首页的“专题”页：话题专题（配置里的兴趣：AI 语音、大模型、Agent）和榜单专题（GitHub Trending、HF 模型热榜、
  * Product Hunt）各一张卡片。信息流只放够重要的，专题放一个方向、一个榜单的全部；点卡片进 TopicActivity。
- * 专题是固定的几个入口，所以和信息流不同，每个专题有自己的颜色和徽记（Theme.zone、emblem），帮你认路。
+ * 专题是固定的几个入口，每个专题有自己的颜色和徽记（Theme.zone、emblem），帮你认路；信息流里没有封面的“最值得看”卡片也用它们。
  * 卡片大小搭配：每组第一张占整行，其余两两一行，落单的占整行。数据见服务器的 /v1/topics。
  */
 final class TopicsView extends FrameLayout {

@@ -33,6 +33,11 @@ final class Images {
 
     private Images() {}
 
+    /** 已经解好、在内存里的图，没有返回 null。 */
+    static Bitmap cached(String path) {
+        return MEMORY.get(path);
+    }
+
     /** 后台取图，取到了在主线程交给 done；没有图、没取到或页面已经关了就不回调。 */
     static void load(Activity a, String path, Done done) {
         Bitmap b = MEMORY.get(path);
