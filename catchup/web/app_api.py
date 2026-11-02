@@ -3,6 +3,7 @@
 认证：App 首次启动调用 POST /v1/devices 换取令牌。还没有任何已批准设备时自动批准（只有本人使用），
 之后的新设备处于待确认状态，需要在服务器上运行 `python3 -m catchup devices approve <id>`；
 `devices mirror <id>` 批准为只读设备，只能读，所有写操作（反馈、追踪、对话、改记忆）都返回 403。
+分享给别人时也可以不等确认：待确认的设备 POST /v1/key 提交 .env 里的 SHARE_KEY，对了就直接成为只读设备。
 数据库只存令牌的 sha256。
 
 handle() 返回 (状态码, JSON)；对话接口返回 (200, 生成器)，由 server.py 以 SSE 流式写回。
@@ -10,6 +11,8 @@ handle() 返回 (状态码, JSON)；对话接口返回 (200, 生成器)，由 se
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -59,6 +62,8 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         return 401, {"error": "unknown device"}
     if path == "/v1/me":
         return 200, device
+    if method == "POST" and path == "/v1/key":
+        return use_key(store, device, str(body.get("key") or ""))
     if not device["approved"]:
         return 403, {"error": "device not approved", "device": device}
     store.touch_device(device["id"], now)
@@ -171,6 +176,17 @@ def register(store: Store, name: str, now: datetime) -> tuple[int, dict]:
     token = secrets.token_urlsafe(32)
     device_id = store.add_device(str(name)[:80], _hash(token), approved, now)
     return 200, {"id": device_id, "token": token, "approved": approved}
+
+
+def use_key(store: Store, device: dict, key: str) -> tuple[int, dict]:
+    """待确认的设备输对 SHARE_KEY 就批准为只读设备；已批准的设备不变，免得本人的设备被降成只读。"""
+    if device["approved"]:
+        return 200, device
+    expected = os.environ.get("SHARE_KEY", "")
+    if not expected or not hmac.compare_digest(key.strip().encode(), expected.encode()):
+        return 403, {"error": "密钥不对"}
+    store.set_device_approved(device["id"], True, readonly=True)
+    return 200, {**device, "approved": True, "readonly": True}
 
 
 # ---------- 事件流与详情 ----------

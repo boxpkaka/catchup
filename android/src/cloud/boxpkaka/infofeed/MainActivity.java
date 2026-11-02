@@ -24,6 +24,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.text.InputType;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -40,6 +41,7 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -633,18 +635,19 @@ public class MainActivity extends Activity {
 
     private void onLoadFailed(Exception e, int pendingDevice) {
         if (e instanceof Api.Failure && ((Api.Failure) e).code == 403) {
-            showState("?", "这台手机\n还没被确认", "在服务器上运行下面的命令，再回来点“重新检查”。",
-                    "python3 -m catchup devices approve " + (pendingDevice >= 0 ? pendingDevice : "<设备编号>"));
+            showState("?", "这台手机\n还没被确认", "有密钥的话填在下面，点“重新检查”就能用（只能看，不能改）。"
+                    + "没有密钥的话，在服务器上运行下面的命令，再回来点“重新检查”。",
+                    "python3 -m catchup devices approve " + (pendingDevice >= 0 ? pendingDevice : "<设备编号>"), true);
             return;
         }
         if (feed == null) {
-            showState("!", "连不上服务器", "检查网络后重试。\n" + reason(e), null);
+            showState("!", "连不上服务器", "检查网络后重试。\n" + reason(e), null, false);
         } else {
             showStatus("刷新失败：" + reason(e));
         }
     }
 
-    private void showState(String mark, String title, String body, String code) {
+    private void showState(String mark, String title, String body, String code, boolean askKey) {
         stopSkeleton();
         stateView.removeAllViews();
         TextView art = t.text(this, mark, 44, t.sub, 900);
@@ -661,6 +664,22 @@ public class MainActivity extends Activity {
         b.setLineSpacing(t.dp(6), 1f);
         b.setPadding(0, t.dp(12), 0, 0);
         stateView.addView(b);
+        EditText key = null;
+        if (askKey) {
+            key = new EditText(this);
+            key.setHint("密钥");
+            key.setHintTextColor(t.sub);
+            key.setTextColor(t.ink);
+            key.setTextSize(15);
+            key.setSingleLine(true);
+            key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            key.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
+            key.setBackground(t.round(t.sheet, Theme.R_M));
+            LinearLayout.LayoutParams kl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            kl.topMargin = t.dp(14);
+            stateView.addView(key, kl);
+        }
         if (code != null) {
             TextView c = t.text(this, code, 12.5f, t.ink, 400);
             c.setTypeface(Typeface.MONOSPACE);
@@ -676,7 +695,13 @@ public class MainActivity extends Activity {
         TextView retry = t.text(this, "重新检查", 15.5f, t.onPri, 800);
         retry.setGravity(Gravity.CENTER);
         t.press(retry, t.pri, 99);
+        EditText typed = key;
         retry.setOnClickListener(v -> {
+            String k = typed == null ? "" : typed.getText().toString().trim();
+            if (!k.isEmpty()) {
+                useKey(k);
+                return;
+            }
             stateView.setVisibility(View.GONE);
             load();
         });
@@ -684,6 +709,30 @@ public class MainActivity extends Activity {
         rl.topMargin = t.dp(28);
         stateView.addView(retry, rl);
         stateView.setVisibility(View.VISIBLE);
+    }
+
+    /** 用分享密钥把这台手机批准为只读设备，成功后重新加载。 */
+    private void useKey(String key) {
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            String err = null;
+            try {
+                Api.post(app, "/v1/key", new JSONObject().put("key", key));
+            } catch (Exception e) {
+                err = reason(e);
+                Trace.log(app, "key.fail", e.toString());
+            }
+            String error = err;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (error != null) {
+                    toast(error);
+                    return;
+                }
+                stateView.setVisibility(View.GONE);
+                load();
+            });
+        }, "key").start();
     }
 
     private void render() {
