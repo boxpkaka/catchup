@@ -8,6 +8,7 @@ import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -32,6 +33,7 @@ public class EventActivity extends Activity {
     static final String EXTRA_ID = "id";
     static final String EXTRA_JSON = "json";
     static final String EXTRA_DISMISSED = "dismissed";
+    static final String EXTRA_FROM = "from"; // 从哪打开的（feed / push / topic …），埋点用，见 Track
 
     private static final int FOLDED_SOURCES = 4;
 
@@ -46,6 +48,10 @@ public class EventActivity extends Activity {
     private int topInset;
     private String feedback;
     private boolean following;
+    private ScrollView scroll;
+    private String from;
+    private long resumedAt, readMs; // 停留时间只算页面在前台的部分
+    private int depth;              // 读到页面的百分之几
 
     @Override
     protected void onCreate(Bundle state) {
@@ -54,6 +60,8 @@ public class EventActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         id = getIntent().getLongExtra(EXTRA_ID, -1);
+        from = getIntent().getStringExtra(EXTRA_FROM);
+        if (from == null) from = "other";
         nav = Nav.of(this, build(), t.bg);
         setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
         String cached = getIntent().getStringExtra(EXTRA_JSON);
@@ -74,6 +82,28 @@ public class EventActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        resumedAt = SystemClock.elapsedRealtime();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        readMs += SystemClock.elapsedRealtime() - resumedAt;
+        noteDepth();
+        if (isFinishing()) {
+            Track.read(this, id, from, (int) (readMs / 1000), depth);
+            Track.flush(this);
+        }
+    }
+
+    private void noteDepth() {
+        int total = page.getHeight();
+        if (total > 0) depth = Math.max(depth, Math.min(100, (scroll.getScrollY() + scroll.getHeight()) * 100 / total));
+    }
+
+    @Override
     public void onBackPressed() {
         if (isTaskRoot()) startActivity(new Intent(this, MainActivity.class)); // 从通知直接进来时，返回到首页
         super.onBackPressed();
@@ -82,7 +112,7 @@ public class EventActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         page = new LinearLayout(this);
@@ -107,8 +137,10 @@ public class EventActivity extends Activity {
         FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
                 Gravity.BOTTOM);
         root.addView(bottomFade, bfl);
-        scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> topFade.setAlpha(
-                Math.max(0f, Math.min(1f, (y - head.getHeight() + topFade.getHeight()) / (float) t.dp(32)))));
+        scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+            topFade.setAlpha(Math.max(0f, Math.min(1f, (y - head.getHeight() + topFade.getHeight()) / (float) t.dp(32))));
+            noteDepth();
+        });
 
         TextView back = t.backButton(this);
         FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(48), t.dp(48));

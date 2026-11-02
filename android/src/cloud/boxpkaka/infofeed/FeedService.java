@@ -215,7 +215,8 @@ public class FeedService extends Service {
             if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
                 page = true;
                 long event = Long.parseLong(click.substring(EVENT_LINK.length()));
-                open = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, event);
+                open = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, event)
+                        .putExtra(EventActivity.EXTRA_FROM, "push");
                 cover = Images.get(this, "/v1/events/" + event + "/cover");
             } else if (click.startsWith(THREAD_LINK)) { // 你问过的问题有答案了：回到原来的对话
                 page = true;

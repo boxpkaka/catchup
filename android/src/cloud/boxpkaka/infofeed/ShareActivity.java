@@ -144,7 +144,8 @@ public class ShareActivity extends Activity {
                     fail("没读成", error == null ? "服务器没有返回结果，稍后再试一次。" : error, true);
                     return;
                 }
-                Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id));
+                Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                        .putExtra(EventActivity.EXTRA_FROM, "share"));
                 nav.replaced(); // 详情页从右边盖上来，这一页直接关
                 finish();
             });

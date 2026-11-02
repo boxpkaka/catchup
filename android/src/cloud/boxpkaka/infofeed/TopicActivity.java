@@ -539,7 +539,8 @@ public class TopicActivity extends Activity {
 
     /** 这一行原地展开成事件详情；话题专题里的事件带上列表数据，详情页一开始就有内容。 */
     private void openEvent(View from, long id, JSONObject e) {
-        Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id);
+        Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                .putExtra(EventActivity.EXTRA_FROM, "topic");
         if (e != null) i.putExtra(EventActivity.EXTRA_JSON, e.toString());
         Card.open(this, from, i);
     }
