@@ -2,6 +2,7 @@ package cloud.boxpkaka.infofeed;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.net.Uri;
@@ -13,6 +14,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -22,7 +24,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * 事件详情：卡片色的头部（标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
+ * 事件详情：卡片色的头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、进展、问一问、全部来源。
  * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
@@ -355,6 +357,26 @@ public class EventActivity extends Activity {
         metaRow.addView(original);
         head.addView(metaRow);
         Theme.smooth(head, top);
+        Images.load(this, "/v1/events/" + id + "/cover", this::showCover);
+    }
+
+    /** 封面：16:9 圆角大图，插在头部最上面，下面的内容平滑让位（见 Theme.smooth）；没有封面时头部和原来一样。 */
+    private void showCover(Bitmap b) {
+        ImageView cover = new ImageView(this) {
+            @Override
+            protected void onMeasure(int w, int h) {
+                int width = MeasureSpec.getSize(w);
+                setMeasuredDimension(width, width * 9 / 16);
+            }
+        };
+        cover.setImageBitmap(b);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackground(t.round(t.chip, Theme.R_M));
+        cover.setClipToOutline(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = t.dp(18);
+        head.addView(cover, 0, lp);
     }
 
     /** 来源超过 5 条时先显示 4 条，最后一行“展开全部来源”。 */

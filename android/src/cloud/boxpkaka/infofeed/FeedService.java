@@ -8,6 +8,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
@@ -198,18 +200,23 @@ public class FeedService extends Service {
         }
     }
 
-    /** caughtUp：重连时补到的消息。正开着首页时不弹，首页会把离开期间推送过的事件标成新的。 */
+    /**
+     * caughtUp：重连时补到的消息。正开着首页时不弹，首页会把离开期间推送过的事件标成新的。
+     * 事件推送有封面时带上：收起时右边是小图，展开是大图。服务器推送前已经取好封面，这里一般很快。
+     */
     private void notifyIfRecent(JSONObject m, boolean caughtUp) throws Exception {
         long when = (long) (m.optDouble("time", 0) * 1000);
         if (System.currentTimeMillis() - when < NOTIFY_MAX_AGE_MS && !(caughtUp && MainActivity.visible)) {
             String body = m.optString("message");
             String click = m.optString("click");
             Intent open;
+            Bitmap cover = null;
             boolean page = false; // 详情、对话页：压在首页上面打开，右滑返回时下面是首页而不是桌面
             if (click.startsWith(EVENT_LINK)) { // catchup 推送：点开直接进事件详情
                 page = true;
-                open = new Intent(this, EventActivity.class)
-                        .putExtra(EventActivity.EXTRA_ID, Long.parseLong(click.substring(EVENT_LINK.length())));
+                long event = Long.parseLong(click.substring(EVENT_LINK.length()));
+                open = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, event);
+                cover = Images.get(this, "/v1/events/" + event + "/cover");
             } else if (click.startsWith(THREAD_LINK)) { // 你问过的问题有答案了：回到原来的对话
                 page = true;
                 open = new Intent(this, ChatActivity.class)
@@ -233,8 +240,8 @@ public class FeedService extends Service {
                 open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 pi = PendingIntent.getActivity(this, id, open, flags);
             }
-            Trace.log(this, "notify", "id=" + m.optLong("id") + " " + notifyState());
-            nm.notify(id, new Notification.Builder(this, CHANNEL_MESSAGES)
+            Trace.log(this, "notify", "id=" + m.optLong("id") + " cover=" + (cover != null) + " " + notifyState());
+            Notification.Builder n = new Notification.Builder(this, CHANNEL_MESSAGES)
                     .setSmallIcon(R.drawable.ic_notify)
                     .setColor(0xFF3443F5)
                     .setContentTitle(m.optString("title"))
@@ -243,8 +250,12 @@ public class FeedService extends Service {
                     .setContentIntent(pi)
                     .setAutoCancel(true)
                     .setWhen(when)
-                    .setShowWhen(true)
-                    .build());
+                    .setShowWhen(true);
+            if (cover != null) {
+                n.setLargeIcon(cover).setStyle(new Notification.BigPictureStyle().bigPicture(cover)
+                        .bigLargeIcon((Icon) null));
+            }
+            nm.notify(id, n.build());
         }
     }
 
