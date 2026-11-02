@@ -1006,7 +1006,7 @@ public class MainActivity extends Activity {
             GestureDetector taps = new GestureDetector(MainActivity.this, new GestureDetector.SimpleOnGestureListener() {
                 @Override
                 public boolean onSingleTapConfirmed(MotionEvent e) {
-                    open(h.front, r.e);
+                    open(h.front, r.e, r.type == 1);
                     return true;
                 }
 
@@ -1454,12 +1454,21 @@ public class MainActivity extends Activity {
 
     // ---------- 打开与移除 ----------
 
-    /** 这张卡片原地展开成详情页：带上列表里的数据，详情页一开始就有内容。 */
-    private void open(View card, JSONObject e) {
+    /**
+     * 这张卡片原地展开成详情页：带上列表里的数据，详情页一开始就有内容。最值得看的彩色卡片还带上它的颜色和有没有封面，
+     * 详情页的头部接着用，展开、收回时颜色和封面一直在，不会中途变成一片白。
+     */
+    private void open(View card, JSONObject e, boolean top) {
         Intent i = new Intent(this, EventActivity.class)
                 .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
                 .putExtra(EventActivity.EXTRA_JSON, e.toString())
                 .putExtra(EventActivity.EXTRA_FROM, "feed");
+        if (top) {
+            JSONObject look = first(e);
+            boolean cover = look.optBoolean("cover");
+            i.putExtra(EventActivity.EXTRA_TONE, tone(look, cover, Theme.topicOf(look)))
+                    .putExtra(EventActivity.EXTRA_COVER, cover);
+        }
         Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
     }
 
