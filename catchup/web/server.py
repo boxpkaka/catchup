@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .. import images
 from ..config import Config
 from ..pipeline.feed import build_feed
 from ..store import Store
@@ -26,7 +27,7 @@ def make_handler(config: Config) -> type[BaseHTTPRequestHandler]:
         def reply(self, status: int, body: bytes, ctype: str) -> None:
             self.send_response(status)
             self.send_header("Content-Type", ctype)
-            if len(body) > 1024 and "gzip" in self.headers.get("Accept-Encoding", ""):
+            if len(body) > 1024 and not ctype.startswith("image/") and "gzip" in self.headers.get("Accept-Encoding", ""):
                 body = gzip.compress(body, 6)  # 事件流 JSON 约 450KB，压缩后约 100KB，SSH 转发时明显更快
                 self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(body)))
@@ -50,6 +51,8 @@ def make_handler(config: Config) -> type[BaseHTTPRequestHandler]:
                 status, payload = app_api.handle(config, store, method, url.path, self.headers, body, query)
                 if isinstance(payload, (dict, list)):
                     self.reply(status, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+                elif isinstance(payload, bytes):
+                    self.reply(status, payload, images.mime(payload))
                 else:
                     self.stream(payload)
             finally:

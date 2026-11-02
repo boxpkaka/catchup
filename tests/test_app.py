@@ -2,10 +2,12 @@ import json
 import re
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from catchup import images
 from catchup.config import Config
 from catchup.models import Event, Signal
 from catchup.pipeline import brief, push, reports, translate
@@ -182,8 +184,10 @@ class PushTest(unittest.TestCase):
             return True
 
         with mock.patch("catchup.pipeline.push._send", side_effect=send), \
-                mock.patch("catchup.reader.tool", side_effect=OSError("offline")):
+                mock.patch("catchup.reader.tool", side_effect=OSError("offline")), \
+                mock.patch("catchup.images.cover") as cover:
             stats = update.update(config(), self.store, NOW, FakeLLM())
+        cover.assert_called_once()  # 推送前先取好封面
         self.assertEqual((at_push, stats["pushed"], stats["briefs"]), ([1], 1, 6))  # 先推新事件，推完再重写旧的
 
     def test_low_importance_is_not_pushed(self):
@@ -281,6 +285,60 @@ class AppApiTest(unittest.TestCase):
             self.assertEqual(len(self.call("GET", "/v1/feed", token)[1]["events"]), 1)
             self.assertEqual(self.call("GET", "/v1/dismissed", token)[1]["events"], [])
             self.assertEqual(self.call("GET", "/v1/events/999", token)[0], 404)
+
+
+class ImagesTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.config = Config(root=Path(self.dir.name), sources=SOURCES)
+        self.store = Store(":memory:")
+        self.store.add([sig("https://a/1", "Block unveils Dessa voice model")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        self.token = self.call("/v1/devices", "POST")[1]["token"]
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def call(self, path, method="GET"):
+        headers = {"Authorization": f"Bearer {self.token}"} if method == "GET" else {}
+        return app_api.handle(self.config, self.store, method, path, headers, {"name": "V2505A"})
+
+    def test_cover_is_shrunk_once_and_served(self):
+        event_id = self.store.signal_event("https://a/1")
+        pages = {"https://a/1": b'<meta property="og:image" content="/i/a.jpg?w=1&amp;h=2">',
+                 "https://a/i/a.jpg?w=1&h=2": b"jpg"}
+        with mock.patch("catchup.images.http.get", side_effect=lambda url, *a: pages[url]) as get, \
+                mock.patch("catchup.images._webp", side_effect=[(b"x", 1200, 600), (b"RIFF", 720, 360)]) as webp:
+            self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))
+            self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))  # 第二次直接读存好的
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(webp.call_args.args[1:], ("-resize", "720", "0"))
+        self.assertEqual(images.mime(b"RIFF"), "image/webp")
+        self.assertEqual(self.call("/v1/events/999/cover")[0], 404)
+
+    def test_logo_covers_are_skipped_until_new_reports(self):
+        first, second = sig("https://a/1", "x", 2), sig("https://b/1", "x", 1)
+        page = b'<meta name="twitter:image" content="https://a/logo.jpg">'
+        with mock.patch("catchup.images.http.get", return_value=page) as get, \
+                mock.patch("catchup.images._webp", return_value=(b"x", 800, 217)):  # 很扁，是 logo
+            self.assertIsNone(images.cover(self.config, 7, [first]))
+            self.assertIsNone(images.cover(self.config, 7, [first]))  # 记了“没有”，不再去取
+            self.assertEqual(get.call_count, 2)
+            self.assertIsNone(images.cover(self.config, 7, [first, second]))  # 有了新报道再找一次
+            self.assertEqual(get.call_count, 6)
+        with mock.patch("catchup.images.http.get", side_effect=TimeoutError()):
+            self.assertIsNone(images.cover(self.config, 8, [first]))
+        self.assertFalse((Path(self.dir.name) / "data/images/covers/8.none").exists())  # 超时不算没有，下次再试
+
+    def test_site_icons(self):
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with mock.patch("catchup.images.http.get", side_effect=[b"\x89PNG", missing]) as get:
+            self.assertEqual(self.call("/v1/icons/github.com"), (200, b"\x89PNG"))
+            self.assertEqual(self.call("/v1/icons/github.com")[1], b"\x89PNG")
+            self.assertEqual(self.call("/v1/icons/nope.example")[0], 404)
+            self.assertEqual(self.call("/v1/icons/nope.example")[0], 404)
+            self.assertEqual(self.call("/v1/icons/..")[0], 404)
+        self.assertEqual(get.call_count, 2)
 
 
 class DeepSeekSourceTest(unittest.TestCase):

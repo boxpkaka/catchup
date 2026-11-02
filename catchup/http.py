@@ -10,9 +10,9 @@ USER_AGENT = "Mozilla/5.0 (compatible; catchup/0.1)"
 TIMEOUT = 30
 
 
-def get(url: str, headers: dict | None = None) -> bytes:
+def get(url: str, headers: dict | None = None, timeout: int = TIMEOUT) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read()
     # 有的 CDN（如 deepmind.google）即使没声明 Accept-Encoding 也会返回 gzip
     return gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from .. import personal
+from .. import images, personal
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
@@ -64,6 +64,8 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     boards = {name for name, s in sources.items() if s.board}
     if deliver:
         picked = push.select(config.push, store, events, now, push.strict_sources(sources))
+        for e in picked:  # 先取好封面，手机收到推送时马上拿得到大图
+            images.cover(config, e.id, e.signals)
         stats["pushed"] = push.deliver(store, picked, now, config.push)
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)

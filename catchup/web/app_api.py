@@ -6,7 +6,7 @@
 分享给别人时也可以不等确认：待确认的设备 POST /v1/key 提交 .env 里的 SHARE_KEY，对了就直接成为只读设备。
 数据库只存令牌的 sha256。
 
-handle() 返回 (状态码, JSON)；对话接口返回 (200, 生成器)，由 server.py 以 SSE 流式写回。
+handle() 返回 (状态码, JSON)；对话接口返回 (200, 生成器)，由 server.py 以 SSE 流式写回；封面和网站图标返回 (200, 图片 bytes)。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote
 
-from .. import chat, personal, share
+from .. import chat, images, personal, share
 from ..collector import health
 from ..config import Config
 from ..llm import from_config
@@ -114,6 +114,9 @@ def handle(config: Config, store: Store, method: str, path: str, headers, body: 
         if body.get("drop"):  # 不用再替我留意了
             store.update_question(int(m.group(1)), status="dropped")
         return 200, {"ok": True}
+    if method == "GET" and (m := re.fullmatch(r"/v1/icons/([a-z0-9-]+(?:\.[a-z0-9-]+)+)", path)):  # 问一问来源卡的网站图标
+        data = images.icon(config, m.group(1))
+        return (200, data) if data else (404, {"error": "no icon"})
     if m := re.fullmatch(r"/v1/events/(\d+)(/\w+)?", path):
         return event_route(config, store, method, int(m.group(1)), m.group(2) or "", body, now)
     if m := re.fullmatch(r"/v1/threads/(\d+)", path):
@@ -129,6 +132,10 @@ def event_route(config: Config, store: Store, method: str, event_id: int, action
         return (200, detail) if detail else (404, {"error": "not found"})
     if method == "GET" and action == "/reasons":  # 点“不需要”时让用户选的几类内容
         return 200, {"options": personal.avoid_options(config, store, from_config(config.llm), event_id, now)}
+    if method == "GET" and action == "/cover":  # 详情页头部和推送大图，第一次要时才去原网站取
+        signals = store.event_signals(event_id)
+        data = signals and images.cover(config, event_id, signals)
+        return (200, data) if data else (404, {"error": "no cover"})
     if method == "GET" and action == "/thread":
         thread = store.latest_thread(event_id)
         return 200, {"thread": thread, "messages": store.messages(thread["id"]) if thread else []}

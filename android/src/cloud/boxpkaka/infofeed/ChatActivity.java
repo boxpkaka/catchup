@@ -23,6 +23,7 @@ import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -32,9 +33,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -460,30 +461,46 @@ public class ChatActivity extends Activity {
         return i;
     }
 
-    /** 引用的网页：平时收成一行（几个来源、来自哪些网站），点开逐条列出，编号对应正文里的角标，点一条打开原网页。 */
+    /**
+     * 引用的网页：平时收成一行（前几个网站的图标叠在一起、几个来源、来自哪些网站），点开逐条列出，
+     * 编号对应正文里的角标，点一条打开原网页。
+     */
     private View sourcesCard(String footer) {
         List<String[]> items = new ArrayList<>();
-        Set<String> sites = new LinkedHashSet<>();
+        Map<String, String> sites = new LinkedHashMap<>(); // 网站名 → 取图标用的域名
         for (String line : footer.split("\n")) {
             Matcher m = SOURCE.matcher(line);
             if (!m.matches()) continue;
             String title = m.group(2), url = m.group(3), host = Uri.parse(url).getHost();
-            String site = host == null ? "" : host.replaceFirst("^(www|m)\\.", "");
+            String site = host == null ? "" : host.replaceFirst("^(www|m)\\.", ""), domain = site;
             if (site.equals("news.google.com")) { // Google 新闻给的是跳转链接，媒体名在标题末尾的“ - 媒体”里
                 int i = title.lastIndexOf(" - ");
                 site = i > 0 ? title.substring(i + 3) : "Google 新闻";
                 if (i > 0) title = title.substring(0, i);
+                domain = ""; // 不知道媒体的域名，图标只显示首字
             }
-            sites.add(site);
-            items.add(new String[]{m.group(1), site, title, url});
+            sites.putIfAbsent(site, domain);
+            items.add(new String[]{m.group(1), site, title, url, domain});
         }
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(t.dp(16), t.dp(13), t.dp(12), t.dp(13));
-        head.addView(t.text(this, items.size() + " 个来源", 13.5f, t.ink, 700));
-        TextView names = t.text(this, String.join(" · ", sites), 12.5f, t.sub, 600);
+        head.setPadding(t.dp(14), t.dp(13), t.dp(12), t.dp(13));
+        int shown = 0;
+        for (Map.Entry<String, String> e : sites.entrySet()) {
+            if (shown == 3) break;
+            View icon = siteIcon(e.getKey(), e.getValue(), 20, 99);
+            icon.setPadding(t.dp(2), t.dp(2), t.dp(2), t.dp(2)); // 卡片色的圈把叠在一起的图标隔开
+            ((GradientDrawable) icon.getBackground()).setStroke(t.dp(2), t.sheet);
+            LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(24), t.dp(24));
+            il.leftMargin = shown++ == 0 ? 0 : -t.dp(8);
+            head.addView(icon, il);
+        }
+        TextView count = t.text(this, items.size() + " 个来源", 13.5f, t.ink, 700);
+        count.setPadding(t.dp(8), 0, 0, 0);
+        head.addView(count);
+        TextView names = t.text(this, String.join(" · ", sites.keySet()), 12.5f, t.sub, 600);
         names.setTypeface(Theme.flex(this, 92, 600));
         names.setSingleLine();
         names.setEllipsize(TextUtils.TruncateAt.END);
@@ -507,7 +524,7 @@ public class ChatActivity extends Activity {
         return card;
     }
 
-    /** 来源卡里的一条：{编号, 网站, 标题, 链接}。 */
+    /** 来源卡里的一条：{编号, 网站, 标题, 链接, 域名}。 */
     private View sourceRow(String[] s) {
         LinearLayout row = new LinearLayout(this);
         row.setPadding(t.dp(14), t.dp(12), t.dp(16), t.dp(13));
@@ -521,11 +538,17 @@ public class ChatActivity extends Activity {
         row.addView(num, nl);
         LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout siteLine = new LinearLayout(this);
+        siteLine.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(14), t.dp(14));
+        il.rightMargin = t.dp(6);
+        siteLine.addView(siteIcon(s[1], s[4], 14, 3), il);
         TextView site = t.text(this, s[1], 12, t.sub, 700);
         site.setTypeface(Theme.flex(this, 92, 700));
         site.setSingleLine();
         site.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(site);
+        siteLine.addView(site);
+        text.addView(siteLine);
         TextView title = t.text(this, s[2], 14, t.ink, 500);
         title.setLineSpacing(t.dp(3), 1f);
         title.setMaxLines(2);
@@ -535,6 +558,28 @@ public class ChatActivity extends Activity {
         row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         row.setOnClickListener(v -> openUrl(s[3]));
         return row;
+    }
+
+    /** 网站图标：先显示网站名的首字，服务器有这个网站的图标再换上；domain 为空（Google 新闻）时只有首字。 */
+    private View siteIcon(String site, String domain, int size, float radius) {
+        FrameLayout box = new FrameLayout(this);
+        box.setBackground(t.round(t.chip, radius));
+        box.setClipToOutline(true);
+        TextView letter = t.text(this, site.isEmpty() ? "" : site.substring(0, 1).toUpperCase(), size * 0.5f, t.sub,
+                800);
+        letter.setGravity(Gravity.CENTER);
+        letter.setIncludeFontPadding(false);
+        box.addView(letter, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (!domain.isEmpty()) Images.load(this, "/v1/icons/" + domain, b -> {
+            ImageView image = new ImageView(this);
+            image.setImageBitmap(b);
+            ((GradientDrawable) box.getBackground()).setColor(Color.WHITE); // 图标多是按白底画的，透明处垫白
+            box.removeView(letter);
+            box.addView(image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        });
+        return box;
     }
 
     private void openUrl(String url) {

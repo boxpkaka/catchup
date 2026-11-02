@@ -6,6 +6,7 @@ import android.os.Build;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.InputStream;
@@ -69,6 +70,28 @@ final class Api {
 
     static JSONObject post(Context c, String path, JSONObject body) throws Exception {
         return authed(c, "POST", path, body);
+    }
+
+    /** 取图片（事件封面、网站图标）；服务器没有这张图（404）时返回 null。 */
+    static byte[] image(Context c, String path) throws Exception {
+        ensureDevice(c);
+        HttpURLConnection conn = (HttpURLConnection) new URL(Store.server(c) + path).openConnection();
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000); // 第一次要图时服务器才去原网站取，要几秒
+        conn.setRequestProperty("Authorization", "Bearer " + Store.token(c));
+        try {
+            int code = conn.getResponseCode();
+            if (code == 404) return null;
+            if (code >= 400) throw new Failure(code, "HTTP " + code);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[16384];
+                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            conn.disconnect();
+        }
     }
 
     /** 带令牌调用；服务器不认识这个令牌（比如数据库重建过）时重新注册一次再试。 */
