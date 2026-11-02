@@ -219,7 +219,7 @@ public class MainActivity extends Activity {
         notifyNotice.setVisibility(notificationsBlocked() ? View.VISIBLE : View.GONE);
         render();
         if (System.currentTimeMillis() - lastFetch > REFETCH_MS) load();
-        if (Updater.due(this)) checkUpdate(false);
+        checkUpdate(false);
     }
 
     @Override
@@ -300,7 +300,10 @@ public class MainActivity extends Activity {
             }
         });
         pull = new PullLayout(this, t, list);
-        pull.setOnRefresh(this::load);
+        pull.setOnRefresh(() -> {
+            load();
+            checkUpdate(false);
+        });
         homePager = new Swipe.Pager(this, home, true);
         Swipe content = homePager.frame;
         content.addView(pull, match());
@@ -1772,8 +1775,12 @@ public class MainActivity extends Activity {
 
     // ---------- 应用内更新 ----------
 
-    /** 后台检查新版本；manual 为 true 时把“已是最新”或失败原因也提示出来。 */
+    /**
+     * 后台检查新版本，打开 App 和下拉刷新时自动查；manual 为 true 时把“已是最新”或失败原因也提示出来。
+     * 已经找到新版本就不再自动查，免得下载、安装确认时回到首页又把提示条重置成“已就绪”。
+     */
     private void checkUpdate(boolean manual) {
+        if (!manual && release != null) return;
         new Thread(() -> {
             String msg;
             Updater.Release r = null;

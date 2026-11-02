@@ -24,7 +24,6 @@ import java.nio.charset.StandardCharsets;
  */
 final class Updater {
     static final String ACTION_INSTALLED = "cloud.boxpkaka.infofeed.INSTALL_RESULT";
-    private static final long CHECK_INTERVAL_MS = 6 * 3600_000L;
 
     static final class Release {
         final String version;
@@ -37,11 +36,6 @@ final class Updater {
     }
 
     private Updater() {}
-
-    /** 距离上次自动检查是否已超过间隔，避免每次打开 App 都请求 GitHub。 */
-    static boolean due(Context c) {
-        return System.currentTimeMillis() - Store.prefs(c).getLong("updateChecked", 0) > CHECK_INTERVAL_MS;
-    }
 
     static String currentVersion(Context c) {
         try {
@@ -60,7 +54,6 @@ final class Updater {
             if (code == 404) return null; // 服务器上还没有发布过版本
             if (code != 200) throw new IOException("HTTP " + code);
             String version = new JSONObject(read(conn.getInputStream())).getString("version");
-            Store.prefs(c).edit().putLong("updateChecked", System.currentTimeMillis()).apply();
             return newer(version, currentVersion(c)) ? new Release(version, server + "/app.apk") : null;
         } finally {
             conn.disconnect();
