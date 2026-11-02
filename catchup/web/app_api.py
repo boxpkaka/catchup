@@ -246,8 +246,8 @@ def feed(config: Config, store: Store, now: datetime, before: datetime | None = 
     created = store.event_created(e.id for e in shown)
     started = store.first_fetched()
     out = {"generated": to_iso(now),
-           "events": [_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources, zh,
-                             e.id in follows) for e in shown],
+           "events": [{**_event(e, briefs.get(e.id), feedback.get(e.id), pushed.get(e.id), created.get(e.id), sources,
+                                zh, e.id in follows), "cover": images.has_cover(config, e.id)} for e in shown],
            "older": to_iso(since) if started and since > started else None}
     if before is None:
         events.sort(key=lambda e: -final_score(e, briefs.get(e.id)))
