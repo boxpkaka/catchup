@@ -34,10 +34,24 @@ class EventTest(unittest.TestCase):
         ])
         self.assertEqual(sorted(len(e.signals) for e in events), [1, 2])
 
+    def test_chinese_titles_need_more_than_a_shared_name(self):
+        events = cluster([sig("https://a.com/1", "腾讯混元同声传译大模型 Hy-SimulMT 开源 - DoNews"),
+                          sig("https://b.com/2", "腾讯混元同声传译大模型Hy-SimulMT发布并开源 - 东方财富"),
+                          sig("https://c.com/3", "DeepSeek 开源了推理引擎，最值钱的三样却没给"),
+                          sig("https://d.com/4", "DeepSeek，全球第一！ - 银柿财经")])
+        self.assertEqual(sorted([s.url[8] for s in e.signals] for e in events), [["a", "b"], ["c"], ["d"]])
+
     def test_different_papers_never_merge(self):
         events = cluster([sig("https://arxiv.org/abs/2610.1", "Fine-Grained Speech Benchmark"),
                           sig("https://arxiv.org/abs/2610.2", "Fine-Grained Speech Benchmark v2")])
         self.assertEqual(len(events), 2)
+
+    def test_hf_page_posts_join_their_model_not_each_other(self):
+        events = cluster([sig("https://huggingface.co/Nanbeige/Nanbeige4.3-33B", "Nanbeige/Nanbeige4.3-33B", "hf_models"),
+                          sig("https://reddit.com/r/LocalLLaMA/1", "Nanbeige/Nanbeige4.3-33B · Hugging Face", "reddit"),
+                          sig("https://reddit.com/r/LocalLLaMA/2", "tencent/Hy-SimulMT-30B-A3B · Hugging Face", "reddit"),
+                          sig("https://reddit.com/r/LocalLLaMA/3", "baidu/Unlimited-OCR-2 · Hugging Face", "reddit")])
+        self.assertEqual(sorted(e.sources for e in events), [["hf_models", "reddit"], ["reddit"], ["reddit"]])
 
     def test_lead_prefers_higher_tier(self):
         [e] = cluster([sig("https://github.com/a/b/releases/tag/v2", "a/b v2", "gh", "official", hours_ago=1),

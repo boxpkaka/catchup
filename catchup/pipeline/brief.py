@@ -14,6 +14,7 @@ from datetime import datetime
 from .. import chat
 from ..models import Event
 from ..sources import Source, source_of
+from .events import distinct
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +93,9 @@ def screen(events: list[Event], focus: str, llm, sources: dict[str, Source]) -> 
 
 
 def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source], top: int = 40) -> int:
-    """在排名前 top 的事件里让模型找出同一件事，并入编号最小的事件。返回被并掉的事件数。"""
+    """在排名前 top 的事件里让模型找出同一件事，并入编号最小的事件。返回被并掉的事件数。
+    模型会把同类的几个仓库、模型当成一件事（几个走红的 Claude 技能仓库并成了一件），两边是不同的论文、仓库或模型时
+    代码里拦下，不靠提示词。"""
     pool = {e.id: e for e in events[:top]}
     if len(pool) < 2:
         return 0
@@ -109,11 +112,17 @@ def merge_duplicates(store, events: list[Event], llm, sources: dict[str, Source]
     merged = 0
     for group in groups:
         ids = sorted({int(i) for i in group if str(i).isdigit() and int(i) in pool})  # 模型有时把编号写成字符串
-        if len(ids) < 2:
+        kept = []
+        for i in ids:
+            if any(distinct(pool[i], pool[k]) for k in kept):
+                log.info("not merging event %d into %s: different paper, repo or model", i, kept)
+            else:
+                kept.append(i)
+        if len(kept) < 2:
             continue
-        store.merge_events(ids[0], ids[1:])
-        merged += len(ids) - 1
-        log.info("merged events %s into %d", ids[1:], ids[0])
+        store.merge_events(kept[0], kept[1:])
+        merged += len(kept) - 1
+        log.info("merged events %s into %d", kept[1:], kept[0])
     store.commit()
     return merged
 
