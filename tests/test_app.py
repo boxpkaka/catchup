@@ -349,15 +349,23 @@ class ImagesTest(unittest.TestCase):
         headers = {"Authorization": f"Bearer {self.token}"} if method == "GET" else {}
         return app_api.handle(self.config, self.store, method, path, headers, {"name": "V2505A"})
 
+    def feed(self):
+        with mock.patch("catchup.web.app_api.datetime") as dt:
+            dt.now.return_value = NOW
+            return self.call("/v1/feed")[1]["events"]
+
     def test_cover_is_shrunk_once_and_served(self):
         event_id = self.store.signal_event("https://a/1")
         pages = {"https://a/1": b'<meta property="og:image" content="/i/a.jpg?w=1&amp;h=2">',
                  "https://a/i/a.jpg?w=1&h=2": b"jpg"}
+        self.store.record_push(event_id, NOW)
+        self.assertFalse(self.feed()[0]["cover"])  # 首页不去原网站取
         with mock.patch("catchup.images.http.get", side_effect=lambda url, *a: pages[url]) as get, \
                 mock.patch("catchup.images._webp", side_effect=[(b"x", 1200, 600), (b"RIFF", 720, 360)]) as webp:
             self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))
             self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))  # 第二次直接读存好的
         self.assertEqual(get.call_count, 2)
+        self.assertTrue(self.feed()[0]["cover"])  # 取到了，首页卡片带小图
         self.assertEqual(webp.call_args.args[1:], ("-resize", "720", "0"))
         self.assertEqual(images.mime(b"RIFF"), "image/webp")
         self.assertEqual(self.call("/v1/events/999/cover")[0], 404)

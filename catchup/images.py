@@ -36,7 +36,7 @@ TIMEOUT = 10
 
 def cover(config: Config, event_id: int, signals: list[Signal]) -> bytes | None:
     """事件封面：从最新的几条报道里找第一张能用的图。"""
-    path = config.db_path.parent / "images" / "covers" / f"{event_id}.webp"
+    path = _cover_path(config, event_id)
     none = path.with_suffix(".none")
     if path.exists():
         return path.read_bytes()
@@ -60,6 +60,15 @@ def cover(config: Config, event_id: int, signals: list[Signal]) -> bytes | None:
     if answered:
         _save(none, str(len(signals)).encode())
     return None
+
+
+def has_cover(config: Config, event_id: int) -> bool:
+    """已经取到封面了（推送前会取）。首页卡片只给这些带小图，不为了首页去原网站取。"""
+    return _cover_path(config, event_id).exists()
+
+
+def _cover_path(config: Config, event_id: int) -> Path:
+    return config.db_path.parent / "images" / "covers" / f"{event_id}.webp"
 
 
 def icon(config: Config, host: str) -> bytes | None:

@@ -44,6 +44,7 @@ import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -64,7 +65,8 @@ import java.util.Set;
 
 /**
  * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
- * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗、带一行概要，其他只有标题。不按话题上色，话题写在来源前面；
+ * 大字、带编号，其余按时间排成一条线：重要性 4 以上加粗，3 以上带一行概要，其他只有标题；服务器已经取到封面的右边带小图。
+ * 不按话题上色，话题写在来源前面；
  * 颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
  * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销；追踪中的行右滑是取消追踪、答案不再显示），点开看详情。
  * 三页之间左右滑切换（左滑下一页），也可以点标签。
@@ -75,8 +77,8 @@ public class MainActivity extends Activity {
     private static final long REFETCH_MS = 30_000;
     private static final long OLDER_RETRY_MS = 10_000;
     private static final long UNDO_MS = 10_000;
-    private static final double TOP_RATIO = 0.7; // 最值得看：分数不低于当天第一名的七成
-    private static final int TOP_MAX = 5;
+    private static final double TOP_RATIO = 0.7; // 最值得看：前 TOP_MIN 件之后，分数不低于第 TOP_MIN 名的七成才接着放
+    private static final int TOP_MIN = 3, TOP_MAX = 5;
     private static final String[] TABS = {"信息流", "专题", "报告"};
     private static final int FEED = 0, TOPICS = 1, REPORT = 2;
     /**
@@ -811,7 +813,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 一天里最值得看的：重要性 4 以上、服务器综合分不低于其中第一名的 TOP_RATIO，最多 TOP_MAX 件，有几件算几件。
+     * 一天里最值得看的：重要性 4 以上按服务器综合分排，前 TOP_MIN 件都算（不够就有几件算几件），之后不低于第 TOP_MIN 名的
+     * TOP_RATIO 的接着放，最多 TOP_MAX 件。第一名常常远远领先，只和它比的话多半只剩一件。
      * 分数随时间按同样的比例衰减，同一天里谁比谁高多少不会变，前排不会过几个小时自己换人。
      */
     private static List<JSONObject> top(List<JSONObject> day) {
@@ -820,9 +823,9 @@ public class MainActivity extends Activity {
             if (e.optInt("importance") >= 4) key.add(e);
         }
         key.sort((a, b) -> Double.compare(b.optDouble("score"), a.optDouble("score")));
-        int n = 0;
+        int n = Math.min(key.size(), TOP_MIN);
         while (n < Math.min(key.size(), TOP_MAX)
-                && key.get(n).optDouble("score") >= TOP_RATIO * key.get(0).optDouble("score")) n++;
+                && key.get(n).optDouble("score") >= TOP_RATIO * key.get(TOP_MIN - 1).optDouble("score")) n++;
         return key.subList(0, n);
     }
 
@@ -962,6 +965,7 @@ public class MainActivity extends Activity {
         boolean follow; // 追踪中的行（追踪的事件和有了答案的问题）
         View front, behind;
         TextView label, badge, num, headline, summary, meta, time;
+        ImageView cover;
     }
 
     /** 每天的标题：大字，是这一天的起点。 */
@@ -1000,7 +1004,7 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 最值得看的一件：左边是加宽数字的编号，右边是“新”“要闻”、大字标题、两行概要和“时间 · 话题 · 来源”。 */
+    /** 最值得看的一件：左边是加宽数字的编号，中间是“新”“要闻”、大字标题、两行概要和“时间 · 话题 · 来源”，有封面的右边是小图。 */
     private View newTop() {
         Holder h = new Holder();
         LinearLayout item = new LinearLayout(this);
@@ -1043,13 +1047,14 @@ public class MainActivity extends Activity {
         h.meta.setPadding(0, t.dp(9), 0, 0);
         col.addView(h.meta);
         item.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        h.cover = newCover(item, 72);
 
         FrameLayout frame = swipeFrame(h, item);
         frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
         return frame;
     }
 
-    /** 按时间的一行：左边是时间，离开期间出现的时间用主色；重要性 4 以上的标题加粗、带一行概要。 */
+    /** 按时间的一行：左边是时间，离开期间出现的时间用主色；重要性 4 以上的标题加粗，3 以上带一行概要；有封面的右边是小图。 */
     private View newRow() {
         Holder h = new Holder();
         LinearLayout row = new LinearLayout(this);
@@ -1087,9 +1092,38 @@ public class MainActivity extends Activity {
         h.meta.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(h.meta);
         row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        h.cover = newCover(row, 56);
         FrameLayout frame = swipeFrame(h, row);
         frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
         return frame;
+    }
+
+    /** 行右边的封面小图：圆角方图，图还没下来时是浅底。 */
+    private ImageView newCover(LinearLayout row, int sizeDp) {
+        ImageView cover = new ImageView(this);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackground(t.round(t.chip, Theme.R_S));
+        cover.setClipToOutline(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(t.dp(sizeDp), t.dp(sizeDp));
+        lp.leftMargin = t.dp(12);
+        lp.topMargin = t.dp(2);
+        row.addView(cover, lp);
+        return cover;
+    }
+
+    /**
+     * 服务器已经取到封面的（推送前会取）放上小图，没有的不占位置。有没有图由服务器先说好，图下来时行高不跳；
+     * 行会复用，图回来时还是这件事才放上去。
+     */
+    private void bindCover(Holder h, JSONObject e) {
+        String path = e.optBoolean("cover") ? "/v1/events/" + e.optLong("id") + "/cover" : null;
+        ImageView cover = h.cover;
+        cover.setTag(path);
+        cover.setImageDrawable(null);
+        cover.setVisibility(path == null ? View.GONE : View.VISIBLE);
+        if (path != null) Images.load(this, path, b -> {
+            if (path.equals(cover.getTag())) cover.setImageBitmap(b);
+        });
     }
 
     /** 追踪中：有了答案的问题（主色容器）和追踪的事件（卡片色）放在一组。 */
@@ -1170,6 +1204,7 @@ public class MainActivity extends Activity {
         h.headline.setText(e.optString("headline"));
         show(h.summary, e.optString("summary"));
         h.meta.setText(meta(clock(Theme.millis(e.optString("time"))) + " · ", e));
+        bindCover(h, e);
     }
 
     private void bindRow(Holder h, JSONObject e) {
@@ -1180,8 +1215,9 @@ public class MainActivity extends Activity {
         h.headline.setText(e.optString("headline"));
         h.headline.setTextSize(key ? 15.5f : 15);
         h.headline.setTypeface(Theme.weight(key ? 800 : 500));
-        show(h.summary, key ? e.optString("summary") : "");
+        show(h.summary, e.optInt("importance") >= 3 ? e.optString("summary") : "");
         h.meta.setText(meta("", e));
+        bindCover(h, e);
     }
 
     /** “大模型 · IT之家 等 3 家”：话题用墨色写在来源前面，不再上色；prefix 是前面的时间。 */
