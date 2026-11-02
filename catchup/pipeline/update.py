@@ -1,5 +1,5 @@
 """采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报 → 追踪进展
-→ 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次） → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
+→ 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次、需要时问一句） → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
@@ -76,6 +76,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
         _, events = ranked(config, store, now)
+    stats["asked"] = bool(personal.ask(store, now))  # 记忆主动问一句（有就挂在信息流顶部）
     if deliver:
         picked = push.select(config.push, store, events, now, push.strict_sources(sources))
         for e in picked:  # 先取好封面，手机收到推送时马上拿得到大图

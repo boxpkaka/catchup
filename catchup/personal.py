@@ -71,7 +71,7 @@ source=更信任或更想看的来源；avoid_source=明确不想看的来源（
 没有就输出 {"add": [], "update": [], "remove": [], "pending": null}。"""
 
 FEEDBACK_SYSTEM = """下面是一位 AI 从业者最近 30 天对一些事件的行为，以及他已有的记忆。据此维护“由反馈归纳的记忆”。
-信号强弱：有用、你分享的、追踪是强的正面信号；在事件下提问是中等信号（问一件事不代表长期关注这一类）；
+信号强弱：想多看、你分享的、追踪是强的正面信号；在事件下提问是中等信号（问一件事不代表长期关注这一类）；
 会错过是较弱的正面信号，不会错过是较弱的负面信号。只是打开、看过的不算信号，不在下面列出。
 带原因的“不需要：不想看这类 / 不想看这个来源”已经单独记下了，只作为规律的一部分；
 “不需要：其他原因”和没写原因的“不需要”是他没说为什么，正要靠你把这几件放在一起找共同点：几件明显是同一类时归纳成 avoid，看不出就先不动；
@@ -354,7 +354,7 @@ def evidence(config: Config, store, actions) -> list[tuple[str, float]]:
     for event_id, s in state.items():
         tags, neutral, weight = [], [], 0.0
         if s["feedback"] == "useful":
-            tags.append("有用")
+            tags.append("想多看")
             weight += ACTIVE["useful"]
         elif s["feedback"] == "not_needed" and s["reason"] == "known":
             neutral.append("不需要：已经知道了")
@@ -404,21 +404,37 @@ def reinforce(store, now: datetime) -> int:
         if not effect or not memories:
             continue
         if event_id not in texts:
-            events = group_events(store.event_signals(event_id))
-            e = events[0] if events else None  # 和 Ranker.score 一样：内容匹配标题摘要，来源匹配来源名和频道
-            texts[event_id] = e and (" ".join([e.lead.title, e.lead.summary] + [x.title for x in e.signals]).lower(),
-                                     " ".join(f"{x.source} {x.channel} {x.author}" for x in e.signals).lower())
+            texts[event_id] = _texts(store, event_id)
         if not texts[event_id]:
             continue
-        text, origin = texts[event_id]
         for m in memories:
             amount = effect.get(m["kind"])
             # 当场因这个行为记下的记忆（创建时间不早于它）不再拿它加强一遍
-            if amount and at > m["created"] and any(
-                    keyword_in(k.lower(), origin if m["kind"] in ON_ORIGIN else text) for k in m["keywords"]):
+            if amount and at > m["created"] and _matches(m, texts[event_id]):
                 _boost(store, m, amount, now)
                 touched.add(m["id"])
     return len(touched)
+
+
+def _texts(store, event_id: int) -> tuple[str, str] | None:
+    """和 Ranker.score 一样：(内容：标题和摘要, 来源：来源名、频道、作者)，都是小写；事件不存在时为 None。"""
+    events = group_events(store.event_signals(event_id))
+    if not events:
+        return None
+    e = events[0]
+    return (" ".join([e.lead.title, e.lead.summary] + [x.title for x in e.signals]).lower(),
+            " ".join(f"{x.source} {x.channel} {x.author}" for x in e.signals).lower())
+
+
+def _matches(m: dict, texts: tuple[str, str]) -> bool:
+    return any(keyword_in(k.lower(), texts[1] if m["kind"] in ON_ORIGIN else texts[0]) for k in m["keywords"])
+
+
+def related(store, event_id: int, now: datetime) -> list[dict]:
+    """和这件事有关的关注类记忆（长期关注、正在做），点“想多看”时告诉用户加强了哪几条。"""
+    texts = _texts(store, event_id)
+    return [{"id": m["id"], "kind": m["kind"], "text": m["text"]} for m in active(store, now)
+            if texts and m["kind"] in ("interest", "task") and m["keywords"] and _matches(m, texts)]
 
 
 def _effect(kind: str, value: str | None) -> dict[str, float]:
@@ -451,6 +467,78 @@ def _last_reason(store, event_id: int, before: int) -> str | None:
     r = store.con.execute("select value from actions where event_id = ? and kind = 'not_needed' and id < ? "
                           "order by id desc limit 1", (event_id, before)).fetchone()
     return r[0] if r else None
+
+
+ASK_EVERY = timedelta(days=1)    # 每天最多新问一个问题
+ASK_OPEN = timedelta(days=3)     # 没回答的问题在信息流顶部挂这么久
+ASK_AGAIN = timedelta(days=30)   # 同一条记忆问过（不论怎么答）这么久之内不再问
+ASK_CHECK = timedelta(hours=6)   # 找不到要问的时，隔这么久再找（要扫一遍最近显示过的事件）
+FADE_DAYS, FADE_SHOWN = 14, 5    # 长期关注 14 天没被印证，期间又有 5 件以上相关的事显示过或推送过却没点开，就问还关不关注
+TASK_ASK_DAYS = 3                # 正在做的事快到期时问还在不在做
+ASK_LABELS = {"fading": {"keep": "还关注", "drop": "不关注了"}, "task": {"keep": "还在做", "drop": "做完了"}}
+ASK_PREFIX = re.compile(r"^你(长期)?(关注|在|正在)\s*")
+
+
+def open_ask(store, now: datetime) -> dict | None:
+    """信息流顶部要问的问题：最近 ASK_OPEN 里还没回答、记忆也还在的那个。"""
+    alive = {m["id"] for m in active(store, now)}
+    for a in store.asks(now - ASK_OPEN):
+        if not a["answered"] and a["memory_id"] in alive:
+            return {"id": a["id"], "kind": a["kind"], "text": a["text"], **ASK_LABELS[a["kind"]]}
+    return None
+
+
+def ask(store, now: datetime) -> dict | None:
+    """需要时新出一个问题（每轮更新时调用，不调用模型）：先问快到期的“正在做”，再问好像不再关注的“长期关注”。
+    已有没回答的、一天内问过、或 ASK_CHECK 内找过没找到的，都不再找。"""
+    if not personalized(store) or open_ask(store, now) or store.asks(now - ASK_EVERY):
+        return None
+    checked = parse_time(store.setting("asks_checked") or "")
+    if checked and now - checked < ASK_CHECK:
+        return None
+    store.set_setting("asks_checked", to_iso(now))
+    recent = {a["memory_id"] for a in store.asks(now - ASK_AGAIN)}
+    memories = [m for m in active(store, now) if m["id"] not in recent]
+    for m in memories:
+        expires = parse_time(m["expires"]) if m["expires"] else None
+        if m["kind"] == "task" and expires and expires - now < timedelta(days=TASK_ASK_DAYS):
+            text = f"「{ASK_PREFIX.sub('', m['text'])}」还在做吗？"
+            return {"id": store.add_ask(m["id"], "task", text, now), "kind": "task", "text": text,
+                    **ASK_LABELS["task"]}
+    since = now - timedelta(days=FADE_DAYS)
+    fading = sorted((m for m in memories if m["kind"] == "interest" and m["keywords"]
+                     and (parse_time(m["seen"] or m["updated"]) or now) < since), key=lambda m: strength(m, now))
+    if not fading:
+        return None
+    shown = {e for _, e, kind, _, _ in store.actions(since) if kind == "seen"}
+    shown |= {e for e, at in store.pushed().items() if at >= to_iso(since)}
+    texts = [t for t in (_texts(store, e) for e in shown) if t]
+    for m in fading:  # 记忆的印证时间早于 since，说明这期间相关的事都没有读过、追踪过
+        n = sum(_matches(m, t) for t in texts)
+        if n >= FADE_SHOWN:
+            text = f"最近 {n} 条「{ASK_PREFIX.sub('', m['text'])}」的内容你都没点开，还关注吗？"
+            return {"id": store.add_ask(m["id"], "fading", text, now), "kind": "fading", "text": text,
+                    **ASK_LABELS["fading"]}
+    return None
+
+
+def answer(store, ask_id: int, value: str, now: datetime) -> dict:
+    """回答主动的提问：keep 加强这条记忆（正在做的续期），drop 删掉，later 只记下回答（ASK_AGAIN 内不再问）。"""
+    changes = {"added": [], "updated": [], "removed": []}
+    a = store.answer_ask(ask_id, value, now)
+    m = a and next((m for m in store.memories() if m["id"] == a["memory_id"]), None)
+    if not m or value == "later":
+        return changes
+    item = {"id": m["id"], "kind": m["kind"], "text": m["text"]}
+    if value == "keep":
+        _boost(store, m, FULL, now)
+        if m["kind"] == "task":
+            store.update_memory(m["id"], now, expires=now + timedelta(days=TASK_DAYS))
+        changes["updated"].append(item)
+    elif value == "drop" and store.update_memory(m["id"], now, deleted=True):
+        changes["removed"].append(item)
+        bump(store)
+    return changes
 
 
 ORIGIN_RANK = ["你手动添加", "对话", *REASON_ORIGINS.values(), "漏报", FEEDBACK_ORIGIN]

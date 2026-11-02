@@ -157,13 +157,13 @@ public class EventActivity extends Activity {
         fl.setMargins(0, t.dp(10), t.dp(12), 0);
         root.addView(follow, fl);
 
-        // 悬浮工具栏：反色胶囊里放“有用 / 不需要”，问一问单独做成酸橙色的大按钮
+        // 悬浮工具栏：反色胶囊里放“想多看 / 不需要”，问一问单独做成酸橙色的大按钮
         actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout bar = new LinearLayout(this);
         bar.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
         bar.setBackground(t.round(t.inv, 99));
-        useful = action("有用", v -> toggleUseful());
+        useful = action("想多看", v -> toggleWant());
         bar.addView(useful, weight());
         LinearLayout.LayoutParams gap = weight();
         gap.leftMargin = t.dp(4);
@@ -561,10 +561,10 @@ public class EventActivity extends Activity {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
     }
 
-    /** 选中的按钮换形状：“有用”的底色收成靠内侧的小圆角，追踪从胶囊变成墨色小圆角方块。 */
+    /** 选中的按钮换形状：“想多看”的底色收成靠内侧的小圆角，追踪从胶囊变成墨色小圆角方块。 */
     private void updateActions() {
         boolean on = "useful".equals(feedback);
-        useful.setText(on ? "已标记有用" : "有用");
+        useful.setText(on ? "✓ 想多看" : "想多看");
         useful.setBackground(t.ripple(on ? (t.onInv & 0x00FFFFFF) | 0x29000000 : Color.TRANSPARENT,
                 99, on ? Theme.R_M - 2 : 99, on ? Theme.R_M - 2 : 99, 99));
         follow.setText(following ? "✓ 追踪中" : "+ 追踪");
@@ -572,12 +572,43 @@ public class EventActivity extends Activity {
         shape(follow).morph(t.dp(following ? Theme.R_M : 99), following ? t.ink : t.sheet);
     }
 
-    private void toggleUseful() {
+    /** 想多看这类：服务器记下或加强相关的记忆，回来后提示是哪一条；再点一次撤回（当时记下的一起删）。 */
+    private void toggleWant() {
         String value = "useful".equals(feedback) ? null : "useful";
         feedback = value;
         updateActions();
         useful.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
-        send(value);
+        Trace.log(this, "ui.feedback", "id=" + id + " value=" + value);
+        android.content.Context app = getApplicationContext();
+        long eventId = id;
+        new Thread(() -> {
+            JSONObject r = null;
+            try {
+                r = Api.post(app, "/v1/events/" + eventId + "/feedback", new JSONObject()
+                        .put("value", value == null ? JSONObject.NULL : value)
+                        .put("reason", value == null ? JSONObject.NULL : "topic"));
+            } catch (Exception err) {
+                Trace.log(app, "feedback.fail", "id=" + eventId + " " + err);
+            }
+            JSONObject got = r;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (got == null) toast("没有记下，请重试");
+                else if (value != null) toast(wantNote(got));
+            });
+        }, "want").start();
+    }
+
+    /** “想多看”之后的提示：记住了哪条、加强了哪条记忆；都没有时说会多推这类。 */
+    static String wantNote(JSONObject r) {
+        JSONObject m = r.optJSONObject("memory");
+        for (String key : new String[]{"added", "updated", "related"}) {
+            JSONArray items = m == null ? null : m.optJSONArray(key);
+            if (items != null && items.length() > 0) {
+                return ("added".equals(key) ? "记住了：" : "加强了：") + items.optJSONObject(0).optString("text");
+            }
+        }
+        return "好的，会多推这类内容";
     }
 
     private void notNeeded() {

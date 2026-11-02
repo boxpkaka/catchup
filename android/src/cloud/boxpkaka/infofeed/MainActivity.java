@@ -32,13 +32,18 @@ import android.text.TextUtils;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.TypefaceSpan;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.animation.AccelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
@@ -103,7 +108,9 @@ public class MainActivity extends Activity {
     private LinearLayout header;
     private TextView statusChip;
     static volatile boolean visible; // 首页在前台：补到的旧推送不再弹通知，见 FeedService.notifyIfRecent
-    private LinearLayout updateNotice, batteryNotice, notifyNotice;
+    private LinearLayout updateNotice, batteryNotice, notifyNotice, askNotice;
+    private TextView askText, askKeep, askDrop;
+    private JSONObject ask; // 正在问的那个记忆问题（feed 的 ask），答了就清掉
     private TextView updateText, updateAction;
     private View skeleton;
     private Shapes.Loader skeletonLoader;
@@ -521,6 +528,40 @@ public class MainActivity extends Activity {
                         .putExtra(Settings.EXTRA_CHANNEL_ID, FeedService.CHANNEL_MESSAGES)));
         header.addView(notifyNotice, noticeLp());
 
+        // 记忆的提问：“最近 6 条「语音合成」的内容你都没点开，还关注吗？”，答了就收起（见 personal.ask）
+        askNotice = new LinearLayout(this);
+        askNotice.setOrientation(LinearLayout.VERTICAL);
+        askNotice.setPadding(t.dp(20), t.dp(14), t.dp(10), t.dp(16));
+        askNotice.setBackground(t.round(t.sheet, Theme.R_XL));
+        LinearLayout askTop = new LinearLayout(this);
+        askTop.setGravity(Gravity.CENTER_VERTICAL);
+        askTop.addView(t.text(this, "关于你的记忆", 12, t.sub, 700),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView later = t.text(this, "以后再说", 12, t.sub, 700);
+        later.setPadding(t.dp(10), t.dp(6), t.dp(10), t.dp(6));
+        later.setBackground(t.ripple(Color.TRANSPARENT, 99));
+        later.setOnClickListener(v -> answerAsk("later"));
+        askTop.addView(later);
+        askNotice.addView(askTop);
+        askText = t.text(this, "", 15, t.ink, 700);
+        askText.setLineSpacing(t.dp(3), 1f);
+        askText.setPadding(0, t.dp(2), t.dp(10), 0);
+        askNotice.addView(askText);
+        LinearLayout askButtons = new LinearLayout(this);
+        askButtons.setPadding(0, t.dp(12), 0, 0);
+        askKeep = noticeAction("", t.pc, t.onPc);
+        askKeep.setOnClickListener(v -> answerAsk("keep"));
+        askButtons.addView(askKeep);
+        askDrop = noticeAction("", t.bg, t.ink);
+        askDrop.setOnClickListener(v -> answerAsk("drop"));
+        LinearLayout.LayoutParams dropLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        dropLp.leftMargin = t.dp(8);
+        askButtons.addView(askDrop, dropLp);
+        askNotice.addView(askButtons);
+        askNotice.setVisibility(View.GONE);
+        header.addView(askNotice, noticeLp());
+
         statusChip = t.text(this, "", 12.5f, t.onErr, 600);
         statusChip.setPadding(t.dp(10), t.dp(5), t.dp(10), t.dp(5));
         statusChip.setBackground(t.round(t.err, Theme.R_S));
@@ -601,6 +642,7 @@ public class MainActivity extends Activity {
                     hidden.clear();
                     if (pendingDismiss >= 0) hidden.add(pendingDismiss);
                     updateStatusChip(); // 清掉“刷新失败”，换回推送断开或服务端疑似故障的提示
+                    showAsk(got.optJSONObject("ask"));
                     render();
                 } else {
                     onLoadFailed(error, device);
@@ -949,8 +991,27 @@ public class MainActivity extends Activity {
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
             if (visible && tab == FEED) Track.seen(MainActivity.this, id, r.type == 1 ? "top" : "feed"); // 列表只为看得见的行取视图
-            h.front.setOnClickListener(v -> open(v, r.e));
-            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismissRow(id)));
+            // 单击打开、双击想多看：单击要等一下确认不是双击；右滑照常交给 SwipeDismiss
+            SwipeDismiss swipe = new SwipeDismiss(h.front, h.behind, v -> dismissRow(id));
+            GestureDetector taps = new GestureDetector(MainActivity.this, new GestureDetector.SimpleOnGestureListener() {
+                @Override
+                public boolean onSingleTapConfirmed(MotionEvent e) {
+                    open(h.front, r.e);
+                    return true;
+                }
+
+                @Override
+                public boolean onDoubleTap(MotionEvent e) {
+                    want(h.front, r.e, e.getX(), e.getY());
+                    return true;
+                }
+            });
+            h.front.setOnClickListener(null);
+            h.front.setClickable(true); // 保留按下效果
+            h.front.setOnTouchListener((v, e) -> {
+                taps.onTouchEvent(e);
+                return swipe.onTouch(v, e);
+            });
             if (id == expanding) { // 撤销移除：内容绑好以后量出高度，从无到有展开
                 expanding = -1;
                 if (convert.getLayoutParams() == null) {
@@ -1325,6 +1386,114 @@ public class MainActivity extends Activity {
                 .putExtra(EventActivity.EXTRA_JSON, e.toString())
                 .putExtra(EventActivity.EXTRA_FROM, "feed");
         Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
+    }
+
+    /** 双击一行：想多看这类。心形从点按处冒出来，服务器记下后提示记住或加强了哪条记忆；已经点过的只冒心形。 */
+    private void want(View row, JSONObject e, float x, float y) {
+        row.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+        heart(row, x, y);
+        long id = e.optLong("id");
+        Trace.log(this, "ui.want.tap", "id=" + id);
+        if ("useful".equals(e.optString("feedback"))) return;
+        try {
+            e.put("feedback", "useful");
+        } catch (Exception ignored) {
+            // 键不为空，不会发生
+        }
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            JSONObject r = null;
+            try {
+                r = Api.post(app, "/v1/events/" + id + "/feedback",
+                        new JSONObject().put("value", "useful").put("reason", "topic"));
+            } catch (Exception err) {
+                Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
+            }
+            JSONObject got = r;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (got == null) e.remove("feedback");
+                toast(got == null ? "没有记下，请重试" : EventActivity.wantNote(got));
+            });
+        }, "want").start();
+    }
+
+    /** 心形：弹出来、停一下、往上飘着淡出。画在窗口的浮层上，不会被这一行的边界裁掉。 */
+    private void heart(View row, float x, float y) {
+        ViewGroup root = (ViewGroup) getWindow().getDecorView();
+        int[] at = new int[2], base = new int[2];
+        row.getLocationInWindow(at);
+        root.getLocationInWindow(base);
+        int size = t.dp(96);
+        TextView h = t.text(this, "♥", 60, t.pri, 900);
+        h.setGravity(Gravity.CENTER);
+        h.measure(View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY));
+        int left = (int) (at[0] - base[0] + x) - size / 2, top = (int) (at[1] - base[1] + y) - size / 2;
+        h.layout(left, top, left + size, top + size);
+        root.getOverlay().add(h);
+        h.setScaleX(0.3f);
+        h.setScaleY(0.3f);
+        h.setAlpha(0f);
+        h.animate().scaleX(1.1f).scaleY(1.1f).alpha(1f).setDuration(220).setInterpolator(new OvershootInterpolator(2.5f))
+                .withEndAction(() -> h.animate().translationY(-t.dp(44)).scaleX(0.85f).scaleY(0.85f).alpha(0f)
+                        .setStartDelay(220).setDuration(460).setInterpolator(new AccelerateInterpolator())
+                        .withEndAction(() -> root.getOverlay().remove(h)).start())
+                .start();
+    }
+
+    // ---------- 记忆的提问 ----------
+
+    /** 服务器挂着的问题（没有时为 null）：换了问题才重新淡入，答过的就收起。 */
+    private void showAsk(JSONObject a) {
+        if (a == null) {
+            ask = null;
+            askNotice.setVisibility(View.GONE);
+            return;
+        }
+        if (ask != null && ask.optLong("id") == a.optLong("id")) return;
+        ask = a;
+        askText.setText(a.optString("text"));
+        askKeep.setText(a.optString("keep"));
+        askDrop.setText(a.optString("drop"));
+        askNotice.setAlpha(0f);
+        askNotice.setVisibility(View.VISIBLE);
+        askNotice.animate().alpha(1f).setDuration(240).start();
+        Trace.log(this, "ui.ask", "id=" + a.optLong("id"));
+    }
+
+    /** keep：还关注（加强这条记忆）；drop：不关注了（删掉）；later：以后再说（一个月内不再问这条）。 */
+    private void answerAsk(String answer) {
+        JSONObject a = ask;
+        if (a == null) return;
+        ask = null;
+        try {
+            feed.put("ask", JSONObject.NULL);
+        } catch (Exception ignored) {
+            // 键不为空，不会发生
+        }
+        askNotice.animate().alpha(0f).translationY(-t.dp(8)).setDuration(180).withEndAction(() -> {
+            askNotice.setVisibility(View.GONE);
+            askNotice.setTranslationY(0f);
+        }).start();
+        long id = a.optLong("id");
+        boolean task = "task".equals(a.optString("kind"));
+        if ("keep".equals(answer)) toast(task ? "好的，继续帮你留意这件事" : "好的，会继续推这类内容");
+        else if ("drop".equals(answer)) toast(task ? "好的，这件事不再优先推了" : "已删掉这条记忆，以后少推这类");
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            try {
+                Api.post(app, "/v1/asks/" + id, new JSONObject().put("answer", answer));
+            } catch (Exception err) {
+                Trace.log(app, "ask.fail", "id=" + id + " " + err);
+                return;
+            }
+            if ("drop".equals(answer)) runOnUiThread(() -> {
+                lastFetch = 0;
+                load(); // 记忆删了，首页按新记忆重新排
+            });
+        }, "ask").start();
+        Trace.log(this, "ui.ask.answer", "id=" + id + " " + answer);
     }
 
     /** 右滑或在详情页点了“不需要”：这一行平滑收起、下面的跟上来，收完再真正移走。 */

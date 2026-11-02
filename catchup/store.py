@@ -109,6 +109,11 @@ MIGRATIONS = [
     update memories set seen = updated;
     insert or replace into settings (key, value) select 'actions_reinforced', coalesce(max(id), 0) from actions;
     """,
+    # 记忆主动问你：“最近不太看 X 了，还关注吗？”“X 还在做吗？”（见 personal.ask）；answer 为 keep / drop / later
+    """
+    create table memory_asks (id integer primary key, memory_id integer not null, kind text not null,
+        text text not null, created text not null, answered text, answer text);
+    """,
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
@@ -360,6 +365,26 @@ class Store:
                              (*fields.values(), to_iso(now), memory_id)).rowcount
         self.con.commit()
         return n > 0
+
+    def add_ask(self, memory_id: int, kind: str, text: str, now: datetime) -> int:
+        cur = self.con.execute("insert into memory_asks (memory_id, kind, text, created) values (?, ?, ?, ?)",
+                               (memory_id, kind, text, to_iso(now)))
+        self.con.commit()
+        return cur.lastrowid
+
+    def asks(self, since: datetime) -> list[dict]:
+        """since 以来出过的问题，新的在前。"""
+        rows = self.con.execute("select id, memory_id, kind, text, created, answered, answer from memory_asks "
+                                "where created >= ? order by id desc", (to_iso(since),)).fetchall()
+        return [dict(zip(("id", "memory_id", "kind", "text", "created", "answered", "answer"), r)) for r in rows]
+
+    def answer_ask(self, ask_id: int, answer: str, now: datetime) -> dict | None:
+        """记下回答，返回这个问题；不存在或已经答过返回 None。"""
+        n = self.con.execute("update memory_asks set answered = ?, answer = ? where id = ? and answered is null",
+                             (to_iso(now), answer, ask_id)).rowcount
+        self.con.commit()
+        r = self.con.execute("select id, memory_id, kind, text from memory_asks where id = ?", (ask_id,)).fetchone()
+        return dict(zip(("id", "memory_id", "kind", "text"), r)) if n and r else None
 
     def set_strength(self, memory_id: int, strength: float, seen: datetime | None) -> None:
         """只改强度，不动 updated（那是内容最后一次改写的时间）；seen 为 None 时保持原来的印证时间。"""
