@@ -1,5 +1,7 @@
 import json
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -383,6 +385,25 @@ class ImagesTest(unittest.TestCase):
         with mock.patch("catchup.images.http.get", side_effect=TimeoutError()):
             self.assertIsNone(images.cover(self.config, 8, [first]))
         self.assertFalse((Path(self.dir.name) / "data/images/covers/8.none").exists())  # 超时不算没有，下次再试
+
+    def test_plain_covers_are_dropped(self):
+        github, plain = sig("https://g/1", "x", 3), sig("https://p/1", "x", 2)
+        pages = {"https://g/1": b'<meta property="og:image" content="https://opengraph.githubassets.com/1/a/b">',
+                 "https://p/1": b'<meta property="og:image" content="https://p/logo.png">', "https://p/logo.png": b"png"}
+        with mock.patch("catchup.images.http.get", side_effect=lambda url, *a: pages[url]) as get, \
+                mock.patch("catchup.images._webp", return_value=(b"RIFF", 1200, 630)), \
+                mock.patch("catchup.images.flat", return_value=True):  # 纯色底的 logo
+            self.assertIsNone(images.cover(self.config, 9, [github, plain]))
+        self.assertNotIn("https://opengraph.githubassets.com/1/a/b", [c.args[0] for c in get.call_args_list])
+
+    @unittest.skipUnless(shutil.which("cwebp") and shutil.which("dwebp"), "需要系统包 webp")
+    def test_flat_tells_logos_from_photos(self):
+        def webp(pixel):
+            ppm = b"P6\n64 36\n255\n" + b"".join(pixel(i) for i in range(64 * 36))
+            return subprocess.run(["cwebp", "-quiet", "-o", "-", "--", "-"], input=ppm, capture_output=True).stdout
+        logo = webp(lambda i: b"\xff\xff\xff" if i % 64 < 50 else b"\x30\x40\xf0")  # 白底，右边一块蓝
+        photo = webp(lambda i: bytes(((i * 37) % 256, (i * 91) % 256, (i * 53) % 256)))
+        self.assertEqual((images.flat(logo), images.flat(photo), images.flat(b"RIFF")), (True, False, False))
 
     def test_site_icons(self):
         missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)

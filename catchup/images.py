@@ -1,7 +1,8 @@
 """事件封面和网站图标：App 不直连外网，由服务器去原网站取回来，存在 data/images 下，同一张只取一次。
 
 - 封面：文章页里的 og:image / twitter:image（Google News 先换出原文地址），用 cwebp（系统包 webp）缩到 720px 宽的
-  WebP，每张约 20KB。太小的（多半是图标）和很扁的（多半是 logo 横幅）不要。
+  WebP，每张约 20KB。太小的（多半是图标）、很扁的（多半是 logo 横幅）、大面积是同一种纯色的（logo、文字卡片、
+  论文首页、图表，缩成小图看不出东西）和 GitHub 自动生成的仓库卡片不要，换下一条报道的图。
 - 网站图标：Google 的 favicon 服务，64px，约 1KB；它不认识的网站返回 404。
 取不到就记一个 .none，以后直接回答没有；封面的 .none 记着当时有几条报道，事件有了新报道再找一次。
 超时、断网这类不算取不到，下次再试。
@@ -14,9 +15,10 @@ import re
 import subprocess
 import tempfile
 import urllib.error
+from collections import Counter
 from html import unescape
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from . import http, reader
 from .config import Config
@@ -30,6 +32,10 @@ OG_IMAGE = re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:ima
 WIDTH = 720
 MIN_WIDTH = 300
 MAX_RATIO = 2.5  # 宽是高的这么多倍以上，多半是 logo 横幅
+# 缩成 48×27、每个颜色通道分 16 级后，最多的那种颜色占到这么多：纯色底上的 logo、文字卡片、论文首页、图表、全黑图。
+# 照片、截图、视频画面一般在 0.4 以下
+FLAT = 0.6
+SKIP_HOSTS = ("opengraph.githubassets.com",)  # GitHub 自动生成的仓库卡片：只是把仓库名和简介又写了一遍
 TRIES = 3  # 一个事件最多看最新的几条报道
 TIMEOUT = 10
 
@@ -100,16 +106,32 @@ def _page_image(url: str) -> str | None:
         url = reader._google_news(m.group(1))
     tag = OG_IMAGE.search(http.get(url, BROWSER, TIMEOUT).decode("utf-8", "replace"))
     content = tag and re.search(r'content=["\']([^"\']+)', tag.group(0))
-    return urljoin(url, unescape(content.group(1))) if content else None
+    image = urljoin(url, unescape(content.group(1))) if content else None
+    return None if image and urlparse(image).hostname in SKIP_HOSTS else image
 
 
 def _shrink(raw: bytes) -> bytes | None:
-    """缩成不超过 WIDTH 宽的 WebP；cwebp 读不了的格式、太小或太扁的图返回 None。"""
+    """缩成不超过 WIDTH 宽的 WebP；cwebp 读不了的格式、太小、太扁或大面积纯色的图返回 None。"""
     probe = _webp(raw, "-m", "0")  # 先最快地编一遍，看原图尺寸
     if not probe or probe[1] < MIN_WIDTH or probe[1] > probe[2] * MAX_RATIO:
         return None
     out = _webp(raw, "-resize", str(min(probe[1], WIDTH)), "0")
-    return out and out[0]
+    return out[0] if out and not flat(out[0]) else None
+
+
+def flat(webp: bytes) -> bool:
+    """大面积是同一种纯色（见 FLAT）：用 dwebp 缩成 48×27 的 PPM 数颜色。解不开时当作不是，留着图。"""
+    try:
+        p = subprocess.run(["dwebp", "-quiet", "-scale", "48", "27", "-ppm", "-o", "-", "--", "-"], input=webp,
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    m = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", p.stdout)
+    if p.returncode != 0 or not m:
+        return False
+    pixels, n = p.stdout[m.end():], int(m[1]) * int(m[2])
+    counts = Counter(bytes(b >> 4 for b in pixels[i:i + 3]) for i in range(0, n * 3, 3))
+    return bool(counts) and counts.most_common(1)[0][1] >= FLAT * n
 
 
 def _webp(raw: bytes, *args: str) -> tuple[bytes, int, int] | None:

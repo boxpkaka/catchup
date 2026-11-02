@@ -1164,10 +1164,9 @@ public class MainActivity extends Activity {
 
     /** 行右边的封面小图：圆角方图，图还没下来时是浅底。 */
     private ImageView newCover(LinearLayout row, int sizeDp) {
-        ImageView cover = new ImageView(this);
+        ImageView cover = new RoundImage(this, t.dp(Theme.R_S)); // 圆角画在图上，卡片收回时的截图里也是圆角
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         cover.setBackground(t.round(t.chip, Theme.R_S));
-        cover.setClipToOutline(true);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(t.dp(sizeDp), t.dp(sizeDp));
         lp.leftMargin = t.dp(12);
         lp.topMargin = t.dp(2);
