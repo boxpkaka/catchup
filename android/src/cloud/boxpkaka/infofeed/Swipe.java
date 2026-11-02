@@ -56,6 +56,7 @@ final class Swipe extends FrameLayout {
     private final int slop;
     private float downX, downY, startX;
     private boolean dragging;
+    private boolean pressed, held; // 刚按下还没动；这时子控件要占住手势，先记着（见 requestDisallowInterceptTouchEvent）
     private VelocityTracker velocity;
 
     Swipe(Context c, Pages pages) {
@@ -68,6 +69,16 @@ final class Swipe extends FrameLayout {
     @Override
     public boolean canScrollHorizontally(int direction) {
         return pages.has(direction > 0 ? 1 : -1);
+    }
+
+    /**
+     * 惯性滚动途中按下，ScrollView 一按就占住整次手势（列表要等手指竖着动了才占），横滑就翻不了页，
+     * 报告页读着读着右滑回不到专题。按下那一刻要占的先记着，手指竖着动出 slop 再给它。
+     */
+    @Override
+    public void requestDisallowInterceptTouchEvent(boolean disallow) {
+        if (disallow && pressed) held = true;
+        else super.requestDisallowInterceptTouchEvent(disallow);
     }
 
     @Override
@@ -88,11 +99,14 @@ final class Swipe extends FrameLayout {
             downX = e.getRawX();
             downY = e.getRawY();
             dragging = false;
+            pressed = true;
+            held = false;
             if (velocity == null) velocity = VelocityTracker.obtain();
             else velocity.clear();
         }
         if (velocity != null) addRaw(velocity, e);
         if (action == MotionEvent.ACTION_MOVE) {
+            pressed = false;
             if (!dragging) {
                 float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
                 int d = dx < 0 ? 1 : -1;
@@ -102,10 +116,14 @@ final class Swipe extends FrameLayout {
                     startX = e.getRawX();
                     pages.grab(d);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                } else if (held && Math.abs(dy) > slop) {
+                    held = false;
+                    super.requestDisallowInterceptTouchEvent(true);
                 }
             }
             if (dragging) pages.drag(e.getRawX() - startX);
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            pressed = held = false;
             if (dragging) {
                 dragging = false;
                 float vx = 0;
@@ -181,7 +199,7 @@ final class Swipe extends FrameLayout {
         private IntSupplier top;
         private ValueAnimator motion;
         private float position, from;
-        private int index, start, lift;
+        private int index, start, lift, target; // target：正在弹向哪一页
         private boolean backing;
 
         Pager(Context c, Host host, boolean rubber) {
@@ -236,7 +254,8 @@ final class Swipe extends FrameLayout {
 
         @Override
         public boolean has(int dir) {
-            if (moving()) return true; // 弹的途中可以接住
+            // 弹的途中可以接住；没有橡皮筋的正弹向头一页或末一页时，再往外滑交给外层（刚从周报翻回日报接着右滑回专题）
+            if (moving()) return rubbery() || (target + dir >= 0 && target + dir < host.count());
             int to = index + dir;
             if (to >= 0 && to < host.count()) return true;
             if (dir < 0 && index == 0 && back != null) return back.can();
@@ -314,6 +333,7 @@ final class Swipe extends FrameLayout {
         /** velocity 是 position 方向的速度（像素/秒）。 */
         private void settle(int to, float velocity) {
             if (motion != null) motion.cancel();
+            target = to;
             float w = width(), last = Math.max(0, host.count() - 1);
             // 没有橡皮筋的（嵌在外层里的）弹到头不越界，免得露出空白
             motion = Spring.PAGE.fling(position * w, to * w, velocity,
