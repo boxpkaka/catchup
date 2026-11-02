@@ -56,6 +56,8 @@ class FakeLLM:
             return {"substantive": self.progress is not None, "update": self.progress or ""}
         if system.startswith("把输入"):
             return {"items": ["译：" + t for t in json.loads(user)]}
+        if system.startswith("给每个 Hugging Face 模型"):
+            return {"items": [{"id": x["id"], "intro": "简介：" + x["card"]} for x in json.loads(user)]}
         return {"headline": "Block 发布语音模型 Dessa", "summary": "只用语音训练。",
                 "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"],
                 "insight": "全双工语音模型多了一个开源选择。"}
@@ -664,6 +666,29 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertEqual(translate.run(self.store, FakeLLM(), [], ["Local TTS server"]), 1)
         self.assertEqual(self.call("GET", "/v1/topics/trending")[1]["channels"][0]["items"][0]["summary"],
                          "译：Local TTS server")
+
+    def test_hf_models_get_intros_from_model_cards(self):
+        import urllib.error
+        from catchup.pipeline import intros
+        hf = build_sources({"hf": {"type": "hf_models", "pipeline_tags": []}})
+        models = [Signal(url=f"https://huggingface.co/acme/{n}", title=f"acme/{n}", source="hf", channel="text-to-speech",
+                         published=NOW) for n in ("tts", "gone")]
+        self.store.add(models, now=NOW)
+        self.store.update_board("hf", models, NOW)
+
+        def read(url):
+            if url.endswith("gone"):
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            return "acme/tts", '<p align="center"><img src="x.png"></p>\n\n![badge](b.svg)\n\nA [small](https://x) TTS model.'
+
+        llm = FakeLLM()
+        with mock.patch("catchup.reader.read", side_effect=read):
+            self.assertEqual(intros.run(self.store, llm, hf, NOW), 2)
+            self.assertEqual(intros.run(self.store, llm, hf, NOW), 0)  # 写过的、模型卡不存在的都不再读
+        self.assertEqual(llm.calls, 1)
+        self.assertEqual([x["summary"] for x in self.store.board("hf")], ["简介：A small TTS model.", "acme 发布的模型"])
+        self.store.update_board("hf", models, NOW + timedelta(hours=2))  # 再抓一次榜，简介还在
+        self.assertEqual(self.store.board("hf")[0]["summary"], "简介：A small TTS model.")
 
     def test_main_topic_is_picked_by_the_model(self):
         self.store.add([sig("https://a/2", "Moshi 2 speech model released", hours_ago=2)], now=NOW)
