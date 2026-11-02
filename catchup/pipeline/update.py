@@ -1,5 +1,6 @@
-"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、给新事件写简报 → 追踪进展 → 从反馈学习 → 推送
-→ 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介 → 翻译英文原文。
+"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报 → 追踪进展
+→ 从反馈学习 → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
+→ 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
 """
@@ -30,13 +31,14 @@ def ranked(config: Config, store: Store, now: datetime) -> tuple[list, list[Even
 
 
 def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = None, top: int | None = None,
-                   rewrites: int | None = None) -> int:
+                   rewrites: int | None = None, also: set[int] = frozenset()) -> int:
     """按当前记忆给前排事件写或重写简报（记忆变了的、有新报道的、还没有简报的），只是要重写的最多 rewrites 条。
-    不指定 top 时（每轮采集后）还包括排在后面但正热门的事件，见 brief.candidates。"""
+    不指定 top 时（每轮采集后）还包括排在后面但正热门的事件，见 brief.candidates；also 是初筛选中的事件 id，见 brief.screen。"""
     now = now or datetime.now(timezone.utc)
     _, events = ranked(config, store, now)
     sources = build_sources(config.sources)
     pool = events[:top] if top else brief.candidates(events, config.llm.get("brief_top", 25), sources)
+    pool += [e for e in events if e.id in also and e not in pool]
     return brief.write_briefs(store, pool, personal.focus(config, store, now), llm, sources,
                               now, len(pool), personal.memory_rev(store), brief.READ_WAIT, rewrites)
 
@@ -46,22 +48,31 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     llm = llm if llm is not None else from_config(config.llm)
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
-    stats = {"new_events": assign_events(store, signals, now), "merged": 0, "briefs": 0, "learned": 0,
+    arrived = {s.url for s in signals if s.event_id is None}
+    stats = {"new_events": assign_events(store, signals, now), "merged": 0, "screened": 0, "briefs": 0, "learned": 0,
              "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "intros": 0, "translated": 0}
     _, events = ranked(config, store, now)
+    boards = {name for name, s in sources.items() if s.board}
     updates = []
     if llm:
         if stats["new_events"]:  # 每 10 分钟一轮，没有新事件时前排事件上一轮已经查过重复
             pool = brief.candidates(events, config.llm.get("merge_top", 40), sources)
             stats["merged"] = brief.merge_duplicates(store, pool, llm, sources, len(pool))
+        # 这一轮来了新报道、排不进写简报候选池、还没有简报的事件（榜单上的不用逐条判断）
+        pool = brief.candidates(events, config.llm.get("brief_top", 25), sources)
+        fresh = [e for e in events if any(s.url in arrived for s in e.signals) and e not in pool
+                 and not all(s.source in boards for s in e.signals)]
+        briefed = store.briefs(e.id for e in fresh)
+        screened = brief.screen([e for e in fresh if e.id not in briefed], personal.focus(config, store, now),
+                                llm, sources)
+        stats["screened"] = len(screened)
         learned = personal.learn_from_feedback(config, store, llm, now)
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
-        stats["briefs"] = refresh_briefs(config, store, llm, now, rewrites=0)  # 新事件先写，赶上这一轮推送
+        stats["briefs"] = refresh_briefs(config, store, llm, now, rewrites=0, also=screened)  # 新事件先写，赶上这一轮推送
         updates = follow.run(store, llm, now)
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
         _, events = ranked(config, store, now)
-    boards = {name for name, s in sources.items() if s.board}
     if deliver:
         picked = push.select(config.push, store, events, now, push.strict_sources(sources))
         stats["pushed"] = push.deliver(store, picked, now, config.push)
