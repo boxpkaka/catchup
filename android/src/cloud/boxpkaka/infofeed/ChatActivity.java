@@ -8,9 +8,11 @@ import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -29,10 +31,17 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * 对话页：在某件事下面问（基于原文回答，标注出处），或者直接问 Catchup（基于你的事件库）；两种都会联网搜索补充，
- * 引用到的来源列在回答最后。回答流式显示，往上翻着看时不会被拽回底部。同一个问题最近问过，直接显示上次的回答，
- * 可以要求重新回答。每轮之后如果记住了关于你的新信息，会在回答下方显示，可以当场撤销。
+ * 引用到的来源收成回答下面的一张卡片。回答流式逐字浮现，往上翻着看时不会被拽回底部。同一个问题最近问过，
+ * 直接显示上次的回答，可以要求重新回答。每轮之后如果记住了关于你的新信息，会在回答下方显示，可以当场撤销。
  */
 public class ChatActivity extends Activity {
     static final String EXTRA_EVENT = "event";
@@ -40,6 +49,9 @@ public class ChatActivity extends Activity {
     static final String EXTRA_QUESTIONS = "questions";
     static final String EXTRA_ASK = "ask";
     static final String EXTRA_THREAD = "thread";
+    /** 服务器附在回答末尾的来源列表（catchup/chat.py 的 _footer），每行“编号. [标题](链接)”。 */
+    private static final String SOURCES = "\n\n**来源**\n";
+    private static final Pattern SOURCE = Pattern.compile("(\\d+)\\. \\[(.+)\\]\\((\\S+)\\)");
 
     private Theme t;
     private Nav nav;
@@ -220,7 +232,7 @@ public class ChatActivity extends Activity {
                         View v = addUser(m.optString("content"));
                         if (ask != null && same(ask, m.optString("content"))) asked = v;
                     } else {
-                        addAssistant().setText(Markdown.render(m.optString("content"), t, this::openEvent));
+                        showAnswer(addAssistant(), m.optString("content"), null);
                     }
                 }
                 if (asked != null) { // 这个问题问过了：直接看上次的回答，不再重新生成
@@ -297,6 +309,7 @@ public class ChatActivity extends Activity {
         addUser(msg);
         LinearLayout status = statusLine("正在思考");
         TextView answer = addAssistant();
+        Reveal reveal = new Reveal(answer);
         StringBuilder full = new StringBuilder();
         scrollToEnd();
         JSONObject body = new JSONObject();
@@ -311,7 +324,8 @@ public class ChatActivity extends Activity {
         new Thread(() -> {
             String error = null;
             try {
-                Api.stream(this, "/v1/chat", body, e -> runOnUiThread(() -> onEvent(e, status, answer, full, msg)));
+                Api.stream(this, "/v1/chat", body,
+                        e -> runOnUiThread(() -> onEvent(e, status, answer, reveal, full, msg)));
             } catch (Exception e) {
                 error = MainActivity.reason(e);
                 Trace.log(this, "chat.fail", e.toString());
@@ -327,7 +341,8 @@ public class ChatActivity extends Activity {
         }, "chat-send").start();
     }
 
-    private void onEvent(JSONObject e, LinearLayout status, TextView answer, StringBuilder full, String question) {
+    private void onEvent(JSONObject e, LinearLayout status, TextView answer, Reveal reveal, StringBuilder full,
+                         String question) {
         if (isDestroyed()) return;
         switch (e.optString("type")) {
             case "thread":
@@ -339,7 +354,7 @@ public class ChatActivity extends Activity {
             case "delta":
                 removeStatus(status);
                 full.append(e.optString("text"));
-                answer.setText(Markdown.render(full.toString(), t, this::openEvent));
+                showAnswer(answer, full.toString(), reveal);
                 followEnd();
                 break;
             case "cached":
@@ -413,6 +428,121 @@ public class ChatActivity extends Activity {
         lp.topMargin = t.dp(16);
         messages.addView(v, lp);
         return v;
+    }
+
+    /** 回答正文按 Markdown 显示，末尾的来源列表拆出来做成卡片放在回答下面。reveal 为空时直接显示（历史记录）。 */
+    private void showAnswer(TextView answer, String md, Reveal reveal) {
+        int cut = sourcesAt(md);
+        CharSequence body = Markdown.render(cut < 0 ? md : md.substring(0, cut), t, this::openEvent);
+        if (reveal != null) reveal.set(body);
+        else answer.setText(body);
+        if (cut < 0 || answer.getTag() != null) return;
+        View card = sourcesCard(md.substring(cut + SOURCES.length()));
+        answer.setTag(card);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = t.dp(14);
+        messages.addView(card, messages.indexOfChild(answer) + 1, lp);
+        if (reveal == null) return;
+        card.setAlpha(0f); // 等正文最后几个字浮现出来，再从下面轻轻升上来
+        card.setTranslationY(t.dp(12));
+        card.animate().alpha(1f).translationY(0).setStartDelay(160)
+                .setInterpolator(Spring.FX).setDuration(Spring.FX.duration).start();
+    }
+
+    /** 回答末尾来源列表的起点，没有返回 -1。每行都得是来源格式，免得把回答自己写的“来源”小标题当成列表。 */
+    private static int sourcesAt(String md) {
+        int i = md.lastIndexOf(SOURCES);
+        if (i < 0) return -1;
+        for (String line : md.substring(i + SOURCES.length()).split("\n")) {
+            if (!SOURCE.matcher(line).matches()) return -1;
+        }
+        return i;
+    }
+
+    /** 引用的网页：平时收成一行（几个来源、来自哪些网站），点开逐条列出，编号对应正文里的角标，点一条打开原网页。 */
+    private View sourcesCard(String footer) {
+        List<String[]> items = new ArrayList<>();
+        Set<String> sites = new LinkedHashSet<>();
+        for (String line : footer.split("\n")) {
+            Matcher m = SOURCE.matcher(line);
+            if (!m.matches()) continue;
+            String title = m.group(2), url = m.group(3), host = Uri.parse(url).getHost();
+            String site = host == null ? "" : host.replaceFirst("^(www|m)\\.", "");
+            if (site.equals("news.google.com")) { // Google 新闻给的是跳转链接，媒体名在标题末尾的“ - 媒体”里
+                int i = title.lastIndexOf(" - ");
+                site = i > 0 ? title.substring(i + 3) : "Google 新闻";
+                if (i > 0) title = title.substring(0, i);
+            }
+            sites.add(site);
+            items.add(new String[]{m.group(1), site, title, url});
+        }
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(t.dp(16), t.dp(13), t.dp(12), t.dp(13));
+        head.addView(t.text(this, items.size() + " 个来源", 13.5f, t.ink, 700));
+        TextView names = t.text(this, String.join(" · ", sites), 12.5f, t.sub, 600);
+        names.setTypeface(Theme.flex(this, 92, 600));
+        names.setSingleLine();
+        names.setEllipsize(TextUtils.TruncateAt.END);
+        names.setPadding(t.dp(10), 0, t.dp(8), 0);
+        head.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView arrow = t.text(this, "›", 20, t.sub, 700);
+        arrow.setGravity(Gravity.CENTER);
+        arrow.setRotation(90);
+        head.addView(arrow, new LinearLayout.LayoutParams(t.dp(24), t.dp(24)));
+        card.addView(head);
+        head.setOnClickListener(v -> {
+            boolean open = card.getChildCount() == 1;
+            if (open) for (String[] s : items) card.addView(sourceRow(s)); // 每次新建：收起时的行还在淡出，不能再加回来
+            else card.removeViews(1, card.getChildCount() - 1);
+            t.segments(card);
+            arrow.animate().rotation(open ? -90 : 90).setInterpolator(Spring.FAST).setDuration(Spring.FAST.duration)
+                    .start();
+        });
+        t.segments(card);
+        Theme.smooth(card);
+        return card;
+    }
+
+    /** 来源卡里的一条：{编号, 网站, 标题, 链接}。 */
+    private View sourceRow(String[] s) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(t.dp(14), t.dp(12), t.dp(16), t.dp(13));
+        TextView num = t.text(this, s[0], 11, t.onPc, 800);
+        num.setGravity(Gravity.CENTER);
+        num.setMinWidth(t.dp(20));
+        num.setPadding(t.dp(4), 0, t.dp(4), 0);
+        num.setBackground(t.round(t.pc, 6));
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(18));
+        nl.rightMargin = t.dp(12);
+        row.addView(num, nl);
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView site = t.text(this, s[1], 12, t.sub, 700);
+        site.setTypeface(Theme.flex(this, 92, 700));
+        site.setSingleLine();
+        site.setEllipsize(TextUtils.TruncateAt.END);
+        text.addView(site);
+        TextView title = t.text(this, s[2], 14, t.ink, 500);
+        title.setLineSpacing(t.dp(3), 1f);
+        title.setMaxLines(2);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setPadding(0, t.dp(4), 0, 0);
+        text.addView(title);
+        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.setOnClickListener(v -> openUrl(s[3]));
+        return row;
+    }
+
+    private void openUrl(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            Toast.makeText(this, "没有可以打开链接的应用", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private LinearLayout statusLine(String text) {
