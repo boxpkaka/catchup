@@ -136,6 +136,7 @@ public class ChatActivity extends Activity {
         messages = new LinearLayout(this);
         messages.setOrientation(LinearLayout.VERTICAL);
         messages.setPadding(t.dp(20), t.dp(8), t.dp(20), t.dp(16));
+        messages.setClipChildren(false); // 回答里代码块、表格的卡片底左右伸出正文，见 Markdown.Block
         scroll.addView(messages);
         scroll.setOnTouchListener((v, ev) -> {
             int a = ev.getActionMasked();
@@ -434,7 +435,7 @@ public class ChatActivity extends Activity {
     /** 回答正文按 Markdown 显示，末尾的来源列表拆出来做成卡片放在回答下面。reveal 为空时直接显示（历史记录）。 */
     private void showAnswer(TextView answer, String md, Reveal reveal) {
         int cut = sourcesAt(md);
-        CharSequence body = Markdown.render(cut < 0 ? md : md.substring(0, cut), t, this::openEvent);
+        CharSequence body = Markdown.render(cut < 0 ? md : md.substring(0, cut), t, answer, this::openEvent);
         if (reveal != null) reveal.set(body);
         else answer.setText(body);
         if (cut < 0 || answer.getTag() != null) return;
