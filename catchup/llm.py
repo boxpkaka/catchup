@@ -1,6 +1,7 @@
 """DeepSeek 对话接口的最小封装：只用标准库，输出 JSON。
 
 简报、合并这类短任务用 deepseek-flash 并关闭思考：实测 1 秒内返回；开着思考时几百个 token 都花在推理上。
+报告的“观察”一天才写一次，要的是判断而不是摘录，用更强的 deepseek-v4-pro 并打开思考（json 的 model、think）。
 """
 from __future__ import annotations
 
@@ -32,10 +33,17 @@ class LLM:
                 if text:
                     yield text
 
-    def json(self, system: str, user: str, max_tokens: int = 800) -> dict:
+    def json(self, system: str, user: str, max_tokens: int = 800, model: str | None = None,
+             think: bool = False) -> dict:
+        """think 时打开思考：推理也算在 max_tokens 里，长材料要一两分钟。"""
+        extra = {}
+        if model:
+            extra["model"] = model
+        if think:
+            extra["thinking"] = {"type": "enabled"}
         body = self._body([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens,
-                          temperature=0.2, response_format={"type": "json_object"})
-        resp = http.post_json(API, body, {"Authorization": f"Bearer {self.key}"}, timeout=90)
+                          temperature=0.2, response_format={"type": "json_object"}, **extra)
+        resp = http.post_json(API, body, {"Authorization": f"Bearer {self.key}"}, timeout=300 if think else 90)
         return json.loads(resp["choices"][0]["message"]["content"])
 
 

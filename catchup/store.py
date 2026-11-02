@@ -417,6 +417,12 @@ class Store:
         self.con.commit()
         return cur.lastrowid
 
+    def user_messages(self, since: datetime, until: datetime) -> list[tuple[str, int | None]]:
+        """这段时间用户在对话里说的话：(内容, 讨论的事件 id，直接问事件库时为 None)，按先后。"""
+        return self.con.execute("select m.content, t.event_id from messages m join threads t on t.id = m.thread_id "
+                                "where m.role = 'user' and m.created >= ? and m.created < ? order by m.id",
+                                (to_iso(since), to_iso(until))).fetchall()
+
     def messages(self, thread_id: int) -> list[dict]:
         rows = self.con.execute("select id, role, content, created, meta from messages where thread_id = ? order by id",
                                 (thread_id,)).fetchall()
