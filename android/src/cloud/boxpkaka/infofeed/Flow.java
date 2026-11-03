@@ -3,13 +3,16 @@ package cloud.boxpkaka.infofeed;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.BitmapShader;
 import android.graphics.BlendMode;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
+import android.graphics.ComposeShader;
 import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
@@ -27,7 +30,6 @@ import android.util.LruCache;
 import android.view.View;
 
 import java.util.Arrays;
-import java.util.Random;
 
 /**
  * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，再加雾面颗粒。
@@ -41,7 +43,7 @@ import java.util.Random;
  * - 详情页头部（bleed）：比头部长出一截，往下淌成一团雾。深的一层在标题下面化开，浅的一层（同一张图的亮色版本）淌进正文；
  *   雾的边由“淌到多深”的起伏和一张流动的噪声决定，一团团、一缕缕，没有固定的轮廓；
  * - 页面的雾（mist）：每一页最底下，同一页颜色的亮色版本盖一层白（深色模式压暗），流得是卡片的三分之一快。
- * 动画按全局时钟加每件事的错开量算，同一件事的卡片和详情页走在同一个位置，展开时接得上；系统关了动画时静止。
+ * 颗粒见 Grain。动画按全局时钟加每件事的错开量算，同一件事的卡片和详情页走在同一个位置，展开时接得上；系统关了动画时静止。
  * 圆角靠 clipPath 而不是轮廓裁剪，Card 用 View.draw 截图时也是圆角。
  */
 final class Flow extends View {
@@ -57,10 +59,9 @@ final class Flow extends View {
     private static final LruCache<String, Bitmap> BLURRED = new LruCache<>(64), ARTS = new LruCache<>(48);
     private static final LruCache<Bitmap, Bitmap> LIFTED = new LruCache<>(32);
     private static final LruCache<Bitmap, Look[]> LOOKS = new LruCache<>(96);
-    private static Bitmap noise;
 
     private final Paint image = new Paint(Paint.FILTER_BITMAP_FLAG), layer = new Paint(Paint.FILTER_BITMAP_FLAG);
-    private final Paint veil = new Paint(), grain = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint veil = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dstIn = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Matrix matrix = new Matrix();
     private final RectF rect = new RectF();
@@ -68,6 +69,7 @@ final class Flow extends View {
     private final Path clip = new Path();
     private final float density;
     private final boolean night;
+    private final Grain grain;
     private int mode = CARD;
     private boolean dark, dirty = true;
     private int accent;
@@ -80,9 +82,9 @@ final class Flow extends View {
     private int tail;
     // 小位图：sw × sh 格。work 上画三层，算好的结果平滑以后放进 out，放大画上去
     private int sw, sh;
-    private Bitmap work, out;
+    private Bitmap work, out, mask; // mask：详情页头部的雾有多浓（只用透明度），out 是不透明的颜色
     private Canvas workCanvas;
-    private int[] px, px2, res;
+    private int[] px, px2, res, resMask;
     private float[] acc, tmp, n1, n2;
     private long computedAt = -1;
     private int rimH = -1;
@@ -93,29 +95,86 @@ final class Flow extends View {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
         dstIn.setBlendMode(BlendMode.DST_IN);
-        grain.setBlendMode(BlendMode.OVERLAY);
-        grain.setShader(grainShader(density));
+        grain = new Grain(c);
         rim.setStyle(Paint.Style.STROKE);
         rim.setStrokeWidth(2 * density); // 一半在形状外面被裁掉，露出 1dp
     }
 
-    /** 颗粒：灰度噪点平铺，约 2 个像素一粒（太细的在高分屏上看不出来），用 OVERLAY 叠上去，亮的地方提亮、暗的地方压暗。 */
-    static BitmapShader grainShader(float density) {
-        if (noise == null) {
-            int n = 96;
-            int[] p = new int[n * n];
-            Random rnd = new Random(7);
-            for (int i = 0; i < p.length; i++) {
-                int v = rnd.nextInt(256);
-                p[i] = Color.rgb(v, v, v);
-            }
-            noise = Bitmap.createBitmap(p, n, n, Bitmap.Config.ARGB_8888);
+    /**
+     * 雾面颗粒：一张 512×512、可以无缝平铺的胶片颗粒（res/drawable-nodpi/grain.png，见 tools/grain.py），颗粒边缘是柔的，
+     * 一格约 0.4dp，按设备像素插值取样，所以不会是一格一格的方块。拆成亮粒（带透明度的白）和暗粒（带透明度的黑）两张，
+     * 普通叠加，不用 OVERLAY 这种各家 GPU 表现不一、还要回读底色的混合模式；两张的强度按底色的亮度配比（set），
+     * 效果接近 OVERLAY：深底上主要是暗粒在压、亮粒轻一些，浅底上反过来，颗粒都是随着底色起伏，而不是一层白点或黑点。
+     */
+    static final class Grain {
+        private static BitmapShader lightShader, darkShader;
+        private final Paint light = new Paint(Paint.FILTER_BITMAP_FLAG), dark = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private Grain lower; // fade：下面一段，按自己的底色配比
+        private float fadeFrom = Float.NaN, fadeTo;
+
+        Grain(Context c) {
+            if (lightShader == null) load(c.getResources());
+            light.setShader(lightShader);
+            dark.setShader(darkShader);
         }
-        BitmapShader g = new BitmapShader(noise, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-        Matrix gm = new Matrix();
-        gm.setScale(density * 0.6f, density * 0.6f);
-        g.setLocalMatrix(gm);
-        return g;
+
+        private static void load(Resources r) {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inScaled = false;
+            Bitmap g = BitmapFactory.decodeResource(r, R.drawable.grain, o);
+            int w = g.getWidth(), h = g.getHeight();
+            int[] p = new int[w * h], up = new int[w * h], down = new int[w * h];
+            g.getPixels(p, 0, w, 0, 0, w, h);
+            for (int i = 0; i < p.length; i++) {
+                int v = (p[i] & 0xFF) - 128; // 128 是不变，往上是亮粒、往下是暗粒
+                up[i] = Math.min(255, Math.max(0, v) * 2) << 24 | 0xFFFFFF;
+                down[i] = Math.min(255, Math.max(0, -v) * 2) << 24;
+            }
+            Matrix m = new Matrix();
+            float s = r.getDisplayMetrics().density * 0.4f;
+            m.setScale(s, s);
+            lightShader = shader(Bitmap.createBitmap(up, w, h, Bitmap.Config.ARGB_8888), m);
+            darkShader = shader(Bitmap.createBitmap(down, w, h, Bitmap.Config.ARGB_8888), m);
+        }
+
+        private static BitmapShader shader(Bitmap b, Matrix m) {
+            BitmapShader s = new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+            s.setLocalMatrix(m);
+            return s;
+        }
+
+        /** strength 是颗粒有多重（0 到 1），base 是底色大致的亮度（0 到 1）。 */
+        Grain set(float strength, float base) {
+            float b = Math.max(.05f, Math.min(.95f, base));
+            light.setAlpha(Math.round(255 * strength * (b < .5f ? b / (1 - b) : 1)));
+            dark.setAlpha(Math.round(255 * strength * (b < .5f ? 1 : (1 - b) / b)));
+            return this;
+        }
+
+        void draw(Canvas c, float l, float t, float r, float b) {
+            c.drawRect(l, t, r, b, light);
+            c.drawRect(l, t, r, b, dark);
+        }
+
+        /**
+         * 上下两段底色不一样（详情页头部：上面是标题底下的深色，往下是雾）：从 y0 到 y1 渐渐从上面的配比换成下面的配比，
+         * 不出接缝。top、bottom 是两段底色的亮度。
+         */
+        void drawFade(Canvas c, Context ctx, float w, float h, float y0, float y1, float strength, float top, float bottom) {
+            if (lower == null) lower = new Grain(ctx);
+            if (y0 != fadeFrom || y1 != fadeTo) {
+                fadeFrom = y0;
+                fadeTo = y1;
+                LinearGradient upper = new LinearGradient(0, y0, 0, y1, 0xFF000000, 0, Shader.TileMode.CLAMP);
+                LinearGradient below = new LinearGradient(0, y0, 0, y1, 0, 0xFF000000, Shader.TileMode.CLAMP);
+                light.setShader(new ComposeShader(upper, lightShader, BlendMode.SRC_IN));
+                dark.setShader(new ComposeShader(upper, darkShader, BlendMode.SRC_IN));
+                lower.light.setShader(new ComposeShader(below, lightShader, BlendMode.SRC_IN));
+                lower.dark.setShader(new ComposeShader(below, darkShader, BlendMode.SRC_IN));
+            }
+            set(strength, top).draw(c, 0, 0, w, h);
+            lower.set(strength, bottom).draw(c, 0, 0, w, h);
+        }
     }
 
     /** 做过的模糊小图，没做过返回 null。 */
@@ -346,19 +405,21 @@ final class Flow extends View {
         }
         float cell = CELL_DP * density;
         dst.set(0, 0, Math.round(sw * cell), Math.round(sh * cell));
-        if (mode == HEAD) {
+        if (mode == HEAD) { // 颗粒先叠在不透明的颜色上（随着底色起伏），再整个按雾的浓淡淡出
             int layer = canvas.saveLayer(0, 0, w, h, null);
             canvas.drawBitmap(out, null, dst, image);
-            grain.setAlpha(dark ? 56 : 46);
-            canvas.drawRect(0, 0, w, h, grain);
-            canvas.drawBitmap(out, null, dst, dstIn); // 颗粒只留在雾里
+            float foot = h - tail; // 头部的底边：上面是标题底下的颜色，往下是雾（浅色模式是同色的浅色，深色模式还是深的）
+            grain.drawFade(canvas, getContext(), w, h, foot - 40 * density, foot + 140 * density, .15f,
+                    dark ? .3f : .85f, night ? .25f : .82f);
+            canvas.drawBitmap(mask, null, dst, dstIn);
             canvas.restoreToCount(layer);
         } else {
             canvas.drawBitmap(out, null, dst, image);
             veil.setColor(mode == MIST ? (night ? 0xBD101117 : 0x99FFFFFF) : dark ? 0x6B08080C : 0x94FFFFFF);
             canvas.drawRect(0, 0, w, h, veil);
-            grain.setAlpha(mode == MIST ? (night ? 41 : 31) : dark ? 56 : 46);
-            canvas.drawRect(0, 0, w, h, grain);
+            if (mode == MIST) grain.set(night ? .16f : .13f, night ? .1f : .92f);
+            else grain.set(.15f, dark ? .32f : .86f);
+            grain.draw(canvas, 0, 0, w, h);
             if (radii != null) drawRim(canvas, w, h);
         }
         canvas.restoreToCount(save);
@@ -386,9 +447,11 @@ final class Flow extends View {
         work = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
         workCanvas = new Canvas(work);
         out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+        mask = mode == HEAD ? Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888) : null;
         px = new int[sw * sh];
         px2 = mode == HEAD ? new int[sw * sh] : null;
         res = new int[sw * sh];
+        resMask = mode == HEAD ? new int[sw * sh] : null;
         acc = null;
         tmp = new float[sw * sh * 4];
         return true;
@@ -421,6 +484,7 @@ final class Flow extends View {
         }
         soften();
         out.setPixels(res, 0, sw, 0, 0, sw, sh);
+        if (mask != null) mask.setPixels(resMask, 0, sw, 0, 0, sw, sh);
     }
 
     /**
@@ -551,7 +615,7 @@ final class Flow extends View {
         }
     }
 
-    /** 和上一帧平滑过的结果再横竖各模糊一次（1-2-1），放大以后亮脊是圆润的，没有折痕；打包进 res。 */
+    /** 和上一帧平滑过的结果再横竖各模糊一次（1-2-1），放大以后亮脊是圆润的，没有折痕；颜色不透明地打包进 res，雾的浓淡进 resMask。 */
     private void soften() {
         int w = sw, h = sh;
         for (int y = 0; y < h; y++) {
@@ -570,7 +634,8 @@ final class Flow extends View {
                 int r = Math.round((tmp[ou] + 2 * tmp[o] + tmp[od]) / 4);
                 int g = Math.round((tmp[ou + 1] + 2 * tmp[o + 1] + tmp[od + 1]) / 4);
                 int b = Math.round((tmp[ou + 2] + 2 * tmp[o + 2] + tmp[od + 2]) / 4);
-                res[y * w + x] = clamp8(a) << 24 | clamp8(r) << 16 | clamp8(g) << 8 | clamp8(b);
+                res[y * w + x] = 0xFF000000 | clamp8(r) << 16 | clamp8(g) << 8 | clamp8(b);
+                if (resMask != null) resMask[y * w + x] = clamp8(a) << 24;
             }
         }
     }
