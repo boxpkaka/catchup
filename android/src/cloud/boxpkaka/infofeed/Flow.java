@@ -54,8 +54,8 @@ final class Flow extends View {
             {14, .6f, .76f, .68f, 1.26f, 1.02f, 220, .15f, .14f},
     };
     private static final int CARD = 0, HEAD = 1, MIST = 2;
-    private static final float CELL_DP = 4; // 小位图一格多少 dp
-    private static final long FRAME_MS = 33, FADE_MS = 400;
+    private static final float CELL_DP = 4, MIST_CELL_DP = 8; // 小位图一格多少 dp：页面的雾很软，格子大一倍
+    private static final long FRAME_MS = 33, MIST_FRAME_MS = 66, FADE_MS = 400;
     private static final LruCache<String, Bitmap> BLURRED = new LruCache<>(64), ARTS = new LruCache<>(48);
     private static final LruCache<Bitmap, Bitmap> LIFTED = new LruCache<>(32);
     private static final LruCache<Bitmap, Look[]> LOOKS = new LruCache<>(96);
@@ -86,7 +86,7 @@ final class Flow extends View {
     private Canvas workCanvas;
     private int[] px, px2, res, resMask;
     private float[] acc, tmp, n1, n2;
-    private long computedAt = -1;
+    private long computedAt = -1, frameMs = FRAME_MS; // 多久重算一次：按上一次算了多久定，主线程最多花四分之一在这上面
     private int rimH = -1;
 
     Flow(Context c) {
@@ -389,9 +389,10 @@ final class Flow extends View {
         boolean moving = ValueAnimator.areAnimatorsEnabled();
         long now = SystemClock.uptimeMillis();
         boolean fading = moving && fadeFrom > 0 && now - fadeFrom < FADE_MS;
-        if (size(w, h) || dirty || (moving && now - computedAt >= FRAME_MS)) {
-            long t = (long) ((moving ? now : 0) / slow) + offset;
+        if (size(w, h) || dirty || (moving && now - computedAt >= frameMs)) {
+            long t = (long) ((moving ? now : 0) / slow) + offset, started = SystemClock.elapsedRealtime();
             compute(t, now, moving);
+            frameMs = Math.max(mode == MIST ? MIST_FRAME_MS : FRAME_MS, (SystemClock.elapsedRealtime() - started) * 4);
             computedAt = now;
             dirty = false;
         }
@@ -403,7 +404,7 @@ final class Flow extends View {
             clip.addRoundRect(rect, radii, Path.Direction.CW);
             canvas.clipPath(clip);
         }
-        float cell = CELL_DP * density;
+        float cell = cell() * density;
         dst.set(0, 0, Math.round(sw * cell), Math.round(sh * cell));
         if (mode == HEAD) { // 颗粒先叠在不透明的颜色上（随着底色起伏），再整个按雾的浓淡淡出
             int layer = canvas.saveLayer(0, 0, w, h, null);
@@ -437,9 +438,13 @@ final class Flow extends View {
         canvas.drawPath(clip, rim);
     }
 
+    private float cell() {
+        return mode == MIST ? MIST_CELL_DP : CELL_DP;
+    }
+
     /** 按大小建小位图和缓冲；大小变了返回 true。 */
     private boolean size(int w, int h) {
-        float cell = CELL_DP * density;
+        float cell = cell() * density;
         int nw = Math.max(2, (int) Math.ceil(w / cell)), nh = Math.max(2, (int) Math.ceil(h / cell));
         if (nw == sw && nh == sh && out != null) return false;
         sw = nw;
@@ -463,7 +468,7 @@ final class Flow extends View {
         if (src == null) return;
         Look a = look(src, mode == MIST ? (night ? 2 : 0) : dark ? (night ? 2 : 1) : 0);
         flow(a, src, t, px);
-        boolean fresh = acc == null || !moving || now - computedAt > 150;
+        boolean fresh = acc == null || !moving || now - computedAt > frameMs * 3 + 100; // 隔了一阵才画的（刚滚进来）直接用新的
         if (acc == null) acc = new float[sw * sh * 4];
         float blend = fresh ? 1 : fadeFrom > 0 && now - fadeFrom < FADE_MS ? .12f : .35f;
         if (mode == HEAD) {
