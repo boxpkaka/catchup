@@ -104,6 +104,10 @@ public class ChatActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
+        Flow mist = new Flow(this); // 整页的底：珍珠银的雾
+        mist.mist(t, Theme.PEARL, 7);
+        root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         root.addView(column, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -113,7 +117,7 @@ public class ChatActivity extends Activity {
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(t.dp(12), t.dp(12), t.dp(16), t.dp(14));
-        top.setBackground(t.round(t.bg, 0, 0, Theme.R_XL, Theme.R_XL));
+        top.setBackground(t.frost(t.frostButton, 0, 0, Theme.R_XL, Theme.R_XL));
         top.addView(t.backButton(this), new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);

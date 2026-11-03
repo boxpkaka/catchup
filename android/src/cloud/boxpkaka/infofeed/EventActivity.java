@@ -41,9 +41,10 @@ import java.util.Locale;
 
 /**
  * 事件详情：头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、AI 解读、进展、问一问、全部来源。
- * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的颜色：封面铺满顶上，底下是和卡片一样流动的模糊封面（Flow），
- * 往下淌进白色页面，一侧淌得深、一侧早收住。页面底色就是卡片白，正文不用方框，靠留白和小标题分段。
- * 底部悬浮工具栏：有用 / 不需要，旁边是酸橙色的问一问。
+ * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的颜色：封面铺满顶上，底下是和卡片一样流动的雾面金属（Flow），
+ * 往下淌成一团雾，深色在标题下面化开、浅雾淌进正文，一侧淌得深、一侧早收住。整页的底是这件事颜色的雾（封面或话题，
+ * 没有话题的是珍珠银），正文不用方框，靠留白和小标题分段。返回、追踪是磨砂按钮。
+ * 底部悬浮工具栏：金属的有用 / 不需要，旁边是酸橙色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
 public class EventActivity extends Activity {
@@ -53,6 +54,7 @@ public class EventActivity extends Activity {
     static final String EXTRA_FROM = "from"; // 从哪打开的（feed / push / topic …），埋点用，见 Track
     static final String EXTRA_TONE = "tone"; // 彩色卡片的颜色 {上, 下, 文字色, 点缀色}，见 MainActivity.tone
     static final String EXTRA_COVER = "cover"; // 那张彩色卡片有没有封面
+    static final String EXTRA_ART = "art"; // 没有封面的彩色卡片用哪个话题的颜色（见 Theme.field），没有话题是 Theme.PEARL
 
     private static final int FOLDED_SOURCES = 4;
     private static final int BLEED_DP = 360; // 头部的颜色往下淌进正文的长度
@@ -63,7 +65,7 @@ public class EventActivity extends Activity {
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
     private FrameLayout content; // 滚动的内容：底下垫着头部往下淌的颜色（backdrop），上面是 page
-    private Flow backdrop;
+    private Flow backdrop, mist; // 头部往下淌的雾；整页的雾
     private int accent; // 正文的点缀色，第一次显示时定下来，见 Theme.accent
     private boolean accented;
     private FrameLayout headBox; // 头部和铺满顶上的封面，head 叠在上面
@@ -141,6 +143,9 @@ public class EventActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.sheet);
+        mist = new Flow(this); // 颜色在第一次显示内容时定，见 buildHead
+        root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
@@ -175,12 +180,13 @@ public class EventActivity extends Activity {
         scroll.addView(content);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        // 按钮下面垫渐隐底，不用阴影：顶部的等页头滚出去才出现，免得盖住页头
-        View topFade = t.fade(this, false, t.sheet);
+        // 按钮下面垫一层半透明的渐隐（像起了一层薄雾），不用阴影：顶部的等页头滚出去才出现，免得盖住页头
+        int haze = t.night ? 0xB31D1E26 : 0xA6FFFFFF;
+        View topFade = t.fade(this, false, haze);
         topFade.setAlpha(0f);
         FrameLayout.LayoutParams tfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(80));
         root.addView(topFade, tfl);
-        View bottomFade = t.fade(this, true, t.sheet);
+        View bottomFade = t.fade(this, true, haze);
         FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
                 Gravity.BOTTOM);
         root.addView(bottomFade, bfl);
@@ -198,19 +204,19 @@ public class EventActivity extends Activity {
         follow = t.text(this, "", 14, t.ink, 800);
         follow.setGravity(Gravity.CENTER);
         follow.setPadding(t.dp(20), 0, t.dp(20), 0);
-        t.press(follow, t.sheet, 99);
+        t.press(follow, t.frostButton, 99);
         follow.setOnClickListener(v -> toggleFollow());
         FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(48),
                 Gravity.END | Gravity.TOP);
         fl.setMargins(0, t.dp(10), t.dp(12), 0);
         root.addView(follow, fl);
 
-        // 悬浮工具栏：反色胶囊里放“想多看 / 不需要”，问一问单独做成酸橙色的大按钮
+        // 悬浮工具栏：墨色金属的胶囊里放“想多看 / 不需要”，问一问单独做成酸橙色的大按钮
         actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout bar = new LinearLayout(this);
         bar.setPadding(t.dp(6), t.dp(6), t.dp(6), t.dp(6));
-        bar.setBackground(t.round(t.inv, 99));
+        bar.setBackground(t.metal(t.inv, 99));
         useful = action("想多看", v -> toggleWant());
         bar.addView(useful, weight());
         LinearLayout.LayoutParams gap = weight();
@@ -511,16 +517,25 @@ public class EventActivity extends Activity {
     }
 
     /**
-     * 头部：页面是卡片白，头部不再单独上色。从彩色卡片点开时，底下垫一层和卡片一样流动的模糊封面（没有封面的是话题色渐变），
-     * 比头部长出一截、往下淌进正文，跟着内容一起滚走；有封面的话封面铺满顶上、下半截融进去。
+     * 头部：头部不单独上色，底下是整页的雾。从彩色卡片点开时，底下垫一层和卡片一样流动的雾面金属（同一张模糊封面或抽象封面），
+     * 比头部长出一截、往下淌成雾，跟着内容一起滚走；有封面的话封面铺满顶上、下半截融进去。
      */
     private void buildHead() {
         int[] z = tone != null ? tone : new int[]{t.sheet, t.sheet, t.ink, t.ink};
         String coverPath = "/v1/events/" + id + "/cover";
         boolean cover = tone != null && getIntent().getBooleanExtra(EXTRA_COVER, false);
+        String art = getIntent().getStringExtra(EXTRA_ART);
+        if (art == null) art = Theme.topicOf(event).isEmpty() ? Theme.PEARL : Theme.topicOf(event);
+        // 整页的雾：有封面的卡片用封面（还没下来时先用话题色），否则用话题色；第一帧之后才定的（从推送进来、等服务器）淡入
+        if (mist.isLaidOut()) {
+            mist.setAlpha(0f);
+            mist.animate().alpha(1f).setDuration(400).start();
+        }
+        mist.mist(t, art, id);
         if (tone != null) {
             backdrop = new Flow(this);
             backdrop.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, false, id);
+            if (!cover) backdrop.topic(t, art, id);
             content.addView(backdrop, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)); // 高度见 content
         }
         if (cover) {
@@ -532,16 +547,20 @@ public class EventActivity extends Activity {
             Bitmap ready = Images.cached(coverPath), blurred = Flow.cachedBlur(coverPath);
             if (blurred == null && ready != null) blurred = Flow.blurred(coverPath, ready);
             if (ready != null) headCover.setImageBitmap(ready);
-            if (blurred != null) backdrop.cover(blurred, false);
-            backdrop.bleed(blurred != null ? Flow.lean(blurred) : 0, id);
+            if (blurred != null) {
+                backdrop.cover(blurred, false);
+                mist.mistCover(blurred, false);
+            }
+            backdrop.bleed(blurred != null ? Flow.lean(blurred) : 0, id, t.dp(BLEED_DP), z[3]);
             if (ready == null) Images.load(this, coverPath, b -> {
                 headCover.setImageAlpha(0);
                 headCover.setImageBitmap(b);
                 ObjectAnimator.ofInt(headCover, "imageAlpha", 0, 255).setDuration(320).start();
                 backdrop.cover(Flow.blurred(coverPath, b), true);
+                mist.mistCover(Flow.blurred(coverPath, b), true);
             });
         } else if (backdrop != null) {
-            backdrop.bleed(0, id);
+            backdrop.bleed(0, id, t.dp(BLEED_DP), z[3]);
         }
         padHead();
         statusIcons(0);
@@ -550,12 +569,12 @@ public class EventActivity extends Activity {
         top.setGravity(Gravity.CENTER_VERTICAL);
         topicChip = t.text(this, "", 12, z[2], 700);
         topicChip.setPadding(t.dp(11), t.dp(4), t.dp(11), t.dp(4));
-        topicChip.setBackground(t.round(tone != null ? z[2] & 0xFFFFFF | 0x24000000 : t.chip, 99));
+        topicChip.setBackground(t.frost(tone != null ? z[2] & 0xFFFFFF | 0x24000000 : t.frost, 99, 99, 99, 99));
         top.addView(topicChip);
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         badge = t.text(this, "要闻", 12, tone != null ? z[0] : t.onInv, 800); // 和首页一样是墨色（彩色卡片上是文字色）反白
         badge.setPadding(t.dp(10), t.dp(4), t.dp(10), t.dp(4));
-        badge.setBackground(t.round(tone != null ? z[2] : t.inv, Theme.R_XS));
+        badge.setBackground(tone != null ? t.round(z[2], Theme.R_XS) : t.metal(t.inv, Theme.R_XS));
         top.addView(badge);
         head.addView(top);
 
@@ -573,7 +592,9 @@ public class EventActivity extends Activity {
         metaRow.addView(meta, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         original = t.text(this, "看原文 ↗", 13, tone != null ? z[0] : t.onInv, 700);
         original.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-        original.setBackground(t.ripple(tone != null ? z[2] : t.inv, 99));
+        original.setBackground(tone != null ? t.frostRipple(z[2] & 0xFFFFFF | 0xD6000000, 99)
+                : new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22FFFFFF),
+                t.metal(t.inv, 99), null));
         metaRow.addView(original);
         head.addView(metaRow);
         Theme.smooth(head, top);
@@ -831,7 +852,7 @@ public class EventActivity extends Activity {
                 99, on ? Theme.R_M - 2 : 99, on ? Theme.R_M - 2 : 99, 99));
         follow.setText(following ? "✓ 追踪中" : "+ 追踪");
         follow.setTextColor(following ? t.bg : t.ink);
-        shape(follow).morph(t.dp(following ? Theme.R_M : 99), following ? t.ink : t.sheet);
+        shape(follow).morph(t.dp(following ? Theme.R_M : 99), following ? t.ink : t.frostButton);
     }
 
     /** 想多看这类：服务器记下或加强相关的记忆，回来后提示是哪一条；再点一次撤回（当时记下的一起删）。 */

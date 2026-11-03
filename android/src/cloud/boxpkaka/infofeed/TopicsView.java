@@ -1,7 +1,7 @@
 package cloud.boxpkaka.infofeed;
 
 import android.app.Activity;
-import android.content.Context;
+import android.graphics.Color;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
@@ -25,7 +25,8 @@ import java.util.Locale;
  * 首页的“专题”页：话题专题（配置里的兴趣：AI 语音、大模型、Agent）、论文专题（这一周和你有关的论文）和榜单专题
  * （GitHub Trending、HF 模型热榜、Product Hunt）各一张卡片。信息流只放够重要的，专题放一个方向、一个榜单的全部；
  * 点卡片进 TopicActivity。
- * 专题是固定的几个入口，每个专题有自己的颜色和徽记（Theme.zone、emblem），帮你认路；信息流里没有封面的“最值得看”卡片也用它们。
+ * 专题是固定的几个入口，每个专题有自己的颜色（Theme.zone），帮你认路：卡片是这个颜色的雾面金属（Flow，和专题页标题栏、
+ * 信息流里没有封面的“最值得看”卡片同一种），不放徽记；一屏七张，流动各自错开、慢一半。底下是首页的珍珠银雾。
  * 卡片大小搭配：每组第一张占整行，其余两两一行，落单的占整行。数据见服务器的 /v1/topics。
  */
 final class TopicsView extends FrameLayout {
@@ -49,7 +50,6 @@ final class TopicsView extends FrameLayout {
         this.a = a;
         this.t = t;
         this.onOpen = onOpen;
-        setBackgroundColor(t.bg);
         body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(t.dp(12), 0, t.dp(12), 0);
@@ -64,51 +64,6 @@ final class TopicsView extends FrameLayout {
 
     void setBottomInset(int px) {
         scroll.setPadding(0, 0, 0, px);
-    }
-
-    /** 专题的徽记：每个专题一种形状和图形，形状不占用已有的含义（太阳是重要性 5、四叶是重要性 4 等）。 */
-    static Shapes.Emblem emblem(Context c, Theme t, String key) {
-        int[] z = t.zone(key);
-        float[] form;
-        int glyph;
-        switch (key) {
-            case "AI 语音":
-                form = new float[]{5, 0.14f};
-                glyph = Shapes.Emblem.WAVE;
-                break;
-            case "大模型":
-                form = new float[]{7, 0.1f};
-                glyph = Shapes.Emblem.SPARK;
-                break;
-            case "Agent":
-                form = new float[]{3, 0.17f};
-                glyph = Shapes.Emblem.ARROW;
-                break;
-            case "github_trending":
-                form = new float[]{10, 0.07f};
-                glyph = Shapes.Emblem.TREND;
-                break;
-            case "hf_models":
-                form = new float[]{9, 0.12f};
-                glyph = Shapes.Emblem.HEART;
-                break;
-            case "product_hunt":
-                form = new float[]{2, 0.09f};
-                glyph = Shapes.Emblem.UP;
-                break;
-            case "AI 创投":
-                form = new float[]{6, 0.1f};
-                glyph = Shapes.Emblem.YUAN;
-                break;
-            case "papers":
-                form = new float[]{4, 0.12f};
-                glyph = Shapes.Emblem.PAGE;
-                break;
-            default:
-                form = new float[]{11, 0.06f};
-                glyph = Shapes.Emblem.SPARK;
-        }
-        return new Shapes.Emblem(c, form, glyph, z[2], z[0]);
     }
 
     /** 切到这一页时调用：没加载过或超过一分钟就重新取，旧的内容先留着。 */
@@ -190,24 +145,33 @@ final class TopicsView extends FrameLayout {
         body.addView(row, lp);
     }
 
-    /** 专题卡片：左上徽记，右上大数字，下面是名字、最新的一两条（论文是最值得读的）和一行小字。整行的卡片多露一条。 */
+    /**
+     * 专题卡片：底下是这个专题的雾面金属，左上大数字，下面是名字、最新的一两条（论文是最值得读的）和一行小字。
+     * 整行的卡片多露一条。
+     */
     private View tile(JSONObject x, boolean wide) {
         String key = x.optString("key");
-        int[] z = t.zone(key);
+        int[] fc = t.field(key), z = {fc[0], fc[2], fc[3]}; // 底色、文字色、点缀色
+        FrameLayout frame = new FrameLayout(a);
+        t.press(frame, fc[0], Theme.R_XL);
+        frame.setOnClickListener(v -> onOpen.open(v, x));
+        Flow flow = new Flow(a);
+        flow.gradient(fc[0], fc[1], Color.luminance(fc[2]) > 0.5f, true, Flow.seedOf(key));
+        flow.topic(t, key, Flow.seedOf(key));
+        flow.slow(2);
+        flow.corners(frame);
+        frame.addView(flow, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout tile = new LinearLayout(a);
         tile.setOrientation(LinearLayout.VERTICAL);
         tile.setPadding(t.dp(18), t.dp(16), t.dp(18), t.dp(16));
-        t.press(tile, z[0], Theme.R_XL);
-        tile.setOnClickListener(v -> onOpen.open(v, x));
+        frame.addView(tile, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
 
         LinearLayout top = new LinearLayout(a);
-        int size = t.dp(wide ? 54 : 46);
-        top.addView(emblem(a, t, key), new LinearLayout.LayoutParams(size, size));
-        top.addView(new View(a), new LinearLayout.LayoutParams(0, 1, 1));
         boolean topic = "topic".equals(x.optString("kind")), paper = "papers".equals(x.optString("kind"));
         LinearLayout number = new LinearLayout(a);
         number.setOrientation(LinearLayout.VERTICAL);
-        number.setGravity(Gravity.END);
         TextView big = t.text(a, String.valueOf(x.optInt(topic ? "today" : "count")), wide ? 40 : 34, z[1], 900);
         big.setTypeface(Theme.flex(a, wide ? 140 : 125, 900)); // 半张卡片放得下三位数
         big.setSingleLine();
@@ -251,7 +215,7 @@ final class TopicsView extends FrameLayout {
             f.setPadding(0, t.dp(10), 0, 0);
             tile.addView(f);
         }
-        return tile;
+        return frame;
     }
 
     private static String unit(String key) {

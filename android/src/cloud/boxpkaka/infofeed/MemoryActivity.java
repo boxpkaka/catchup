@@ -68,6 +68,10 @@ public class MemoryActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
+        Flow mist = new Flow(this); // 整页的底：珍珠银的雾
+        mist.mist(t, Theme.PEARL, 7);
+        root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         ScrollView scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
@@ -77,7 +81,7 @@ public class MemoryActivity extends Activity {
         scroll.addView(body);
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        View bottomFade = t.fade(this, true, t.bg); // 底部按钮下面垫渐隐底，不用阴影
+        View bottomFade = t.fade(this, true, t.night ? 0xB3121319 : 0xA6FFFFFF); // 底部按钮下面垫一层半透明的渐隐，不用阴影
         FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(132),
                 Gravity.BOTTOM);
         root.addView(bottomFade, bfl);
