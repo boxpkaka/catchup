@@ -21,10 +21,12 @@ import android.graphics.PorterDuff;
 import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.RuntimeShader;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.os.Build;
 import android.os.SystemClock;
 import android.util.LruCache;
 import android.view.View;
@@ -33,10 +35,12 @@ import java.util.Arrays;
 
 /**
  * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，再加雾面颗粒。
- * 一张小图（模糊过的封面，或者按话题生成的抽象封面，见 art）画三遍，各自绕不同的中心慢慢转、缩放、漂移（来回往复，缓入缓出），
- * 画在 4dp 一格的小位图上；每一格按亮度查表：在这张图自己的亮度范围里，66% 那一档起一道窄的亮脊，32% 那一档压暗一点，
- * 颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。亮度用小数算，再和上一帧做一次平滑，亮脊滑过去不闪；
- * 图的四周按边上的颜色往外延（CLAMP），转到什么角度都不露直边。小位图放大画上去，再盖遮罩和颗粒。
+ * 一张图（模糊过的封面 192×108，或者按话题生成的抽象封面 384×216，见 art）画三遍，各自绕不同的中心慢慢转、缩放、漂移
+ * （来回往复，缓入缓出）；每个点按亮度过一条“金属曲线”：在这张图自己的亮度范围里，66% 那一档起一道窄的亮脊，32% 那一档
+ * 压暗一点，颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。图的四周按边上的颜色往外延（CLAMP），转到什么角度
+ * 都不露直边。再盖遮罩和颗粒。
+ * 安卓 13 起整个在 GPU 上按屏幕像素逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程；
+ * 老系统在 4dp 一格的小位图上算（compute），亮度用小数、和上一帧平滑，放大画上去。
  * 三种用法：
  * - 卡片（首页“最值得看”、专题卡片、专题标题栏、报告的“要点”）：盖一层遮罩（字压在上面也看得清），边上一圈细倒角，
  *   圆角跟着卡片的背景（右滑时背景的圆角会变）；
@@ -59,6 +63,8 @@ final class Flow extends View {
     private static final LruCache<String, Bitmap> BLURRED = new LruCache<>(64), ARTS = new LruCache<>(48);
     private static final LruCache<Bitmap, Bitmap> LIFTED = new LruCache<>(32);
     private static final LruCache<Bitmap, Look[]> LOOKS = new LruCache<>(96);
+    private static final boolean GPU = Build.VERSION.SDK_INT >= 33;
+    private static final long START = SystemClock.uptimeMillis(); // GPU 上雾的噪声按进程启动以来的秒数算，数小，精度够
 
     private final Paint image = new Paint(Paint.FILTER_BITMAP_FLAG), layer = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint veil = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -86,6 +92,7 @@ final class Flow extends View {
     private Canvas workCanvas;
     private int[] px, px2, res, resMask;
     private float[] acc, tmp, n1, n2;
+    private Gpu shade, before; // GPU：现在的这一套；换了来源、正在淡入时，之前的那一套垫在下面
     private long computedAt = -1, frameMs = FRAME_MS; // 多久重算一次：按上一次算了多久定，主线程最多花四分之一在这上面
     private int rimH = -1;
 
@@ -102,12 +109,12 @@ final class Flow extends View {
 
     /**
      * 雾面颗粒：一张 512×512、可以无缝平铺的胶片颗粒（res/drawable-nodpi/grain.png，见 tools/grain.py），颗粒边缘是柔的，
-     * 一格约 0.4dp，按设备像素插值取样，所以不会是一格一格的方块。拆成亮粒（带透明度的白）和暗粒（带透明度的黑）两张，
+     * 一格就是一个屏幕像素，原样取样，不放大、不插值，所以既不会是一格一格的方块，也不发虚。拆成亮粒（带透明度的白）和暗粒（带透明度的黑）两张，
      * 普通叠加，不用 OVERLAY 这种各家 GPU 表现不一、还要回读底色的混合模式；两张的强度按底色的亮度配比（set），
      * 效果接近 OVERLAY：深底上主要是暗粒在压、亮粒轻一些，浅底上反过来，颗粒都是随着底色起伏，而不是一层白点或黑点。
      */
     static final class Grain {
-        private static BitmapShader lightShader, darkShader;
+        private static BitmapShader lightShader, darkShader, grayShader; // gray：GPU 上直接读灰度（128 是不变）
         private final Paint light = new Paint(Paint.FILTER_BITMAP_FLAG), dark = new Paint(Paint.FILTER_BITMAP_FLAG);
         private Grain lower; // fade：下面一段，按自己的底色配比
         private float fadeFrom = Float.NaN, fadeTo;
@@ -130,24 +137,25 @@ final class Flow extends View {
                 up[i] = Math.min(255, Math.max(0, v) * 2) << 24 | 0xFFFFFF;
                 down[i] = Math.min(255, Math.max(0, -v) * 2) << 24;
             }
-            Matrix m = new Matrix();
-            float s = r.getDisplayMetrics().density * 0.4f;
-            m.setScale(s, s);
-            lightShader = shader(Bitmap.createBitmap(up, w, h, Bitmap.Config.ARGB_8888), m);
-            darkShader = shader(Bitmap.createBitmap(down, w, h, Bitmap.Config.ARGB_8888), m);
+            lightShader = shader(Bitmap.createBitmap(up, w, h, Bitmap.Config.ARGB_8888));
+            darkShader = shader(Bitmap.createBitmap(down, w, h, Bitmap.Config.ARGB_8888));
+            grayShader = shader(g);
         }
 
-        private static BitmapShader shader(Bitmap b, Matrix m) {
-            BitmapShader s = new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-            s.setLocalMatrix(m);
-            return s;
+        private static BitmapShader shader(Bitmap b) {
+            return new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
         }
 
-        /** strength 是颗粒有多重（0 到 1），base 是底色大致的亮度（0 到 1）。 */
-        Grain set(float strength, float base) {
+        /** 亮粒、暗粒各自的强度（0 到 1）：strength 是颗粒有多重，base 是底色大致的亮度（0 到 1）。 */
+        static float[] weights(float strength, float base) {
             float b = Math.max(.05f, Math.min(.95f, base));
-            light.setAlpha(Math.round(255 * strength * (b < .5f ? b / (1 - b) : 1)));
-            dark.setAlpha(Math.round(255 * strength * (b < .5f ? 1 : (1 - b) / b)));
+            return new float[]{strength * (b < .5f ? b / (1 - b) : 1), strength * (b < .5f ? 1 : (1 - b) / b)};
+        }
+
+        Grain set(float strength, float base) {
+            float[] w = weights(strength, base);
+            light.setAlpha(Math.round(255 * w[0]));
+            dark.setAlpha(Math.round(255 * w[1]));
             return this;
         }
 
@@ -182,40 +190,50 @@ final class Flow extends View {
         return BLURRED.get(key);
     }
 
-    /** 封面缩成 48×27、横竖各模糊三遍的小图；同一张只做一次。 */
+    /**
+     * 封面缩成 192×108、横竖各模糊三遍（半径 12，三遍盒子模糊接近高斯）的图；同一张只做一次。图比要铺的地方小，
+     * 但已经很模糊了，放大不会有棱角。
+     */
     static Bitmap blurred(String key, Bitmap cover) {
         Bitmap b = BLURRED.get(key);
         if (b != null) return b;
-        int w = 48, h = 27;
+        int w = 192, h = 108;
         int[] px = new int[w * h];
         Bitmap.createScaledBitmap(cover, w, h, true).getPixels(px, 0, w, 0, 0, w, h);
+        int[] tmp = new int[w * h];
         for (int pass = 0; pass < 3; pass++) {
-            px = box(px, w, h, 3, true);
-            px = box(px, w, h, 3, false);
+            box(px, tmp, w, h, 12, true);
+            box(tmp, px, w, h, 12, false);
         }
         b = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
         BLURRED.put(key, b);
         return b;
     }
 
-    private static int[] box(int[] in, int w, int h, int r, boolean horizontal) {
-        int[] out = new int[in.length];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int rs = 0, gs = 0, bs = 0, n = 0;
-                for (int k = -r; k <= r; k++) {
-                    int xx = horizontal ? Math.max(0, Math.min(w - 1, x + k)) : x;
-                    int yy = horizontal ? y : Math.max(0, Math.min(h - 1, y + k));
-                    int c = in[yy * w + xx];
-                    rs += Color.red(c);
-                    gs += Color.green(c);
-                    bs += Color.blue(c);
-                    n++;
-                }
-                out[y * w + x] = Color.rgb(rs / n, gs / n, bs / n);
+    /** 盒子模糊一遍（横或竖）：滑动窗口累加，边上按最边上的颜色往外延。 */
+    private static void box(int[] in, int[] out, int w, int h, int r, boolean horizontal) {
+        int lines = horizontal ? h : w, len = horizontal ? w : h, n = 2 * r + 1;
+        for (int line = 0; line < lines; line++) {
+            int rs = 0, gs = 0, bs = 0;
+            for (int k = -r; k <= r; k++) {
+                int c = in[at(line, Math.max(0, Math.min(len - 1, k)), w, horizontal)];
+                rs += (c >> 16) & 0xFF;
+                gs += (c >> 8) & 0xFF;
+                bs += c & 0xFF;
+            }
+            for (int i = 0; i < len; i++) {
+                out[at(line, i, w, horizontal)] = 0xFF000000 | (rs / n) << 16 | (gs / n) << 8 | (bs / n);
+                int add = in[at(line, Math.min(len - 1, i + r + 1), w, horizontal)];
+                int drop = in[at(line, Math.max(0, i - r), w, horizontal)];
+                rs += ((add >> 16) & 0xFF) - ((drop >> 16) & 0xFF);
+                gs += ((add >> 8) & 0xFF) - ((drop >> 8) & 0xFF);
+                bs += (add & 0xFF) - (drop & 0xFF);
             }
         }
-        return out;
+    }
+
+    private static int at(int line, int i, int w, boolean horizontal) {
+        return horizontal ? line * w + i : i * w + line;
     }
 
     /** 浅色模式的浅雾用的封面：提亮、加饱和、去灰，冲淡了也是干净的同色，不发灰。 */
@@ -238,21 +256,21 @@ final class Flow extends View {
     }
 
     /**
-     * 没有封面时的“抽象封面”：96×54 的小图，话题色系的六种颜色（见 Theme.artColors）铺成七团径向渐变，位置按 seed 定。
+     * 没有封面时的“抽象封面”：384×216 的图，话题色系的六种颜色（见 Theme.artColors）铺成七团径向渐变，位置按 seed 定。
      * 同一件事（seed 是事件 id）的卡片和详情页、同一个专题（seed 是 seedOf）的卡片和专题页是同一张。pastel 是只有亮色的那张。
      */
     static Bitmap art(Theme t, String key, long seed, boolean pastel) {
         String k = key + "|" + seed + "|" + t.night + "|" + pastel;
         Bitmap b = ARTS.get(k);
         if (b != null) return b;
-        int w = 96, h = 54;
+        int w = 384, h = 216;
         b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         int[] cols = t.artColors(key, pastel);
         c.drawColor(cols[0]);
         float[] r = seq(seed, 24);
         float[][] blobs = {{1, .42f}, {2, .36f}, {3, .36f}, {4, .24f}, {5, .22f}, {1, .2f}, {2, .18f}};
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
         for (int i = 0; i < blobs.length; i++) {
             int col = cols[(int) blobs[i][0]] & 0xFFFFFF;
             float x = r[i * 3] * w, y = r[i * 3 + 1] * h, rad = (blobs[i][1] + r[i * 3 + 2] * .14f) * w;
@@ -389,6 +407,15 @@ final class Flow extends View {
         boolean moving = ValueAnimator.areAnimatorsEnabled();
         long now = SystemClock.uptimeMillis();
         boolean fading = moving && fadeFrom > 0 && now - fadeFrom < FADE_MS;
+        if (GPU) {
+            drawGpu(canvas, w, h, (long) ((moving ? now : 0) / slow) + offset, (moving ? now - START : 0) / 1000f + offset / 1000f,
+                    fading ? (now - fadeFrom) / (float) FADE_MS : 1);
+            if ((moving || fading) && isShown() && getGlobalVisibleRect(visible)) {
+                if (mode == MIST) postInvalidateDelayed(FRAME_MS); // 页面的雾流得慢，三十帧够了
+                else postInvalidateOnAnimation();
+            }
+            return;
+        }
         if (size(w, h) || dirty || (moving && now - computedAt >= frameMs)) {
             long t = (long) ((moving ? now : 0) / slow) + offset, started = SystemClock.elapsedRealtime();
             compute(t, now, moving);
@@ -426,6 +453,214 @@ final class Flow extends View {
         canvas.restoreToCount(save);
         if ((moving || fading) && isShown() && getGlobalVisibleRect(visible)) postInvalidateOnAnimation();
     }
+
+    /**
+     * GPU 上画一帧：t 是流动的时钟（毫秒），ts 是雾的噪声用的秒数，in 是新来源淡入到哪了（1 是淡完）。
+     * 换了来源（图下来了、颜色定了）时新建一套；要淡入的，旧的那套先画在下面，新的按 in 盖上去。
+     */
+    private void drawGpu(Canvas canvas, int w, int h, long t, float ts, float in) {
+        Bitmap src = deep != null ? deep : fallback, src2 = mode == HEAD && light != null ? light : src;
+        if (src == null) return;
+        if (shade == null || shade.deep != src || shade.light != src2) {
+            before = shade != null && fadeFrom > 0 ? shade : null;
+            shade = new Gpu(getContext(), src, src2);
+        }
+        if (in >= 1) before = null;
+        int save = canvas.save();
+        float[] radii = mode == CARD ? radii() : null;
+        if (radii != null) {
+            clip.reset();
+            rect.set(0, 0, w, h);
+            clip.addRoundRect(rect, radii, Path.Direction.CW);
+            canvas.clipPath(clip);
+        }
+        if (before != null) {
+            uniforms(before, w, h, t, ts);
+            before.paint.setAlpha(255);
+            canvas.drawRect(0, 0, w, h, before.paint);
+        }
+        uniforms(shade, w, h, t, ts);
+        shade.paint.setAlpha(Math.round(255 * Math.min(1, in)));
+        canvas.drawRect(0, 0, w, h, shade.paint);
+        if (radii != null) drawRim(canvas, w, h);
+        canvas.restoreToCount(save);
+    }
+
+    /** 这一帧的参数：三层各自从屏幕像素到图上像素的变换、两张图的金属曲线、遮罩、颗粒，详情页头部再加雾。 */
+    private void uniforms(Gpu g, int w, int h, long t, float ts) {
+        RuntimeShader s = g.shader;
+        int bh = mode == HEAD ? Math.min(h, Math.round(w * .72f)) : h; // 详情页头部按卡片的比例摆，见 flow
+        float side = (float) Math.hypot(w, bh) * 1.4f, left = (w - side) / 2, top = (bh - side) / 2;
+        float[] v = new float[9];
+        for (int i = 0; i < LAYERS.length; i++) {
+            float[] l = LAYERS[i];
+            float e = ease(t, (long) (l[0] * 1000));
+            float px = left + side * l[2], py = top + side * l[3], sc = l[4] + (l[5] - l[4]) * e;
+            matrix.reset();
+            matrix.setScale(side / g.deep.getWidth(), side / g.deep.getHeight());
+            matrix.postTranslate(left + l[7] * side * e, top + l[8] * side * e);
+            matrix.postScale(sc, sc, px, py);
+            matrix.postRotate(l[6] * e, px, py);
+            matrix.invert(matrix); // 反过来：屏幕上的点在图上的哪
+            matrix.getValues(v);
+            s.setFloatUniform("ax" + i, v[0], v[1], v[2]);
+            s.setFloatUniform("ay" + i, v[3], v[4], v[5]);
+        }
+        s.setFloatUniform("scale2", g.light.getWidth() / (float) g.deep.getWidth(), g.light.getHeight() / (float) g.deep.getHeight());
+        Look a = look(g.deep, mode == MIST ? (night ? 2 : 0) : dark ? (night ? 2 : 1) : 0), b = look(g.light, night ? 2 : 0);
+        s.setFloatUniform("look", a.lo, a.span, a.cap, 0);
+        s.setFloatUniform("look2", b.lo, b.span, b.cap, 0);
+        if (mode == HEAD) {
+            float foot = h - tail; // 颗粒：标题底下按深色配比，往下渐渐换成雾的配比，见 Grain.drawFade
+            float[] up = Grain.weights(.15f, dark ? .3f : .85f), down = Grain.weights(.15f, night ? .25f : .82f);
+            s.setFloatUniform("grainW", up[0], up[1], down[0], down[1]);
+            s.setFloatUniform("grainY", foot - 40 * density, foot + 140 * density);
+            s.setFloatUniform("head", 1);
+            s.setFloatUniform("fogA", density, foot / density, w, ts);
+            s.setFloatUniform("fogB", side, k, r0, r1);
+            s.setFloatUniform("fogC", fogOff, dark ? 1 : 0, night ? 1 : 0, 0);
+            s.setFloatUniform("accent", Color.red(accent) / 255f, Color.green(accent) / 255f, Color.blue(accent) / 255f);
+            s.setFloatUniform("veil", 0, 0, 0, 0);
+        } else {
+            int c = mode == MIST ? (night ? 0xBD101117 : 0x99FFFFFF) : dark ? 0x6B08080C : 0x94FFFFFF;
+            s.setFloatUniform("veil", Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f, Color.alpha(c) / 255f);
+            float[] gw = mode == MIST ? Grain.weights(night ? .16f : .13f, night ? .1f : .92f) : Grain.weights(.15f, dark ? .32f : .86f);
+            s.setFloatUniform("grainW", gw[0], gw[1], gw[0], gw[1]);
+            s.setFloatUniform("grainY", 0, 1);
+            s.setFloatUniform("head", 0);
+            s.setFloatUniform("fogA", density, 0, w, 0);
+            s.setFloatUniform("fogB", 0, 0, 0, 0);
+            s.setFloatUniform("fogC", 0, 0, 0, 0);
+            s.setFloatUniform("accent", 0, 0, 0);
+        }
+        g.paint.setShader(s);
+    }
+
+    /**
+     * GPU 上的一套：一个 RuntimeShader（见 SKSL）和它读的两张图（深的一层、详情页往下淌的浅雾，其余用法两张是同一张）
+     * 和颗粒。图按线性插值取样、四周往外延。
+     */
+    private static final class Gpu {
+        final Bitmap deep, light;
+        final RuntimeShader shader = new RuntimeShader(SKSL);
+        final Paint paint = new Paint();
+
+        Gpu(Context c, Bitmap deep, Bitmap light) {
+            this.deep = deep;
+            this.light = light;
+            if (Grain.grayShader == null) Grain.load(c.getResources());
+            shader.setInputShader("src", linear(deep));
+            shader.setInputShader("src2", linear(light));
+            shader.setInputShader("grain", Grain.grayShader);
+        }
+
+        private static BitmapShader linear(Bitmap b) {
+            BitmapShader s = new BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            s.setFilterMode(BitmapShader.FILTER_MODE_LINEAR);
+            return s;
+        }
+    }
+
+    /** 和 compute、metal、fog 同一套算法，按屏幕像素逐点算。坐标 p 是视图里的像素。 */
+    private static final String SKSL = String.join("\n",
+            "uniform shader src;",
+            "uniform shader src2;",
+            "uniform shader grain;",
+            "uniform float3 ax0; uniform float3 ay0; uniform float3 ax1; uniform float3 ay1; uniform float3 ax2; uniform float3 ay2;",
+            "uniform float2 scale2;",
+            "uniform float4 look;",
+            "uniform float4 look2;",
+            "uniform float4 veil;",
+            "uniform float4 grainW;",
+            "uniform float2 grainY;",
+            "uniform float head;",
+            "uniform float4 fogA;",
+            "uniform float4 fogB;",
+            "uniform float4 fogC;",
+            "uniform float3 accent;",
+            "const float3 LUMA = float3(0.3, 0.59, 0.11);",
+            "float bell(float u, float m, float s) { return exp(-(u - m) * (u - m) / (2.0 * s * s)); }",
+            "float3 metal(float3 c, float4 lk) {",
+            "  float l = dot(c, LUMA);",
+            "  float u = (l - lk.x) / lk.y;",
+            "  float bump = 1.15 * bell(u, 0.66, 0.1) - 0.4 * bell(u, 0.32, 0.16) + 0.35 * bell(u, 0.98, 0.08);",
+            "  float l2 = clamp(l + 0.5 * lk.y * bump, 0.01, 1.0);",
+            "  if (lk.z > 0.0 && l2 > l) { l2 = max(l, min(l2, lk.z)); }",
+            "  float3 v = c * (l2 / max(l, 0.01));",
+            "  float over = max(v.r, max(v.g, v.b)) - 1.0;",
+            "  if (over > 0.0) { v = min(v, float3(1.0)); v += (float3(1.0) - v) * min(1.0, over); }",
+            "  return v;",
+            "}",
+            "float2 at(float3 ax, float3 ay, float2 p) { float3 q = float3(p, 1.0); return float2(dot(ax, q), dot(ay, q)); }",
+            "float3 flowDeep(float2 p) {",
+            "  float3 c = src.eval(at(ax0, ay0, p)).rgb;",
+            "  c = mix(c, src.eval(at(ax1, ay1, p)).rgb, 0.72);",
+            "  return mix(c, src.eval(at(ax2, ay2, p)).rgb, 0.6);",
+            "}",
+            "float3 flowLight(float2 p) {",
+            "  float3 c = src2.eval(at(ax0, ay0, p) * scale2).rgb;",
+            "  c = mix(c, src2.eval(at(ax1, ay1, p) * scale2).rgb, 0.72);",
+            "  return mix(c, src2.eval(at(ax2, ay2, p) * scale2).rgb, 0.6);",
+            "}",
+            "float hash(float2 p) {",
+            "  float3 q = fract(float3(p.x, p.y, p.x) * 0.1031);",
+            "  q += dot(q, q.yzx + 33.33);",
+            "  return fract((q.x + q.y) * q.z);",
+            "}",
+            "float vnoise(float2 p) {",
+            "  float2 i = floor(p); float2 f = fract(p); float2 u = f * f * (3.0 - 2.0 * f);",
+            "  float a = hash(i); float b = hash(i + float2(1.0, 0.0)); float c = hash(i + float2(0.0, 1.0)); float d = hash(i + float2(1.0, 1.0));",
+            "  return (a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y) * 2.0 - 1.0;",
+            "}",
+            "float fbm(float2 p, float t) {",
+            "  return 0.55 * vnoise(p + float2(t * 0.035, -t * 0.02))",
+            "       + 0.3 * vnoise(p * float2(2.1, 2.3) + float2(17.0 - t * 0.05, t * 0.03))",
+            "       + 0.15 * vnoise(p * float2(4.3, 4.1) + float2(41.0 + t * 0.07, -t * 0.04));",
+            "}",
+            "float3 grainOn(float3 c, float2 p) {",
+            "  float n = (grain.eval(p).r * 255.0 - 128.0) / 127.0;",
+            "  float f = clamp((p.y - grainY.x) / max(1.0, grainY.y - grainY.x), 0.0, 1.0);",
+            "  float2 w = mix(grainW.xy, grainW.zw, f);",
+            "  return n > 0.0 ? c + (float3(1.0) - c) * (n * w.x) : c * (1.0 + n * w.y);",
+            "}",
+            "half4 main(float2 p) {",
+            "  if (head < 0.5) {",
+            "    float3 c = mix(metal(flowDeep(p), look), veil.rgb, veil.a);",
+            "    return half4(half3(grainOn(c, p)), 1.0);",
+            "  }",
+            "  float density = fogA.x; float footDp = fogA.y; float width = fogA.z; float t = fogA.w;",
+            "  float2 q = p / density;",
+            "  float yy = q.y - footDp;",
+            "  float top = clamp(q.y / max(1.0, footDp - 40.0), 0.0, 1.0);",
+            "  float3 ink = float3(8.0, 8.0, 12.0) / 255.0;",
+            "  float3 vc = ink; float va = 0.0;",
+            "  if (fogC.y > 0.5 && fogC.z < 0.5) {",
+            "    if (yy < -40.0) { va = 0.55 - 0.05 * top; }",
+            "    else if (yy < 30.0) { va = 0.5 * (1.0 - (yy + 40.0) / 70.0); }",
+            "    else { vc = accent; va = yy < 140.0 ? 0.3 * (yy - 30.0) / 110.0 : 0.3 + 0.12 * clamp((yy - 140.0) / 220.0, 0.0, 1.0); }",
+            "  } else if (fogC.y > 0.5) {",
+            "    va = yy < -40.0 ? 0.55 - 0.05 * top : 0.5;",
+            "  } else {",
+            "    vc = float3(1.0);",
+            "    va = yy < 0.0 ? 0.62 - 0.07 * clamp(q.y / footDp, 0.0, 1.0) : 0.55 - 0.43 * clamp(yy / 360.0, 0.0, 1.0);",
+            "  }",
+            "  float fade = yy < 0.0 ? 1.0 : 1.0 - 0.45 * clamp(yy / 360.0, 0.0, 1.0);",
+            "  float2 nq = float2(q.x / 120.0 + fogC.x, yy / 70.0);",
+            "  float n = fbm(nq, t); float nn = fbm(nq * float2(1.7, 1.5) + float2(3.1, 7.0), t * 1.3);",
+            "  float u = p.x / width; float lean = max(fogB.x > 0.0 ? u : 1.0 - u, 0.0001);",
+            "  float reach = (60.0 + 50.0 * fogB.y) * pow(lean, 1.6) + 16.0 * sin(6.2832 * (0.8 * u + fogB.z) + t / 9.0)",
+            "      + 9.0 * sin(6.2832 * (2.2 * u + fogB.w) - t / 6.5);",
+            "  float am = (1.0 - smoothstep(-60.0, 70.0, yy - 150.0 - reach - 70.0 * n)) * fade;",
+            "  float ad = 1.0 - smoothstep(-40.0, 45.0, yy - 20.0 - 0.55 * reach - 40.0 * (0.7 * n + 0.3 * nn));",
+            "  float3 d = metal(flowDeep(p), look) * (1.0 - va) + vc * va;",
+            "  float ma = fogC.z > 0.5 ? 0.7 : 0.36;",
+            "  float3 mv = fogC.z > 0.5 ? float3(29.0, 30.0, 38.0) / 255.0 : float3(1.0);",
+            "  float3 m = metal(flowLight(p), look2) * (1.0 - ma) + mv * ma;",
+            "  float a = ad + am * (1.0 - ad);",
+            "  float3 c = a > 0.001 ? (d * ad + m * am * (1.0 - ad)) / a : m;",
+            "  c = grainOn(c, p);",
+            "  return half4(half3(c * a), half(a));",
+            "}");
 
     /** 卡片边上一圈金属倒角：上沿一道细亮线，下沿一道细暗线。 */
     private void drawRim(Canvas canvas, int w, int h) {
@@ -648,18 +883,19 @@ final class Flow extends View {
     /** 一张图的“金属曲线”：亮度先按这张图自己的亮度范围（5%～95% 分位）归一，同一条曲线在深的浅的图上都起在同样的位置。 */
     private static final class Look {
         final int base;
+        final float lo, span, cap; // 这张图的亮度范围（5%～95% 分位）；亮脊封顶到多亮，0 是不封顶
         final float[] lut = new float[1025];
         final BitmapShader shader;
 
         /** cap：0 不封顶；1 是白字的底，亮脊最多提到 0.58；2 是深色模式的白字底，0.46。 */
         Look(Bitmap b, int cap) {
-            int w = b.getWidth(), h = b.getHeight(), n = w * h;
-            int[] p = new int[n];
+            int w = b.getWidth(), h = b.getHeight(), all = w * h, step = Math.max(1, all / 6000), n = (all + step - 1) / step;
+            int[] p = new int[all];
             b.getPixels(p, 0, w, 0, 0, w, h);
             float[] ls = new float[n];
             long rs = 0, gs = 0, bs = 0;
-            for (int i = 0; i < n; i++) {
-                int c = p[i];
+            for (int i = 0; i < n; i++) { // 大图隔几个点取一个，分位数和平均色一样准
+                int c = p[i * step];
                 ls[i] = (.3f * Color.red(c) + .59f * Color.green(c) + .11f * Color.blue(c)) / 255;
                 rs += Color.red(c);
                 gs += Color.green(c);
@@ -667,7 +903,9 @@ final class Flow extends View {
             }
             base = Color.rgb((int) (rs / n), (int) (gs / n), (int) (bs / n));
             Arrays.sort(ls);
-            float lo = ls[(int) (n * .05f)], span = Math.max(.12f, ls[Math.min(n - 1, (int) (n * .95f))] - lo);
+            lo = ls[(int) (n * .05f)];
+            span = Math.max(.12f, ls[Math.min(n - 1, (int) (n * .95f))] - lo);
+            this.cap = cap == 2 ? .46f : cap == 1 ? .58f : 0;
             for (int i = 0; i <= 1024; i++) {
                 float l = i / 1024f, u = (l - lo) / span;
                 float bump = 1.15f * bell(u, .66f, .1f) - .4f * bell(u, .32f, .16f) + .35f * bell(u, .98f, .08f);

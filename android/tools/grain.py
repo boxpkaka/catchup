@@ -1,6 +1,7 @@
 """生成雾面颗粒的纹理 res/drawable-nodpi/grain.png（见 Flow.grainShader）：python3 tools/grain.py
 
-512×512、可以无缝平铺的胶片颗粒：高斯白噪声做两次环形高斯模糊（细颗粒 σ=0.7 格，加三成半 σ=1.6 格的粗一点的团），
+512×512、可以无缝平铺的胶片颗粒，一格就是一个屏幕像素：高斯白噪声做两次环形高斯模糊（细颗粒 σ=1.0 像素，
+加三成半 σ=2.2 像素的粗一点的团），
 再归一化。颗粒边缘是柔的，不是一格一格的方块。存成 8 位灰度，128 是不变，往上是亮粒、往下是暗粒（约 ±2.6σ 到头），
 App 里拆成亮粒、暗粒两张分别叠上去。只用标准库。
 """
@@ -34,8 +35,8 @@ def normalized(img):
 def main():
     rnd = random.Random(7)
     white = [[rnd.gauss(0, 1) for _ in range(N)] for _ in range(N)]
-    fine = normalized(blur(white, 0.7))
-    clump = normalized(blur(white, 1.6))
+    fine = normalized(blur(white, 1.0))
+    clump = normalized(blur(white, 2.2))
     grain = normalized([[f + 0.35 * c for f, c in zip(fr, cr)] for fr, cr in zip(fine, clump)])
     raw = bytearray()
     for row in grain:

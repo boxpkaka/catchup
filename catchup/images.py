@@ -1,11 +1,12 @@
 """事件封面和网站图标：App 不直连外网，由服务器去原网站取回来，存在 data/images 下，同一张只取一次。
 
-- 封面：文章页里的 og:image / twitter:image（Google News 先换出原文地址），用 cwebp（系统包 webp）缩到 720px 宽的
-  WebP，每张约 20KB。太小的（多半是图标）、很扁的（多半是 logo 横幅）、大面积是同一种纯色的（logo、文字卡片、
+- 封面：文章页里的 og:image / twitter:image（Google News 先换出原文地址），用 cwebp（系统包 webp）缩到 1440px 宽、
+  质量 88 的 WebP（手机上卡片和详情页的封面铺满约 1200px 宽的屏幕，不放大），每张约 100～250KB。早先存的是 720px 的
+  （{id}.webp），还留着兜底：取高清图时取不到，就先给旧的。太小的（多半是图标）、很扁的（多半是 logo 横幅）、大面积是同一种纯色的（logo、文字卡片、
   论文首页、图表，缩成小图看不出东西）和 GitHub 自动生成的仓库卡片不要，换下一条报道的图。
 - 封面的颜色：App 照着封面给“最值得看”的卡片铺渐变底色（像音乐软件按专辑封面铺背景），随信息流一起给，
   卡片一出来就是这个颜色，不会等图下来再变色。
-- 网站图标：Google 的 favicon 服务，64px，约 1KB；它不认识的网站返回 404。
+- 网站图标：Google 的 favicon 服务，128px（手机上约 28dp 见方），几 KB；它不认识的网站返回 404。
 取不到就记一个 .none，以后直接回答没有；封面的 .none 记着当时有几条报道，事件有了新报道再找一次。
 超时、断网这类不算取不到，下次再试。
 """
@@ -32,7 +33,8 @@ log = logging.getLogger(__name__)
 BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                          "Chrome/126.0 Safari/537.36"}  # 不少新闻站不给不像浏览器的请求返回页面
 OG_IMAGE = re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)(?::src)?["\'][^>]*>', re.I)
-WIDTH = 720
+WIDTH = 1440
+QUALITY = 88
 MIN_WIDTH = 300
 MAX_RATIO = 2.5  # 宽是高的这么多倍以上，多半是 logo 横幅
 # 缩成 48×27、每个颜色通道分 16 级后，最多的那种颜色占到这么多：纯色底上的 logo、文字卡片、论文首页、图表、全黑图。
@@ -48,13 +50,14 @@ TIMEOUT = 10
 
 
 def cover(config: Config, event_id: int, signals: list[Signal]) -> bytes | None:
-    """事件封面：从最新的几条报道里找第一张能用的图。"""
-    path = _cover_path(config, event_id)
-    none = path.with_suffix(".none")
+    """事件封面：从最新的几条报道里找第一张能用的图。还没有高清图、这次也没取到时，有早先的 720px 旧图就先给旧的。"""
+    path, legacy = _cover_path(config, event_id), _legacy_path(config, event_id)
+    none = legacy.with_suffix(".none")
+    fallback = legacy.read_bytes() if legacy.exists() else None
     if path.exists():
         return path.read_bytes()
     if none.exists() and none.read_text() == str(len(signals)):
-        return None
+        return fallback
     answered = True
     for s in sorted(signals, key=lambda s: s.published, reverse=True)[:TRIES]:
         try:
@@ -72,22 +75,23 @@ def cover(config: Config, event_id: int, signals: list[Signal]) -> bytes | None:
             return data
     if answered:
         _save(none, str(len(signals)).encode())
-    return None
+    return fallback
 
 
 def has_cover(config: Config, event_id: int) -> bool:
-    """已经取到封面了（推送前会取）。首页卡片只给这些带小图，不为了首页去原网站取。"""
-    return _cover_path(config, event_id).exists()
+    """已经取到封面了（推送前会取，高清或早先的旧图都算）。首页卡片只给这些带小图，不为了首页去原网站取。"""
+    return _cover_path(config, event_id).exists() or _legacy_path(config, event_id).exists()
 
 
 def palette(config: Config, event_id: int) -> list[str] | None:
     """封面的两种颜色 [图底边的颜色, 主色]（#rrggbb）：卡片上面接着图的底边，往下渐变到主色。算一次记在旁边的
-    .palette 里；没有封面或解不开时返回 None。"""
-    path = _cover_path(config, event_id)
-    saved = path.with_suffix(".palette")
+    .palette 里（换成高清图也接着用这一份，卡片颜色不变）；没有封面或解不开时返回 None。"""
+    path, legacy = _cover_path(config, event_id), _legacy_path(config, event_id)
+    saved = legacy.with_suffix(".palette")
     if saved.exists():
         return saved.read_text().split()
-    pixels = path.exists() and _pixels(path.read_bytes(), 32, 18)
+    image = path if path.exists() else legacy
+    pixels = image.exists() and _pixels(image.read_bytes(), 32, 18)
     if not pixels:  # 解不开（比如没装 dwebp）不记，下次再算
         return None
     colors = ["#%02x%02x%02x" % c for c in (_mean(pixels[-32 * EDGE_ROWS:]), main_color(pixels))]
@@ -120,18 +124,23 @@ def _mean(pixels: list[tuple[int, int, int]]) -> tuple[int, int, int]:
 
 
 def _cover_path(config: Config, event_id: int) -> Path:
+    return config.db_path.parent / "images" / "covers" / f"{event_id}-{WIDTH}.webp"
+
+
+def _legacy_path(config: Config, event_id: int) -> Path:
+    """早先存的 720px 封面，也是 .none、.palette 的名字。"""
     return config.db_path.parent / "images" / "covers" / f"{event_id}.webp"
 
 
 def icon(config: Config, host: str) -> bytes | None:
-    path = config.db_path.parent / "images" / "icons" / host
+    path = config.db_path.parent / "images" / "icons128" / host
     none = path.with_name(host + ".none")
     if path.exists():
         return path.read_bytes()
     if none.exists():
         return None
     try:
-        data = http.get(f"https://www.google.com/s2/favicons?domain={host}&sz=64", timeout=TIMEOUT)
+        data = http.get(f"https://www.google.com/s2/favicons?domain={host}&sz=128", timeout=TIMEOUT)
     except urllib.error.HTTPError:  # 不认识的网站返回 404 和一个地球图标，当作没有
         _save(none, b"")
         return None
@@ -161,7 +170,7 @@ def _shrink(raw: bytes) -> bytes | None:
     probe = _webp(raw, "-m", "0")  # 先最快地编一遍，看原图尺寸
     if not probe or probe[1] < MIN_WIDTH or probe[1] > probe[2] * MAX_RATIO:
         return None
-    out = _webp(raw, "-resize", str(min(probe[1], WIDTH)), "0")
+    out = _webp(raw, "-resize", str(min(probe[1], WIDTH)), "0", quality=QUALITY)
     return out[0] if out and not flat(out[0]) else None
 
 
@@ -186,9 +195,9 @@ def _pixels(webp: bytes, width: int, height: int) -> list[tuple[int, int, int]] 
     return [tuple(data[i:i + 3]) for i in range(0, n * 3, 3)]
 
 
-def _webp(raw: bytes, *args: str) -> tuple[bytes, int, int] | None:
+def _webp(raw: bytes, *args: str, quality: int = 75) -> tuple[bytes, int, int] | None:
     """返回 (WebP, 宽, 高)，尺寸取自 cwebp 输出里的 Dimension 一行（缩放之后的）。"""
-    p = subprocess.run(["cwebp", "-q", "75", *args, "-o", "-", "--", "-"], input=raw, capture_output=True,
+    p = subprocess.run(["cwebp", "-q", str(quality), *args, "-o", "-", "--", "-"], input=raw, capture_output=True,
                        timeout=30)
     m = re.search(rb"Dimension: (\d+) x (\d+)", p.stderr)
     return (p.stdout, int(m[1]), int(m[2])) if p.returncode == 0 and m else None

@@ -183,6 +183,7 @@ public class MainActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         setContentView(build());
+        new Thread(() -> Images.clearOld(this)).start(); // 换成高清以前缓存的低清图
         feed = Store.loadFeed(this);
         olderCursor = cursor(feed);
         seenAtOpen = Store.seenAt(this);
@@ -1222,12 +1223,13 @@ public class MainActivity extends Activity {
         cover.setImageAlpha(255);
         cover.setVisibility(path == null ? View.GONE : View.VISIBLE);
         if (path == null) return;
-        Bitmap ready = Images.cached(path);
+        int size = t.dp(56); // 小图按显示的大小解码，见 newCover
+        Bitmap ready = Images.cached(path, size);
         if (ready != null) {
             cover.setImageBitmap(ready);
             return;
         }
-        Images.load(this, path, b -> {
+        Images.load(this, path, size, b -> {
             if (!path.equals(cover.getTag())) return;
             cover.setImageAlpha(0);
             cover.setImageBitmap(b);
