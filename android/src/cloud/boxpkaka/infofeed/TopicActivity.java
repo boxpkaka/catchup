@@ -40,7 +40,8 @@ import java.util.Map;
 import java.util.Locale;
 
 /**
- * 一个专题。标题栏是专题卡片的颜色和放大的徽记，从卡片的位置揭开，看起来像卡片长大了。
+ * 一个专题。标题栏是专题卡片同一张雾面金属（Flow），从卡片的位置揭开，看起来像卡片长大了；整页的底是这个专题颜色的雾，
+ * 列表的行是磨砂的，时间、来源这些小字用专题色的灰，颜色从标题栏一直延续到底。
  * 话题专题按天列这个话题的事件（和信息流的时间线一样），下面是“榜单上的”这个话题的条目；
  * 榜单专题按名次列全部条目，几个榜之间左右滑切换（也可以点标签），可以只看和你相关的。HF 模型都进模型页，
  * 别的条目有事件的进事件详情，没有的弹出简介和“问一问”。论文专题和榜单一样左右滑，三个列表是为你挑的（写着和你的关系）、
@@ -53,7 +54,8 @@ public class TopicActivity extends Activity {
 
     private Theme t;
     private String key;
-    private int[] z;
+    private int[] z, fc; // 专题色（Theme.zone）；标题栏的金属配色（Theme.field）
+    private int subInk; // 小字：专题色的灰
     private LinearLayout head, body;
     private FrameLayout deck; // 榜单专题：几个榜横向排开，放在 body 里
     private final SparseArray<View> channelPages = new SparseArray<>();
@@ -78,6 +80,8 @@ public class TopicActivity extends Activity {
         key = getIntent().getStringExtra(EXTRA_KEY);
         if (key == null) key = "";
         z = t.zone(key);
+        fc = t.field(key);
+        subInk = (z[0] == t.sheet ? t.sub : z[1]) & 0x00FFFFFF | (t.night ? 0xB3000000 : 0x9E000000);
         setContentView(build(state == null));
         load();
         Trace.log(this, "ui.topic", key);
@@ -119,6 +123,10 @@ public class TopicActivity extends Activity {
     private View build(boolean fresh) {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
+        Flow mist = new Flow(this);
+        mist.mist(t, key, Flow.seedOf(key));
+        root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
@@ -128,26 +136,29 @@ public class TopicActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(0, 0, 0, t.dp(48));
 
-        // 标题栏：专题色铺满，右上角是放大的徽记，露出一半
+        // 标题栏：和专题卡片同一张流动的雾面金属，不放徽记
         FrameLayout bar = new FrameLayout(this);
-        bar.setBackground(t.round(z[0], 0, 0, Theme.R_2XL, Theme.R_2XL));
-        bar.setMinimumHeight(t.dp(178)); // 徽记整个落在标题栏里，不伸进底部的圆角缺口
-        Shapes.Emblem emblem = TopicsView.emblem(this, t, key);
-        FrameLayout.LayoutParams el = new FrameLayout.LayoutParams(t.dp(124), t.dp(124), Gravity.END | Gravity.TOP);
-        el.setMargins(0, t.dp(38), -t.dp(24), 0);
-        bar.addView(emblem, el);
+        bar.setBackground(t.round(fc[0], 0, 0, Theme.R_2XL, Theme.R_2XL));
+        bar.setMinimumHeight(t.dp(178));
+        Flow flow = new Flow(this);
+        flow.gradient(fc[0], fc[1], Color.luminance(fc[2]) > 0.5f, true, Flow.seedOf(key));
+        flow.topic(t, key, Flow.seedOf(key));
+        flow.slow(2); // 和专题卡片一样慢、一样的时钟，卡片长成标题栏时颜色接得上
+        flow.corners(bar);
+        bar.addView(flow, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         head = new LinearLayout(this);
         head.setOrientation(LinearLayout.VERTICAL);
-        head.setPadding(t.dp(16), t.dp(10), t.dp(112), t.dp(22));
+        head.setPadding(t.dp(16), t.dp(10), t.dp(22), t.dp(22));
         TextView back = t.backButton(this);
-        back.setTextColor(z[1]);
-        back.setBackground(t.ripple((z[1] & 0x00FFFFFF) | 0x1A000000, 99));
+        back.setTextColor(fc[2]);
+        back.setBackground(t.frostRipple((fc[2] & 0x00FFFFFF) | 0x1F000000, 99));
         head.addView(back, new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
-        TextView title = t.text(this, getIntent().getStringExtra(EXTRA_TITLE), 30, z[1], 900);
+        TextView title = t.text(this, getIntent().getStringExtra(EXTRA_TITLE), 30, fc[2], 900);
         title.setLineSpacing(t.dp(2), 1f);
         title.setPadding(t.dp(6), t.dp(18), 0, 0);
         head.addView(title);
-        sub = t.text(this, "", 13, z[1], 700);
+        sub = t.text(this, "", 13, fc[2], 700);
         sub.setAlpha(0.85f);
         sub.setPadding(t.dp(6), t.dp(8), 0, 0);
         head.addView(sub);
@@ -155,7 +166,8 @@ public class TopicActivity extends Activity {
         page.addView(bar);
 
         // 榜单专题：几个榜之间切换，右边是“只看相关”
-        tabs = new Swipe.Tabs(this, z[2], t.night ? z[0] : Color.WHITE, t.sub);
+        tabs = new Swipe.Tabs(this, z[2], fc[2], subInk);
+        tabs.finish(t.metal(fc[0], 99), null); // 选中的那一格是专题色的金属
         tabs.setGravity(Gravity.CENTER_VERTICAL);
         tabs.setPadding(t.dp(12), t.dp(14), t.dp(12), t.dp(6));
         tabScroll = new HorizontalScrollView(this);
@@ -177,9 +189,7 @@ public class TopicActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-                head.setPadding(t.dp(16), bars.top + t.dp(10), t.dp(112), t.dp(22));
-                el.topMargin = bars.top + t.dp(38);
-                emblem.setLayoutParams(el);
+                head.setPadding(t.dp(16), bars.top + t.dp(10), t.dp(22), t.dp(22));
                 bar.setMinimumHeight(bars.top + t.dp(178));
                 page.setPadding(0, 0, 0, bars.bottom + t.dp(48));
                 return WindowInsets.CONSUMED;
@@ -326,7 +336,7 @@ public class TopicActivity extends Activity {
         boolean important = e.optInt("importance") >= 4;
         LinearLayout row = new LinearLayout(this);
         row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
-        TextView time = t.text(this, MainActivity.clock(Theme.millis(e.optString("time"))), 13, t.sub, 800);
+        TextView time = t.text(this, MainActivity.clock(Theme.millis(e.optString("time"))), 13, subInk, 800);
         time.setTypeface(Theme.flex(this, 120, 800));
         time.setPadding(0, t.dp(2), 0, 0);
         LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(t.dp(42), ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -341,7 +351,7 @@ public class TopicActivity extends Activity {
         headline.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(headline);
         if (important && !e.optString("summary").isEmpty()) {
-            TextView summary = t.text(this, e.optString("summary"), 13.5f, t.sub, 400);
+            TextView summary = t.text(this, e.optString("summary"), 13.5f, subInk, 400);
             summary.setSingleLine();
             summary.setEllipsize(TextUtils.TruncateAt.END);
             summary.setPadding(0, t.dp(3), 0, 0);
@@ -377,7 +387,7 @@ public class TopicActivity extends Activity {
         tabs.removeAllViews();
         for (int i = 0; i < n && n > 1; i++) {
             int index = i;
-            TextView tab = t.text(this, channels.optJSONObject(i).optString("name"), 14, t.sub, 800);
+            TextView tab = t.text(this, channels.optJSONObject(i).optString("name"), 14, subInk, 800);
             tab.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
             tab.setBackground(t.ripple(Color.TRANSPARENT, 99));
             tab.setOnClickListener(v -> pager.go(index));
@@ -455,7 +465,7 @@ public class TopicActivity extends Activity {
             lead.setGravity(Gravity.CENTER_HORIZONTAL);
         } else {
             lead = t.text(this, new java.text.SimpleDateFormat("MM-dd", Locale.CHINA)
-                    .format(new java.util.Date(Theme.millis(x.optString("time")))), 13, t.sub, 800);
+                    .format(new java.util.Date(Theme.millis(x.optString("time")))), 13, subInk, 800);
             lead.setTypeface(Theme.flex(this, 120, 800));
             lead.setPadding(t.dp(4), t.dp(2), 0, 0);
         }
@@ -476,7 +486,7 @@ public class TopicActivity extends Activity {
         int slash = name.indexOf('/');
         SpannableStringBuilder s = new SpannableStringBuilder();
         if (slash > 0) {
-            s.append(name.substring(0, slash) + " / ", new ForegroundColorSpan(t.sub), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            s.append(name.substring(0, slash) + " / ", new ForegroundColorSpan(subInk), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             s.setSpan(new TypefaceSpan(Theme.weight(400)), 0, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         s.append(name.substring(slash + 1));
@@ -485,7 +495,7 @@ public class TopicActivity extends Activity {
         col.addView(nm);
         String summary = x.optString("summary");
         if (!summary.isEmpty()) {
-            TextView ds = t.text(this, summary, 13.5f, t.sub, 400);
+            TextView ds = t.text(this, summary, 13.5f, subInk, 400);
             ds.setLineSpacing(t.dp(4), 1f);
             ds.setMaxLines(2);
             ds.setEllipsize(TextUtils.TruncateAt.END);
@@ -517,7 +527,7 @@ public class TopicActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setPadding(t.dp(14), t.dp(14), t.dp(18), t.dp(14));
         TextView date = t.text(this, new java.text.SimpleDateFormat("MM-dd", Locale.CHINA)
-                .format(new java.util.Date(Theme.millis(x.optString("time")))), 13, t.sub, 800);
+                .format(new java.util.Date(Theme.millis(x.optString("time")))), 13, subInk, 800);
         date.setTypeface(Theme.flex(this, 120, 800));
         date.setPadding(t.dp(4), t.dp(2), 0, 0);
         LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(42), ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -539,7 +549,7 @@ public class TopicActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.END);
         col.addView(title);
         String why = x.optString("why");
-        TextView line = t.text(this, why.isEmpty() ? x.optString("summary") : why, 13.5f, why.isEmpty() ? t.sub : t.ink,
+        TextView line = t.text(this, why.isEmpty() ? x.optString("summary") : why, 13.5f, why.isEmpty() ? subInk : t.ink,
                 why.isEmpty() ? 400 : 600);
         line.setLineSpacing(t.dp(4), 1f);
         line.setMaxLines(2);
@@ -634,7 +644,7 @@ public class TopicActivity extends Activity {
         Dialog d = t.sheet(this, box);
         TextView open = t.text(this, "打开页面", 15, t.ink, 800);
         open.setGravity(Gravity.CENTER);
-        t.press(open, t.sheet, 99);
+        t.press(open, t.frostButton, 99);
         open.setOnClickListener(v -> {
             d.dismiss();
             try {
@@ -677,7 +687,7 @@ public class TopicActivity extends Activity {
     }
 
     private TextView label(String s) {
-        TextView v = t.text(this, s, 13, t.sub, 700);
+        TextView v = t.text(this, s, 13, subInk, 700);
         v.setPadding(t.dp(12), t.dp(6), t.dp(12), t.dp(8));
         return v;
     }
@@ -690,7 +700,7 @@ public class TopicActivity extends Activity {
     }
 
     private TextView meta(CharSequence s) {
-        TextView v = t.text(this, s, 12, t.sub, 600);
+        TextView v = t.text(this, s, 12, subInk, 600);
         v.setTypeface(Theme.flex(this, 92, 600));
         v.setPadding(0, t.dp(6), 0, 0);
         v.setSingleLine();
@@ -719,7 +729,7 @@ public class TopicActivity extends Activity {
     }
 
     private TextView note(LinearLayout into, String s) {
-        TextView v = t.text(this, s, 14.5f, t.sub, 500);
+        TextView v = t.text(this, s, 14.5f, subInk, 500);
         v.setGravity(Gravity.CENTER);
         v.setPadding(t.dp(20), t.dp(48), t.dp(20), t.dp(48));
         into.addView(v);

@@ -59,6 +59,10 @@ public class ModelActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
+        Flow mist = new Flow(this); // 整页的底：珍珠银的雾
+        mist.mist(t, Theme.PEARL, 7);
+        root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
         ScrollView scroll = new ScrollView(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);

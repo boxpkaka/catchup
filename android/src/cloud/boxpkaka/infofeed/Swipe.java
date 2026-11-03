@@ -383,6 +383,8 @@ final class Swipe extends FrameLayout {
     static final class Tabs extends LinearLayout {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF pill = new RectF();
+        private final android.graphics.Rect box = new android.graphics.Rect();
+        private android.graphics.drawable.GradientDrawable chip, track;
         private final ArgbEvaluator argb = new ArgbEvaluator();
         private final int on, off;
         private int count;
@@ -398,6 +400,13 @@ final class Swipe extends FrameLayout {
 
         void setCount(int count) {
             this.count = count;
+        }
+
+        /** 选中的那一块换成 chip（静止的金属，见 Theme.metal）；track 不为 null 时，几个标签外面垫一条磨砂的槽。 */
+        void finish(android.graphics.drawable.GradientDrawable chip, android.graphics.drawable.GradientDrawable track) {
+            this.chip = chip;
+            this.track = track;
+            invalidate();
         }
 
         /** 停在 pos：1.5 是第二、三个标签正中间。 */
@@ -435,8 +444,22 @@ final class Swipe extends FrameLayout {
         protected void onDraw(Canvas c) {
             super.onDraw(c);
             if (!place()) return;
+            if (track != null) {
+                View first = getChildAt(0), last = getChildAt(count - 1);
+                int in = Math.round(getResources().getDisplayMetrics().density * 3);
+                box.set(first.getLeft() - in, first.getTop() - in, last.getRight() + in, last.getBottom() + in);
+                track.setBounds(box);
+                track.draw(c);
+            }
             float r = pill.height() / 2;
-            c.drawRoundRect(pill, r, r, paint);
+            if (chip == null) {
+                c.drawRoundRect(pill, r, r, paint);
+                return;
+            }
+            pill.round(box);
+            chip.setBounds(box);
+            chip.setCornerRadius(r);
+            chip.draw(c);
         }
     }
 

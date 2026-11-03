@@ -106,6 +106,7 @@ public class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private FrameLayout root;
+    private Flow mist, reportMist; // 整页的雾：珍珠银；翻到报告时渐渐换成钴蓝
     private LinearLayout topBar;
     private View topDivider;
     private ListView list;
@@ -264,6 +265,14 @@ public class MainActivity extends Activity {
     private View build() {
         root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
+        mist = new Flow(this);
+        mist.mist(t, Theme.PEARL, 7);
+        root.addView(mist, match());
+        reportMist = new Flow(this);
+        reportMist.mist(t, Theme.PRI, 1103);
+        reportMist.setAlpha(0f);
+        reportMist.setVisibility(View.INVISIBLE);
+        root.addView(reportMist, match());
 
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -272,7 +281,6 @@ public class MainActivity extends Activity {
         topBar = new LinearLayout(this);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(6));
-        topBar.setBackgroundColor(t.bg);
         topBar.addView(wordmark(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView ask = t.text(this, "问一问", 13.5f, t.onLime, 700);
         ask.setGravity(Gravity.CENTER);
@@ -347,7 +355,7 @@ public class MainActivity extends Activity {
         undoBar = new LinearLayout(this);
         undoBar.setOrientation(LinearLayout.VERTICAL);
         undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
-        undoBar.setBackground(t.round(t.inv, Theme.R_XL));
+        undoBar.setBackground(t.metal(t.inv, Theme.R_XL));
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
         undoLabel = t.text(this, "", 14, t.onInv, 600);
@@ -411,11 +419,11 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    /** 信息流 / 专题 / 报告：顶栏下面三个胶囊标签，选中的是墨色反白，左右滑翻页时胶囊跟着手指走。 */
+    /** 信息流 / 专题 / 报告：顶栏下面三个胶囊标签，垫着一条磨砂的槽，选中的是墨色金属，左右滑翻页时胶囊跟着手指走。 */
     private View buildTabs() {
         tabBar = new Swipe.Tabs(this, t.inv, t.onInv, t.sub);
-        tabBar.setPadding(t.dp(16), t.dp(2), t.dp(16), t.dp(8));
-        tabBar.setBackgroundColor(t.bg);
+        tabBar.finish(t.metal(t.inv, 99), t.frost(99));
+        tabBar.setPadding(t.dp(16), t.dp(5), t.dp(16), t.dp(10));
         for (int i = 0; i < TABS.length; i++) {
             int index = i;
             TextView v = t.text(this, TABS[i], 15, t.ink, 800);
@@ -445,6 +453,10 @@ public class MainActivity extends Activity {
         @Override
         public void moved(float position) {
             tabBar.at(position);
+            float report = Math.max(0, Math.min(1, position - REPORT + 1)); // 从专题翻到报告的路上，雾渐渐换成钴蓝
+            reportMist.setAlpha(report);
+            reportMist.setVisibility(report > 0 ? View.VISIBLE : View.INVISIBLE);
+            mist.setVisibility(report < 1 ? View.VISIBLE : View.INVISIBLE);
         }
 
         @Override
@@ -538,7 +550,7 @@ public class MainActivity extends Activity {
         askNotice = new LinearLayout(this);
         askNotice.setOrientation(LinearLayout.VERTICAL);
         askNotice.setPadding(t.dp(20), t.dp(14), t.dp(10), t.dp(16));
-        askNotice.setBackground(t.round(t.sheet, Theme.R_XL));
+        askNotice.setBackground(t.frost(Theme.R_XL));
         LinearLayout askTop = new LinearLayout(this);
         askTop.setGravity(Gravity.CENTER_VERTICAL);
         askTop.addView(t.text(this, "想跟你确认一下", 12, t.sub, 700),
@@ -582,7 +594,6 @@ public class MainActivity extends Activity {
     /** 首次加载的骨架屏：形状和真实布局一致（追踪中一组、日期、最值得看），中间是加载指示器。 */
     private View buildSkeleton() {
         FrameLayout s = new FrameLayout(this);
-        s.setBackgroundColor(t.bg);
         s.setPadding(0, t.dp(60), 0, 0);
         LinearLayout blocks = new LinearLayout(this);
         blocks.setOrientation(LinearLayout.VERTICAL);
@@ -602,7 +613,7 @@ public class MainActivity extends Activity {
 
     private View block(int widthDp, int heightDp, float radiusDp, int topDp) {
         View v = new View(this);
-        v.setBackground(t.round(t.hi, radiusDp));
+        v.setBackground(t.frost(radiusDp));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 widthDp < 0 ? ViewGroup.LayoutParams.MATCH_PARENT : t.dp(widthDp), t.dp(heightDp));
         lp.setMargins(t.dp(12), t.dp(topDp), t.dp(12), 0);
@@ -1040,7 +1051,6 @@ public class MainActivity extends Activity {
         View front, behind;
         TextView label, badge, num, headline, summary, meta, time;
         ImageView cover;
-        FrameLayout mark; // 最值得看的卡片右上角，没有封面时放话题的徽记
         Flow flow; // 最值得看的卡片底下流动的模糊封面
     }
 
@@ -1081,8 +1091,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 最值得看的一件：一张彩色大卡片。有封面的最上面是铺满卡片宽度的大图，下面一段渐渐透明、融进卡片的渐变底色，
-     * 编号那一行压在融开的地方；没有封面的这一行右边是话题的徽记。往下是大字标题、概要和“时间 · 话题 · 来源”。颜色见 tone。
+     * 最值得看的一件：一张雾面金属的大卡片（Flow）。有封面的最上面是铺满卡片宽度的大图，下面一段渐渐透明、融进流动的模糊封面，
+     * 编号那一行压在融开的地方；没有封面的底下是话题色生成的抽象封面，不放徽记。往下是大字标题、概要和“时间 · 话题 · 来源”。
+     * 颜色见 tone。
      */
     private View newTop() {
         Holder h = new Holder();
@@ -1117,8 +1128,7 @@ public class MainActivity extends Activity {
         h.badge = newsBadge();
         head.addView(h.badge);
         head.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        h.mark = new FrameLayout(this);
-        head.addView(h.mark, new LinearLayout.LayoutParams(t.dp(36), t.dp(36)));
+        head.setMinimumHeight(t.dp(36));
         body.addView(head);
         h.headline = t.text(this, "", 19, t.ink, 800);
         h.headline.setLineSpacing(t.dp(4), 1f);
@@ -1315,10 +1325,8 @@ public class MainActivity extends Activity {
         boolean cover = look.optBoolean("cover");
         String topic = Theme.topicOf(look);
         int[] z = tone(look, cover, topic);
-        paint(h, z, cover);
-        bindFlow(h, e, cover, z);
-        h.mark.removeAllViews();
-        if (!cover && !topic.isEmpty()) h.mark.addView(TopicsView.emblem(this, t, topic), match());
+        paint(h, z);
+        bindFlow(h, e, cover, z, topic.isEmpty() ? Theme.PEARL : topic);
         h.num.setText(r.label);
         h.label.setVisibility(isNew(e) ? View.VISIBLE : View.GONE);
         h.badge.setVisibility(e.optInt("importance") >= 5 ? View.VISIBLE : View.GONE);
@@ -1331,30 +1339,31 @@ public class MainActivity extends Activity {
 
     /**
      * 最值得看的卡片的颜色 {上, 下, 文字色, 点缀色}：有封面的照着封面铺渐变（Theme.cover，颜色随信息流一起来，卡片一出来
-     * 就是这个颜色）；没有封面的用话题的专题色，往下略微渐向专题的形状色；没有话题的是卡片色。
+     * 就是这个颜色）；没有封面的用话题的金属配色（Theme.field，浅色模式也是深底白字），没有话题的是珍珠银。
      */
     private int[] tone(JSONObject look, boolean cover, String topic) {
         JSONArray palette = look.optJSONArray("palette");
         if (cover && palette != null && palette.length() == 2) {
             return t.cover(Color.parseColor(palette.optString(0)), Color.parseColor(palette.optString(1)));
         }
-        if (topic.isEmpty()) return new int[]{t.sheet, t.sheet, t.ink, t.ink};
-        int[] z = t.zone(topic);
-        return new int[]{z[0], Theme.mix(z[0], z[2], 0.22f), z[1], z[2]};
+        return t.field(topic.isEmpty() ? Theme.PEARL : topic);
     }
 
     /**
-     * 有封面的卡片底下是流动的模糊封面（Flow）：封面已经模糊过或在内存里的直接上，要等的先是卡片色的渐变，图下来后淡入。
-     * 行复用来显示同一件事时不重来，接着流。
+     * 卡片底下流动的雾面金属（Flow）：有封面的是模糊封面，封面已经模糊过或在内存里的直接上，要等的先是卡片色的渐变，
+     * 图下来后过渡过去；没有封面的是 art 这个话题生成的抽象封面。行复用来显示同一件事时不重来，接着流。
      */
-    private void bindFlow(Holder h, JSONObject e, boolean cover, int[] z) {
+    private void bindFlow(Holder h, JSONObject e, boolean cover, int[] z, String art) {
         Flow flow = h.flow;
-        flow.setVisibility(cover ? View.VISIBLE : View.GONE);
         long id = e.optLong("id");
-        String path = "/v1/events/" + id + "/cover";
-        if (!cover || path.equals(flow.getTag())) return;
-        flow.setTag(path);
+        String path = "/v1/events/" + id + "/cover", tag = cover ? path : art + "|" + id;
+        if (tag.equals(flow.getTag())) return;
+        flow.setTag(tag);
         flow.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, true, id);
+        if (!cover) {
+            flow.topic(t, art, id);
+            return;
+        }
         Bitmap blurred = Flow.cachedBlur(path), ready = blurred == null ? Images.cached(path) : null;
         if (blurred != null || ready != null) {
             flow.cover(blurred != null ? blurred : Flow.blurred(path, ready), false);
@@ -1365,12 +1374,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。有封面的按下效果画在最上面，不被流动的底盖住。 */
-    private void paint(Holder h, int[] z, boolean cover) {
+    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。按下效果画在最上面，不被流动的底盖住。 */
+    private void paint(Holder h, int[] z) {
         h.front.setBackground(t.ripple(z[0], z[1], Theme.R_XL));
-        h.front.setForeground(cover ? new android.graphics.drawable.RippleDrawable(
+        h.front.setForeground(new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(Color.luminance(z[2]) > 0.5f ? 0x22FFFFFF : 0x14000000),
-                null, t.round(Color.WHITE, Theme.R_XL)) : null);
+                null, t.round(Color.WHITE, Theme.R_XL)));
         h.num.setTextColor(z[3]);
         h.headline.setTextColor(z[2]);
         h.summary.setTextColor(z[2] & 0xFFFFFF | 0xD0000000);
@@ -1442,7 +1451,7 @@ public class MainActivity extends Activity {
     private TextView newsBadge() {
         TextView v = t.text(this, "要闻", 11.5f, t.onInv, 800);
         v.setPadding(t.dp(8), t.dp(3), t.dp(8), t.dp(3));
-        v.setBackground(t.round(t.inv, Theme.R_XS));
+        v.setBackground(t.metal(t.inv, Theme.R_XS));
         return v;
     }
 
@@ -1455,7 +1464,7 @@ public class MainActivity extends Activity {
         clover.setBounds(0, 0, t.dp(22), t.dp(22));
         v.setCompoundDrawablesRelative(clover, null, null, null);
         v.setCompoundDrawablePadding(t.dp(8));
-        v.setBackground(t.ripple(t.sheet, 99));
+        v.setBackground(t.frostRipple(t.frost, 99));
         v.setOnClickListener(x -> showSkipped());
         FrameLayout frame = new FrameLayout(this);
         frame.setPadding(t.dp(12), t.dp(10), t.dp(12), t.dp(2));
@@ -1464,11 +1473,11 @@ public class MainActivity extends Activity {
         return frame;
     }
 
-    /** 主色小标签：“新”“新进展”“有了答案”。 */
+    /** 主色小标签：“新”“新进展”“有了答案”，一小块钴蓝金属。 */
     private TextView newLabel(String text) {
         TextView v = t.text(this, text, 11.5f, t.onPri, 800);
         v.setPadding(t.dp(9), t.dp(3), t.dp(9), t.dp(3));
-        v.setBackground(t.round(t.pri, 99));
+        v.setBackground(t.metal(t.pri, 99));
         return v;
     }
 
@@ -1498,8 +1507,10 @@ public class MainActivity extends Activity {
         if (top) {
             JSONObject look = first(e);
             boolean cover = look.optBoolean("cover");
-            i.putExtra(EventActivity.EXTRA_TONE, tone(look, cover, Theme.topicOf(look)))
-                    .putExtra(EventActivity.EXTRA_COVER, cover);
+            String topic = Theme.topicOf(look);
+            i.putExtra(EventActivity.EXTRA_TONE, tone(look, cover, topic))
+                    .putExtra(EventActivity.EXTRA_COVER, cover)
+                    .putExtra(EventActivity.EXTRA_ART, topic.isEmpty() ? Theme.PEARL : topic);
         }
         Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
     }
@@ -2234,7 +2245,9 @@ public class MainActivity extends Activity {
         LinearLayout n = new LinearLayout(this);
         n.setGravity(Gravity.CENTER_VERTICAL);
         n.setPadding(t.dp(20), t.dp(14), t.dp(14), t.dp(14));
-        n.setBackground(t.ripple(color, Theme.R_XL));
+        n.setBackground(color == t.sheet ? t.frostRipple(t.frost, Theme.R_XL) // 提醒条：磨砂；更新是墨色金属
+                : new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22FFFFFF),
+                t.metal(color, Theme.R_XL), t.round(Color.WHITE, Theme.R_XL)));
         return n;
     }
 

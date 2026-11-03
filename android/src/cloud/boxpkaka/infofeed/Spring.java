@@ -103,6 +103,7 @@ final class Spring implements TimeInterpolator {
         private int color;
         private boolean pressed;
         private ValueAnimator shape, tint;
+        private Theme.Finish finish;
 
         Shape(int color, float radiusPx, float pressedRadiusPx) {
             this.color = color;
@@ -110,6 +111,24 @@ final class Spring implements TimeInterpolator {
             pressedRadius = pressedRadiusPx;
             setColor(color);
             setCornerRadius(radiusPx);
+        }
+
+        /** 磨砂或金属的质感（颗粒和倒角），见 Theme.Finish。 */
+        Shape finish(Theme.Finish f) {
+            finish = f;
+            return this;
+        }
+
+        /** 涂成以 base 为中间色的金属，见 Theme.shine。 */
+        Shape metal(int base) {
+            Theme.shine(this, base);
+            return this;
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas c) {
+            super.draw(c);
+            if (finish != null) finish.draw(c, getBounds(), Theme.radii(this));
         }
 
         float radius() {

@@ -440,9 +440,7 @@ final class Card implements Nav {
             bg = ((RippleDrawable) bg).getDrawable(0);
         }
         if (bg instanceof GradientDrawable) {
-            GradientDrawable g = (GradientDrawable) bg;
-            float[] r = g.getCornerRadii();
-            if (r == null) return g.getCornerRadius();
+            float[] r = Theme.radii((GradientDrawable) bg);
             float sum = 0;
             for (float x : r) sum += x;
             return sum / r.length;

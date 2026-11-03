@@ -9,7 +9,15 @@ import android.app.Dialog;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.BlendMode;
 import android.graphics.Typeface;
 import android.graphics.fonts.Font;
 import android.graphics.fonts.FontFamily;
@@ -39,9 +47,11 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 视觉规范（律动）：钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色反白给“要闻”和选中的标签；
- * 信息流里只有“最值得看”是彩色卡片：有封面的照着封面铺渐变（cover），没有的用话题的专题色；其余的行不上色，话题写成文字。
- * 专题页的卡片有专题色（zone），帮你认路。颜色一律按用途取，深浅色各一套。
+ * 视觉规范（雾面金属，见 docs/design.md）：整个 App 只有一种材质，按浓淡分三级——金属是门面（最值得看、专题卡片和标题栏、
+ * 详情页头部、报告的要点，见 Flow）和选中的状态（标签、“新”“要闻”，静止的金属小块，见 metal）；雾是每一页的底（Flow.mist，
+ * 同一页颜色的亮色版本）；磨砂是雾上面的行、标签栏、按钮（frost：半透明，带颗粒和一圈细倒角）。
+ * 钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色给“要闻”和选中的标签。
+ * 话题有自己的颜色（zone），首页、专题、专题页、详情页是同一种颜色。颜色一律按用途取，深浅色各一套。
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
  */
@@ -51,10 +61,16 @@ final class Theme {
 
     private static final Map<String, Typeface> FLEX = new HashMap<>();
 
+    /** 不属于某个话题的颜色：报告用的主色钴蓝、首页和专题列表的珍珠银（带一点点紫）。用作 zone 的 key。 */
+    static final String PRI = "\u0001pri", PEARL = "\u0001pearl";
+
     final boolean night;
     final int bg, sheet, hi, ink, sub, line, chip;
     final int pri, onPri, pc, onPc, lime, onLime, inv, onInv, invPri, err, onErr;
+    /** 磨砂：行和标签栏的底、按钮的底（更不透明一些，浮在内容上面也看得清）。 */
+    final int frost, frostButton;
     private final float density;
+    private final Finish frostFinish, metalFinish;
 
     Theme(Context c) {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
@@ -77,7 +93,11 @@ final class Theme {
         invPri = night ? 0xFF3443F5 : 0xFFB9C0FF;
         err = night ? 0xFF6E1F14 : 0xFFFFDAD5; // 右滑“不需要”、连接断开
         onErr = night ? 0xFFFFDAD5 : 0xFF5C0C02;
+        frost = night ? 0x85282936 : 0x99FFFFFF;
+        frostButton = night ? 0xA82C2D3A : 0xBDFFFFFF;
         density = c.getResources().getDisplayMetrics().density;
+        frostFinish = new Finish(density, 36, night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
+        metalFinish = new Finish(density, 36, 0x4DFFFFFF, 0x33000000);
     }
 
     /**
@@ -111,15 +131,57 @@ final class Theme {
                 return night ? new int[]{0xFF4E1A5A, 0xFFF8D8FF, 0xFFE48BF5} : new int[]{0xFFF8D8FF, 0xFF4A0057, 0xFFC23BD4};
             case "papers": // 论文：纸张的暖灰
                 return night ? new int[]{0xFF3D372C, 0xFFF0E8D8, 0xFFCDB68A} : new int[]{0xFFECE6DA, 0xFF2F2A20, 0xFF8F7A55};
+            case PRI:
+                return night ? new int[]{0xFF283180, 0xFFDCE0FF, 0xFFB9C0FF} : new int[]{0xFFDCE0FF, 0xFF0E1C8F, 0xFF3443F5};
+            case PEARL:
+                return night ? new int[]{0xFF24242E, 0xFFECEAF4, 0xFF8E8BB0} : new int[]{0xFFECEAF4, 0xFF2C2D36, 0xFF8E8BB0};
             default:
                 return new int[]{sheet, ink, sub};
         }
     }
 
     /**
+     * 话题（或主色、珍珠银）的金属卡片配色 {上, 下, 文字色, 点缀色}：浅色模式也是深底白字（和多数封面卡片轻重一致），
+     * 色相是话题的形状色；深色模式是话题的深色本色。没登记的话题用珍珠银。
+     */
+    int[] field(String key) {
+        int[] z = zone(key);
+        if (z[0] == sheet && !PEARL.equals(key)) return field(PEARL);
+        if (night) return new int[]{z[0], mix(z[0], z[2], 0.22f), z[1], z[2]};
+        float[] h = new float[3];
+        Color.colorToHSV(z[2], h);
+        return new int[]{hsv(h[0], Math.min(h[1], 0.6f), 0.4f), hsv(h[0], Math.min(h[1], 0.7f), 0.26f), Color.WHITE,
+                hsv(h[0], Math.min(h[1], 0.4f), 1)};
+    }
+
+    /**
+     * 抽象封面（Flow.art）的六种颜色：底色、形状色、两边各偏一点色相的邻色、一块深色、一块高光。pastel 是只有亮色的那张
+     * （浅色模式的雾和详情页往下淌的浅雾），冲淡了也是干净的同色系；珍珠银只带一点点色。橙、黄这类暖色只往黄绿偏一点，免得发灰。
+     */
+    int[] artColors(String key, boolean pastel) {
+        int[] z = zone(key);
+        if (z[0] == sheet && !PEARL.equals(key)) z = zone(PEARL);
+        float[] c = new float[3];
+        Color.colorToHSV(z[2], c);
+        float h = c[0], s = c[1], v = c[2], up = h > 15 && h < 75 ? 12 : 30;
+        if (pastel) {
+            float p = PEARL.equals(key) ? .45f : 1;
+            return new int[]{hsv(h, .16f * p, 1), hsv(h, .5f * p, 1), hsv(h + up, .4f * p, 1), hsv(h - 30, .34f * p, 1),
+                    hsv(h, .62f * p, .94f), Color.WHITE};
+        }
+        if (!night) {
+            return new int[]{hsv(h, .62f, .34f), hsv(h, s, .8f), hsv(h + up, s * .85f, .86f), hsv(h - 30, s, .56f),
+                    hsv(h, .7f, .14f), hsv(h, .3f, .96f)};
+        }
+        return new int[]{z[0], z[2], hsv(h + up, s * .9f, v * .85f), hsv(h - 32, Math.min(1, s * 1.1f), v * .62f),
+                mix(z[0], Color.BLACK, .55f), mix(z[2], Color.WHITE, .35f)};
+    }
+
+    /**
      * 照着封面给卡片配色 {上, 下, 文字色, 点缀色}，像音乐软件按专辑封面铺背景：上面接着图底边的颜色（edge），往下渐变到
      * 封面的主色（main），两种颜色都是服务器算好随信息流给的（见 catchup/images.py 的 palette）。图底边偏暗的
      * （深色模式下全部）配深底白字，偏亮的配浅底深字；深浅、浓淡收在好读的范围里，色相还是封面的。
+     * 点缀色（序号）的鲜艳程度（饱和度 × 亮度）不超过封面本身：灰的封面配带一点点色的灰白，不会冒出比底色还鲜艳的颜色。
      */
     int[] cover(int edge, int main) {
         float[] e = new float[3], m = new float[3];
@@ -128,7 +190,7 @@ final class Theme {
         if (night || Color.luminance(edge) < 0.4f) {
             return new int[]{hsv(e[0], Math.min(e[1], 0.6f), clamp(e[2], 0.2f, 0.42f)),
                     hsv(m[0], Math.min(m[1], 0.7f), clamp(m[2] * 0.8f, 0.14f, 0.32f)), Color.WHITE,
-                    hsv(m[0], Math.min(m[1], 0.4f), 1)};
+                    hsv(m[0], Math.min(0.4f, m[1] * m[2]), 1)};
         }
         return new int[]{hsv(e[0], Math.min(e[1], 0.2f), clamp(e[2], 0.92f, 1)),
                 hsv(m[0], Math.min(m[1], 0.3f), 0.93f), hsv(m[0], Math.min(m[1], 0.75f), 0.28f),
@@ -137,15 +199,16 @@ final class Theme {
 
     /**
      * 详情页正文里的点缀色（要点编号、AI 解读、展开全部）：照封面的主色（e 的 palette，见 catchup/images.py），
-     * 压到白底上看得清；灰调的封面用钴蓝；没有封面的用话题的形状色，没有话题的用钴蓝。
+     * 压到浅底上看得清，鲜艳程度跟着封面（灰调的封面配偏灰的颜色，几乎没有颜色的就是灰）；没有封面的用话题的形状色，
+     * 没有话题的用钴蓝。
      */
     int accent(JSONObject e) {
         JSONArray palette = e == null ? null : e.optJSONArray("palette");
         if (palette != null && palette.length() == 2) {
             float[] m = new float[3];
             Color.colorToHSV(Color.parseColor(palette.optString(1)), m);
-            if (m[1] < 0.12f) return pri;
-            return night ? hsv(m[0], Math.min(m[1], 0.45f), 1) : hsv(m[0], clamp(m[1], 0.5f, 0.8f), 0.56f);
+            float chroma = m[1] < 0.06f ? 0 : m[1] * m[2];
+            return night ? hsv(m[0], Math.min(0.45f, chroma * 1.8f), 1) : hsv(m[0], Math.min(0.62f, chroma * 2.4f), 0.56f);
         }
         String topic = topicOf(e);
         int[] z = topic.isEmpty() ? null : zone(topic);
@@ -241,10 +304,118 @@ final class Theme {
                 g, round(Color.WHITE, radiusDp));
     }
 
-    /** 分段列表里的一项：一组的第一项上面两个角是大圆角，最后一项下面两个角是大圆角，中间都是小圆角。 */
+    /**
+     * 分段列表里的一项：一组的第一项上面两个角是大圆角，最后一项下面两个角是大圆角，中间都是小圆角。卡片色的是磨砂，
+     * 别的颜色（“有了答案”的浅钴蓝）是带同样颗粒和倒角的半透明底。
+     */
     Drawable segment(int color, boolean first, boolean last) {
         float top = first ? R_XL : R_XS, bottom = last ? R_XL : R_XS;
-        return ripple(color, top, top, bottom, bottom);
+        int fill = color == sheet ? frost : (color & 0x00FFFFFF) | 0xC7000000;
+        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
+                frost(fill, top, top, bottom, bottom), round(Color.WHITE, top, top, bottom, bottom));
+    }
+
+    /** 磨砂：半透明的底（fill，一般是 frost），带雾面颗粒和一圈细倒角（上沿亮、下沿暗）。四个角各自的圆角同 round。 */
+    GradientDrawable frost(int fill, float tl, float tr, float br, float bl) {
+        Surface d = new Surface(frostFinish);
+        d.setColor(fill);
+        d.setCornerRadii(new float[]{dp(tl), dp(tl), dp(tr), dp(tr), dp(br), dp(br), dp(bl), dp(bl)});
+        return d;
+    }
+
+    GradientDrawable frost(float radiusDp) {
+        return frost(frost, radiusDp, radiusDp, radiusDp, radiusDp);
+    }
+
+    /** 磨砂底 + 点按水波纹。 */
+    Drawable frostRipple(int fill, float radiusDp) {
+        return new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
+                frost(fill, radiusDp, radiusDp, radiusDp, radiusDp), round(Color.WHITE, radiusDp));
+    }
+
+    /** 静止的金属小块（选中的标签、“新”“要闻”、浮动工具栏）：以 base 为中间色的斜向明暗渐变，带颗粒和倒角。 */
+    GradientDrawable metal(int base, float radiusDp) {
+        Surface d = new Surface(metalFinish);
+        shine(d, base);
+        d.setCornerRadius(dp(radiusDp));
+        return d;
+    }
+
+    /** 把 d 涂成以 base 为中间色的金属：亮—暗—次亮—更暗，从左上斜到右下，像斜着看一块拉丝金属。 */
+    static void shine(GradientDrawable d, int base) {
+        d.setOrientation(GradientDrawable.Orientation.TL_BR);
+        d.setColors(new int[]{mix(base, Color.WHITE, .2f), mix(base, Color.BLACK, .22f), mix(base, Color.WHITE, .1f),
+                mix(base, Color.BLACK, .34f)}, new float[]{0, .4f, .58f, 1});
+    }
+
+    /** 一个圆角背景此刻的四个角（像素）：分开给的直接用，统一给的（胶囊写成 99dp）收到高度的一半。 */
+    static float[] radii(GradientDrawable d) {
+        float[] r;
+        try {
+            r = d.getCornerRadii();
+        } catch (NullPointerException e) { // Android 10 上统一给圆角时这里会抛异常，而不是返回 null
+            r = null;
+        }
+        if (r != null) return r;
+        Rect b = d.getBounds();
+        float v = d.getCornerRadius();
+        if (b.width() > 0 && b.height() > 0) v = Math.min(v, Math.min(b.width(), b.height()) / 2f);
+        return new float[]{v, v, v, v, v, v, v, v};
+    }
+
+    /** 磨砂和金属表面的质感：雾面颗粒和一圈细倒角（上沿一道细亮线、下沿一道细暗线），画在圆角形状里面。 */
+    static final class Finish {
+        private final Paint grain = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+        private final RectF rect = new RectF();
+        private final float density;
+        private final int hi, lo;
+        private int rimTop = Integer.MIN_VALUE, rimBottom;
+
+        Finish(float density, int grainAlpha, int hi, int lo) {
+            this.density = density;
+            this.hi = hi;
+            this.lo = lo;
+            grain.setShader(Flow.grainShader(density));
+            grain.setBlendMode(BlendMode.OVERLAY);
+            grain.setAlpha(grainAlpha);
+            rim.setStyle(Paint.Style.STROKE);
+            rim.setStrokeWidth(2 * density); // 一半在形状外面被裁掉，露出 1dp
+        }
+
+        void draw(Canvas c, Rect b, float[] radii) {
+            if (b.isEmpty()) return;
+            rect.set(b);
+            path.reset();
+            path.addRoundRect(rect, radii, Path.Direction.CW);
+            int save = c.save();
+            c.clipPath(path);
+            c.drawRect(b, grain);
+            if (b.top != rimTop || b.bottom != rimBottom) {
+                rimTop = b.top;
+                rimBottom = b.bottom;
+                float edge = Math.min(.5f, 3 * density / b.height());
+                rim.setShader(new LinearGradient(0, b.top, 0, b.bottom, new int[]{hi, hi & 0xFFFFFF, lo & 0xFFFFFF, lo},
+                        new float[]{0, edge, 1 - edge, 1}, Shader.TileMode.CLAMP));
+            }
+            c.drawPath(path, rim);
+            c.restoreToCount(save);
+        }
+    }
+
+    /** 带质感的圆角背景：底色或渐变照 GradientDrawable 画，上面加 Finish。 */
+    static final class Surface extends GradientDrawable {
+        private final Finish finish;
+
+        Surface(Finish finish) {
+            this.finish = finish;
+        }
+
+        @Override
+        public void draw(Canvas c) {
+            super.draw(c);
+            finish.draw(c, getBounds(), radii(this));
+        }
     }
 
     /**
@@ -288,10 +459,15 @@ final class Theme {
         return b;
     }
 
-    /** 可以按的按钮：按下时圆角收到 12、整体略微缩小，松手弹回，比水波纹更直接地告诉你“按到了”。 */
+    /**
+     * 可以按的按钮：按下时圆角收到 12、整体略微缩小，松手弹回，比水波纹更直接地告诉你“按到了”。
+     * 磨砂色（frostButton）的是磨砂按钮；酸橙、主色、墨色这些实色的是静止的金属；别的颜色照旧平涂。
+     */
     void press(View v, int color, float radiusDp) {
-        v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000),
-                new Spring.Shape(color, dp(radiusDp), dp(R_S)), null));
+        Spring.Shape shape = new Spring.Shape(color, dp(radiusDp), dp(R_S));
+        if (color == frostButton || color == frost) shape.finish(frostFinish);
+        else if (color == lime || color == pri || color == inv) shape.finish(metalFinish).metal(color);
+        v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), shape, null));
         StateListAnimator scale = new StateListAnimator();
         scale.addState(new int[]{android.R.attr.state_pressed}, scaleTo(v, 0.95f));
         scale.addState(new int[0], scaleTo(v, 1f));
@@ -324,7 +500,7 @@ final class Theme {
         TextView back = text(a, "←", 20, ink, 700);
         back.setGravity(Gravity.CENTER);
         back.setContentDescription("返回");
-        back.setBackground(ripple(sheet, 99));
+        back.setBackground(frostRipple(frostButton, 99));
         back.setOnClickListener(v -> a.onBackPressed());
         return back;
     }

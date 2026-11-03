@@ -47,17 +47,17 @@ final class ReportView extends FrameLayout {
         this.a = a;
         this.t = t;
         this.onOpen = onOpen;
-        setBackgroundColor(t.bg);
 
         LinearLayout column = new LinearLayout(a);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(t.dp(12), t.dp(8), t.dp(12), 0);
         column.setClipChildren(false); // 相邻的一页从屏幕边上进来，不在内容边距处被切掉
 
-        // 分段按钮：浅色底槽里一块主色滑块，翻页时跟着手指走
+        // 分段按钮：磨砂的底槽里一块钴蓝金属的滑块，翻页时跟着手指走
         kinds = new Swipe.Tabs(a, t.pri, t.onPri, t.ink);
+        kinds.finish(t.metal(t.pri, 99), null);
         kinds.setPadding(t.dp(3), t.dp(3), t.dp(3), t.dp(3));
-        kinds.setBackground(t.round(t.sheet, 99));
+        kinds.setBackground(t.frost(99));
         for (int i = 0; i < KINDS.length; i++) {
             int index = i;
             TextView tab = t.text(a, KINDS[i][1], 14, t.ink, 700);
@@ -234,19 +234,29 @@ final class ReportView extends FrameLayout {
             observe(section, r);
 
             JSONArray highlights = r.optJSONArray("highlights");
-            if (highlights != null && highlights.length() > 0) {
+            if (highlights != null && highlights.length() > 0) { // 要点：钴蓝的雾面金属，深底白字
+                int[] f = t.field(Theme.PRI);
+                FrameLayout frame = new FrameLayout(a);
+                frame.setBackground(t.round(f[0], Theme.R_2XL));
+                Flow flow = new Flow(a);
+                flow.gradient(f[0], f[1], Color.luminance(f[2]) > 0.5f, true, 1103);
+                flow.topic(t, Theme.PRI, 1103);
+                flow.corners(frame);
+                frame.addView(flow, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
                 LinearLayout card = new LinearLayout(a);
                 card.setOrientation(LinearLayout.VERTICAL);
                 card.setPadding(t.dp(8), t.dp(16), t.dp(8), t.dp(10));
-                card.setBackground(t.round(t.pc, Theme.R_2XL));
-                TextView title = t.text(a, "要点", 13, t.onPc, 800);
+                TextView title = t.text(a, "要点", 13, f[2], 800);
                 title.setPadding(t.dp(12), 0, 0, t.dp(6));
                 card.addView(title);
-                for (int i = 0; i < highlights.length(); i++) card.addView(highlight(highlights.optJSONObject(i)));
+                for (int i = 0; i < highlights.length(); i++) card.addView(highlight(highlights.optJSONObject(i), f[2]));
+                frame.addView(card, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
                 LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT);
                 cl.topMargin = t.dp(14);
-                section.addView(card, cl);
+                section.addView(frame, cl);
             }
             notes(section, "趋势", r.optJSONArray("trends"));
             notes(section, "持续发展的事", r.optJSONArray("ongoing"));
@@ -321,7 +331,7 @@ final class ReportView extends FrameLayout {
         LinearLayout card = new LinearLayout(a);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(t.dp(20), t.dp(18), t.dp(20), t.dp(12));
-        card.setBackground(t.round(t.sheet, Theme.R_XL));
+        card.setBackground(t.frost(Theme.R_XL));
         TextView title = t.text(a, x.optString("title"), 16.5f, t.ink, 800);
         title.setLineSpacing(t.dp(4), 1f);
         card.addView(title);
@@ -383,13 +393,14 @@ final class ReportView extends FrameLayout {
     }
 
     /** 要点里的一条：点开从这一行展开成它说的第一件事。 */
-    private View highlight(JSONObject h) {
-        TextView v = t.text(a, "· " + h.optString("text"), 15, t.onPc, 600);
+    private View highlight(JSONObject h, int color) {
+        TextView v = t.text(a, "· " + h.optString("text"), 15, color, 600);
         v.setLineSpacing(t.dp(5), 1f);
         v.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
         long id = firstEvent(h);
         if (id >= 0) {
-            v.setBackground(t.ripple(Color.TRANSPARENT, Theme.R_M));
+            v.setBackground(new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(0x22FFFFFF), null, t.round(Color.WHITE, Theme.R_M)));
             v.setOnClickListener(x -> onOpen.open(x, id));
         }
         return v;
