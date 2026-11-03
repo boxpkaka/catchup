@@ -56,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sources = due(sources, store, datetime.now(timezone.utc))
         ok = collect(sources, store)
+        if not args.only:  # 按记忆去 arXiv 搜论文，自己限频（papers.CHASE_EVERY）
+            from .pipeline import papers
+            papers.chase(config, store, datetime.now(timezone.utc))
         if not args.no_update:
             from .pipeline.update import update
             update(config, store)

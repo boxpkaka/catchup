@@ -28,6 +28,7 @@ class Source:
     label_format: ClassVar[str] = "{channel}"   # 页面上显示的来源名，可用 {channel} 和 {title}
     board: ClassVar[bool] = False  # 榜单：fetch 按名次返回，另记名次和上榜时间（Store.update_board）
     quiet: ClassVar[bool] = False  # 没有变化时本来就采不到内容，0 条不算故障（collector.health）
+    paper: ClassVar[bool] = False  # 论文：有自己的论文专题（pipeline/papers.py），按和你的关系挑着写简报
 
     def __init__(self, name: str, options: dict):
         self.name = name
@@ -37,8 +38,8 @@ class Source:
         self.kind = options.get("kind", self.default_kind)
         self.interval = options.get("interval", 60)  # 采样间隔（分钟），见 collector.due
         # 只推重要的：只来自这类来源的事件要模型判为“重要”才推送、进信息流（push.min_importance），一般的留在专题里。
-        # 榜单默认如此；其他来源（创投媒体等）在配置里设 important_only，每件都写简报、选主话题（brief.candidates）
-        self.important_only = options.get("important_only", self.board)
+        # 榜单和论文默认如此；其他来源（创投媒体等）在配置里设 important_only，每件都写简报、选主话题（brief.candidates）
+        self.important_only = options.get("important_only", self.board or self.paper)
 
     def fetch(self) -> Iterable[Signal]:
         raise NotImplementedError

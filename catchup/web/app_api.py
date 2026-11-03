@@ -24,7 +24,7 @@ from ..collector import health
 from ..config import Config
 from ..llm import from_config
 from ..models import Event
-from ..pipeline import push, reports, translate
+from ..pipeline import papers, push, reports, translate
 from ..pipeline.brief import candidates, final_score, hot
 from ..pipeline.events import group_events
 from ..pipeline.ranking import Ranker
@@ -371,6 +371,12 @@ def event_detail(config: Config, store: Store, event_id: int, now: datetime) -> 
     out["insight"] = (brief.get("insight") or "") if brief else ""
     out["questions"] = brief.get("questions", []) if brief else []
     out["palette"] = images.palette(config, event_id)  # 正文的点缀色照封面，从推送打开时也和首页卡片一致
+    if paper := chat.paper_of(signals):  # 论文：和你的关系、作者；问一问先是读论文的几个问题
+        mark = store.paper_marks([event_id]).get(event_id) or {}
+        authors = next((s.author for s in signals if s.author), "")
+        out["paper"] = {"id": paper, "why": mark.get("why", ""), "relevance": mark.get("relevance"),
+                        "authors": authors, "pdf": f"https://arxiv.org/pdf/{paper}"}
+        out["questions"] = chat.PAPER_QUESTIONS + [q for q in out["questions"] if q not in chat.PAPER_QUESTIONS][:1]
     out["would_miss"] = store.rating(event_id)
     thread = store.latest_thread(event_id)
     out["thread"] = {"id": thread["id"], "count": len(store.messages(thread["id"]))} if thread else None
@@ -410,8 +416,8 @@ def _event(e: Event, brief: dict | None, feedback: str | None, pushed_at: str | 
 # ---------- 专题 ----------
 
 def topics(config: Config, store: Store, now: datetime) -> dict:
-    """专题页的卡片：话题专题（配置里的兴趣）今天几件、最新两件、榜单上还有几个；榜单专题有几条、和你相关的几条、
-    第一个榜的前三名。专题的颜色和形状由 App 按 key 决定。"""
+    """专题页的卡片：话题专题（配置里的兴趣）今天几件、最新两件、榜单上还有几个；论文专题见 papers.card；
+    榜单专题有几条、和你相关的几条、第一个榜的前三名。专题的颜色和形状由 App 按 key 决定。"""
     sources = build_sources(config.sources)
     events, boards = _topic_events(config, store, now, sources), _boards(config, store, now, sources)
     listed = {e["id"] for e in events}
@@ -423,6 +429,8 @@ def topics(config: Config, store: Store, now: datetime) -> dict:
                     "today": sum(reports.local_now(config.push, parse_time(e["time"])).date() == today for e in mine),
                     "latest": [{k: e[k] for k in ("id", "headline", "time")} for e in mine[:2]],
                     "on_boards": len(_on_boards(sources, boards, i["name"], listed))})
+    if paper_card := papers.card(config, store, now):
+        out.append(paper_card)
     runs = store.last_runs()
     for name, items in boards.items():
         first = [x for x in items if x["channel"] == items[0]["channel"]] if items else []
@@ -435,7 +443,9 @@ def topics(config: Config, store: Store, now: datetime) -> dict:
 
 def topic(config: Config, store: Store, key: str, now: datetime) -> dict | None:
     """一个专题的完整列表。话题专题：这个话题的事件（按见报时间从新到旧），加上榜单上这个话题、还没作为事件列出的条目；
-    榜单专题：每个榜按名次的全部条目。"""
+    论文专题：为你挑的、社区热门、最新三个列表（papers.page）；榜单专题：每个榜按名次的全部条目。"""
+    if key == papers.KEY:
+        return papers.page(config, store, now)
     sources = build_sources(config.sources)
     if key in {i["name"] for i in config.interests}:
         events = [e for e in _topic_events(config, store, now, sources) if e["topic"] == key]

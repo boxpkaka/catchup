@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -36,12 +37,16 @@ class FakeLLM:
     def __init__(self, groups=None, importance=4, memory=None, reply="Dessa 只用语音训练 [1]。", progress=None):
         self.groups, self.importance, self.calls = groups or [], importance, 0
         self.memory = memory or {"add": [], "update": [], "remove": []}
-        self.reply, self.progress, self.prompts, self.options = reply, progress, [], []
+        self.reply, self.progress, self.prompts, self.options, self.systems = reply, progress, [], [], []
 
     def json(self, system, user, max_tokens=800, **options):
         self.calls += 1
         self.prompts.append(user)
         self.options.append(options)
+        self.systems.append(system)
+        if system.startswith("下面是最近的 AI 论文"):  # 论文和你的关系：标题里有 speech 的正好对上，其余无关
+            return {"papers": {i: {"relevance": 5, "why": "和你做的语音识别直接相关"}
+                               for i, t in re.findall(r"^(\d+): (.+)$", user, re.M) if "speech" in t.lower()}}
         if "开头的“观察”" in system:  # 报告的观察：999 不是材料里的事，V9 不是材料里的看法，都该被去掉
             first = re.findall(r"\[E(\d+)\]", user)[0]
             return {"lede": "Dessa 说明全双工语音开始拼工程细节。",
@@ -76,8 +81,9 @@ class FakeLLM:
                 "importance": self.importance, "questions": ["能本地跑吗？", "和 Moshi 比如何？"], "points": ["全双工"],
                 "insight": "全双工语音模型多了一个开源选择。"}
 
-    def stream(self, messages):
+    def stream(self, messages, **options):
         self.prompts.append(messages[0]["content"])
+        self.options.append(options)
         yield from (self.reply[:4], self.reply[4:])
 
 
@@ -1194,3 +1200,145 @@ class ReportsTest(unittest.TestCase):
         self.assertEqual(reports.run(config(), store, llm, NOW), ["daily:2026-10-23"])
         content = store.report("daily", "2026-10-23")["content"]
         self.assertEqual((bool(content["highlights"]), "lede" in content), (True, False))  # 只有清单
+
+
+PAPER_SOURCES = {**SOURCES, "arxiv": {"type": "arxiv", "queries": ["cat:cs.CL"]}, "hfp": {"type": "hf_papers"}}
+LATEX = b"""<html><head><title>Streaming Speech Recognition</title></head><body><article>
+<h1>Streaming Speech Recognition</h1><div class="ltx_abstract"><h6>Abstract</h6><p>We cut latency.</p></div>
+<section><h2>3 Experiments</h2><p>WER drops to 4.1 on LibriSpeech.</p></section></article></body></html>"""
+
+
+class PaperTest(unittest.TestCase):
+    """论文专题：判断和你的关系、给值得读的写简报、专题页、按记忆搜 arXiv、读全文的对话。"""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.cfg = Config(root=Path("."), sources=PAPER_SOURCES, interests=INTERESTS, ranking={"window_hours": 72})
+        speech = "https://arxiv.org/abs/2610.11111"
+        self.store.add([
+            Signal(url=speech, title="Streaming Speech Recognition with Tiny Latency", summary="We cut latency.",
+                   source="arxiv", author="Ann Lee, Bo Chen", tier="primary", kind="论文",
+                   published=NOW - timedelta(hours=5)),
+            Signal(url="https://huggingface.co/papers/2610.11111", title="Streaming Speech Recognition with Tiny Latency",
+                   source="hfp", tier="primary", kind="论文", extra={"upvotes": 42}, published=NOW - timedelta(hours=5)),
+            Signal(url="https://arxiv.org/abs/2610.22222", title="Graph Coloring Bounds", summary="We prove bounds.",
+                   source="arxiv", tier="primary", kind="论文", published=NOW - timedelta(hours=3)),
+            sig("https://a/1", "Block unveils Dessa voice model")], now=NOW)
+        assign_events(self.store, self.store.recent(NOW - timedelta(days=3), NOW), NOW)
+        self.speech = self.store.signal_event(speech)
+        self.graph = self.store.signal_event("https://arxiv.org/abs/2610.22222")
+        self.events = group_events(self.store.recent(NOW - timedelta(days=3), NOW))
+
+    def judge(self, llm=None):
+        from catchup.pipeline import papers
+        llm = llm or FakeLLM()
+        with mock.patch("catchup.personal.focus", return_value="正在做：你在做流式语音识别"):
+            return papers.judge(self.cfg, self.store, llm, NOW), llm
+
+    def test_papers_are_judged_once_and_relevant_ones_briefed_as_papers(self):
+        from catchup.pipeline import papers
+        done, llm = self.judge()
+        self.assertEqual(done, 2)  # 两篇论文（arXiv 和 HF Papers 是同一篇），新闻不判
+        self.assertIn("正在做：你在做流式语音识别", llm.prompts[0])
+        self.assertEqual(self.store.paper_marks([self.speech, self.graph]),
+                         {self.speech: {"relevance": 5, "why": "和你做的语音识别直接相关"},
+                          self.graph: {"relevance": 0, "why": ""}})
+        self.assertEqual(self.judge(llm)[0], 0)  # 判过的不再判
+        pool = papers.to_brief(self.cfg, self.store, NOW)
+        self.assertEqual([e.id for e in pool], [self.speech])
+        with mock.patch("catchup.reader.http.get", return_value=LATEX):
+            brief.write_briefs(self.store, pool, "", llm, build_sources(PAPER_SOURCES), NOW, read_wait=5)
+        self.assertTrue(llm.systems[-1].endswith(brief.PAPER_NOTE))  # 按读论文的写法写简报
+        self.assertIn("WER drops to 4.1", llm.prompts[-1])  # 读了全文开头
+        self.assertEqual(papers.to_brief(self.cfg, self.store, NOW), [])
+
+    def test_papers_published_before_the_window_still_count(self):
+        from catchup.pipeline import papers
+        old = Signal(url="https://arxiv.org/abs/2610.44444", title="Speech Tokenizers Revisited", source="arxiv",
+                     tier="primary", kind="论文", published=NOW - timedelta(days=4))  # 周末前投的，周一才公布、采到
+        self.store.add([old], now=NOW)
+        self.assertEqual(papers.assign(self.cfg, self.store, NOW), 1)
+        self.assertEqual(papers.assign(self.cfg, self.store, NOW), 0)
+        self.assertEqual(self.judge()[0], 3)
+        self.assertEqual(self.store.paper_marks([self.store.signal_event(old.url)])[self.store.signal_event(old.url)]
+                         ["relevance"], 5)
+        self.assertIn("Speech Tokenizers Revisited", papers.texts(self.cfg, self.store, NOW)[:2])  # 和你有关的先翻译
+
+    def test_papers_only_reach_the_feed_when_important(self):
+        sources = build_sources(PAPER_SOURCES)
+        # 论文只推重要的，但不像创投媒体那样每篇都写简报；同时上了 HF Papers 的算热门，照旧写
+        self.assertEqual([e.id for e in brief.candidates(self.events, 0, sources)], [self.speech])
+        [speech] = [e for e in self.events if e.id == self.speech]
+        self.assertEqual(push.min_importance({}, speech, push.strict_sources(sources)), 4)  # 一般的论文留在专题里
+
+    def test_topic_page_and_event_detail(self):
+        from catchup import chat
+        self.judge()
+        token = app_api.register(self.store, "p", NOW)[1]["token"]
+        brief.write_briefs(self.store, [e for e in self.events if e.id == self.speech], "", FakeLLM(), {}, NOW)
+        with mock.patch("catchup.web.app_api.datetime") as dt, mock.patch("catchup.chat.prefetch"):
+            dt.now.return_value = NOW
+
+            def call(path):
+                return app_api.handle(self.cfg, self.store, "GET", path, {"Authorization": f"Bearer {token}"}, None)
+
+            card = [t for t in call("/v1/topics")[1]["topics"] if t["key"] == "papers"][0]
+            self.assertEqual((card["count"], card["total"], card["latest"][0]["why"]), (1, 2, "和你做的语音识别直接相关"))
+            status, page = call("/v1/topics/papers")
+            channels = {c["key"]: c["items"] for c in page["channels"]}
+            [mine] = channels["for_you"]
+            self.assertEqual((status, mine["event_id"], mine["url"], mine["authors"], mine["upvotes"], mine["ai"]),
+                             (200, self.speech, "https://arxiv.org/abs/2610.11111", "Ann Lee 等", 42, True))
+            self.assertEqual([x["event_id"] for x in channels["hot"]], [self.speech])
+            self.assertEqual([x["event_id"] for x in channels["latest"]], [self.graph, self.speech])
+            self.store.set_feedback(self.graph, "not_needed", NOW)  # 标了不需要的不再列
+            self.assertEqual(len(call("/v1/topics/papers")[1]["channels"][2]["items"]), 1)
+            detail = call(f"/v1/events/{self.speech}")[1]
+        self.assertEqual((detail["paper"]["id"], detail["paper"]["why"]), ("2610.11111", "和你做的语音识别直接相关"))
+        self.assertEqual(detail["questions"][:3], chat.PAPER_QUESTIONS)
+
+    def test_chat_reads_the_whole_paper(self):
+        from catchup import chat
+        llm = FakeLLM(reply="延迟降到 80 毫秒 [1]。")
+        with mock.patch("catchup.reader.http.get", return_value=LATEX) as get, \
+                mock.patch("catchup.chat.tool", return_value={"results": []}), \
+                mock.patch("catchup.personal.rebrief_async"):
+            out = list(chat.chat(self.cfg, self.store, llm, {"event_id": self.speech, "message": "实验怎么做的？"}, NOW))
+        get.assert_called_once_with("https://arxiv.org/html/2610.11111")
+        self.assertEqual([e["text"] for e in out if e["type"] == "status"], ["正在读论文全文、搜索网页"])
+        self.assertTrue(llm.prompts[0].startswith("你是 Catchup，用户的个人 AI 情报助手，现在陪他读一篇论文"))
+        self.assertIn("## 3 Experiments\n\nWER drops to 4.1 on LibriSpeech.", llm.prompts[0])
+        self.assertIn("作者：Ann Lee, Bo Chen", llm.prompts[0])
+        self.assertEqual(llm.options[0], {"max_tokens": chat.PAPER_TOKENS})
+        self.assertTrue("".join(e["text"] for e in out if e["type"] == "delta").endswith(
+            "1. [Streaming Speech Recognition with Tiny Latency](https://arxiv.org/abs/2610.11111)"))
+
+    def test_ask_finds_relevant_papers_without_briefs(self):
+        from catchup import chat
+        self.judge()
+        self.store.save_translations({"Streaming Speech Recognition with Tiny Latency": "低延迟流式语音识别"})
+        found = chat._retrieve(self.cfg, self.store, "最近有什么语音识别的论文？", NOW)
+        self.assertEqual((found[0]["id"], found[0]["headline"]), (self.speech, "论文：低延迟流式语音识别"))
+        self.assertTrue(found[0]["summary"].startswith("和你做的语音识别直接相关。"))
+        self.assertNotIn(self.graph, [x["id"] for x in found])  # 无关、没写简报的论文不算
+        brief.write_briefs(self.store, [e for e in self.events if e.id == self.speech], "", FakeLLM(), {}, NOW)
+        found = chat._retrieve(self.cfg, self.store, "这周有哪些论文值得读？", NOW)  # 写了简报的论文也标明是论文
+        self.assertEqual((found[0]["id"], found[0]["headline"]), (self.speech, "论文：Block 发布语音模型 Dessa"))
+
+    def test_chase_searches_arxiv_by_memory(self):
+        from catchup.pipeline import papers
+        self.store.add_memory("task", "你在做流式语音识别", ["streaming ASR", "语音识别", "low latency"], "对话", NOW)
+        self.store.add_memory("avoid", "你不想看营销", ["marketing"], "对话", NOW)
+        feed = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2610.33333v2</id>
+<title>Chunked Streaming ASR</title><summary>Lower latency.</summary><published>2026-10-23T10:00:00Z</published>
+<author><name>Cy Wu</name></author></entry><entry><id>http://arxiv.org/abs/2609.00001v1</id><title>Old</title>
+<summary>Old.</summary><published>2026-09-01T10:00:00Z</published></entry></feed>"""
+        with mock.patch("catchup.sources.arxiv.http.get", return_value=feed) as get, \
+                mock.patch("catchup.pipeline.papers.time.sleep"):
+            self.assertEqual(papers.chase(self.cfg, self.store, NOW), 1)  # 时间窗之前的不要
+            self.assertEqual(papers.chase(self.cfg, self.store, NOW + timedelta(hours=1)), 0)  # 刚搜过
+        get.assert_called_once()
+        query = urllib.parse.unquote(get.call_args.args[0].split("search_query=")[1])
+        self.assertTrue(query.startswith('(all:"streaming ASR" OR all:"low latency") AND (cat:cs.CL'), query)
+        [s] = [s for s in self.store.recent(NOW - timedelta(days=3), NOW) if s.url.endswith("2610.33333")]
+        self.assertEqual((s.channel, s.extra["chase"]), ("按记忆搜索", "你在做流式语音识别"))

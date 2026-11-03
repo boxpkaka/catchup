@@ -19,6 +19,7 @@ class Arxiv(Source):
     default_tier = "primary"
     default_kind = "论文"
     label_format = "arXiv"
+    paper = True
 
     def fetch(self):
         max_results = self.options.get("max_results", 100)

@@ -70,9 +70,9 @@ public class EventActivity extends Activity {
     private RoundImage headCover;
     private int[] tone; // 从彩色卡片点开时卡片的颜色，其余为 null
     private boolean iconsLight;
-    private LinearLayout points, insight, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
+    private LinearLayout relation, points, insight, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
     private TextView useful, follow, summary, topicChip, badge, headline, meta, original;
-    private String shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
+    private String shownRelation, shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
     private int topInset;
     private String feedback;
     private boolean following;
@@ -288,6 +288,19 @@ public class EventActivity extends Activity {
         if (!s.contentEquals(summary.getText())) summary.setText(s);
         summary.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
 
+        JSONObject paper = e.optJSONObject("paper"); // 论文和你的关系（见 catchup/pipeline/papers.py），详情接口才有
+        String why = paper == null ? "" : paper.optString("why");
+        if (!why.equals(shownRelation)) {
+            shownRelation = why;
+            relation.removeAllViews();
+            if (!why.isEmpty()) {
+                relation.addView(sectionHead("和你的关系", null));
+                TextView p = t.text(this, why, 15.5f, t.ink, 600);
+                p.setLineSpacing(t.dp(7), 1f);
+                relation.addView(p);
+            }
+        }
+
         JSONArray ps = e.optJSONArray("points"); // 简报要点：原文里的具体内容，详情接口才有
         if (!String.valueOf(ps).equals(shownPoints)) {
             shownPoints = String.valueOf(ps);
@@ -338,7 +351,7 @@ public class EventActivity extends Activity {
     }
 
     /**
-     * 正文的骨架：概要、要点、AI 解读、进展、问一问、来源，各块只建一次。不用方框，直接排在白页上，靠留白和小标题分段；
+     * 正文的骨架：概要、（论文）和你的关系、要点、AI 解读、进展、问一问、来源，各块只建一次。不用方框，直接排在白页上，靠留白和小标题分段；
      * 从彩色卡片点开时概要往下让一段，留给头部的颜色融开。
      */
     private void buildBody() {
@@ -346,13 +359,14 @@ public class EventActivity extends Activity {
         summary.setLineSpacing(t.dp(10), 1f);
         summary.setPadding(0, t.dp(tone != null ? 74 : 22), 0, 0);
         body.addView(summary);
+        relation = column();
         points = column();
         insight = column();
         updates = column();
         body.addView(sectionHead("问一问", null));
         ask = column();
         sources = column();
-        Theme.smooth(body, points, insight, updates, ask, sources);
+        Theme.smooth(body, relation, points, insight, updates, ask, sources);
     }
 
     private LinearLayout column() {

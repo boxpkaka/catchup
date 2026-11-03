@@ -1,5 +1,6 @@
 """采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报 → 追踪进展
-→ 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次、需要时问一句） → 推送 → 按新记忆重写旧简报（每轮一部分） → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
+→ 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次、需要时问一句） → 推送 → 判断新论文和你的关系
+→ 按新记忆重写旧简报（每轮一部分），给值得读的论文写简报 → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
 → 翻译英文原文。
 
 每一步失败都不影响前面已写入的结果；没有 DEEPSEEK_API_KEY 时只做规则部分。
@@ -15,7 +16,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import answers, brief, follow, intros, push, reports, translate
+from . import answers, brief, follow, intros, papers, push, reports, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,10 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     sources = build_sources(config.sources)
     signals, _ = ranked(config, store, now)
     arrived = {s.url for s in signals if s.event_id is None}
-    stats = {"new_events": assign_events(store, signals, now), "merged": 0, "screened": 0, "briefs": 0, "learned": 0,
-             "follow_updates": 0, "answered": 0, "pushed": 0, "topics": 0, "reports": 0, "intros": 0, "translated": 0,
+    # 论文另有一周的时间窗（见 pipeline/papers.py），时间窗外才采到的论文也归入事件
+    stats = {"new_events": assign_events(store, signals, now) + papers.assign(config, store, now), "merged": 0,
+             "screened": 0, "briefs": 0, "learned": 0, "follow_updates": 0, "answered": 0, "pushed": 0, "papers": 0,
+             "topics": 0, "reports": 0, "intros": 0, "translated": 0,
              "tidied": 0, "reinforced": personal.reinforce(store, now)}  # 先把新行为记到记忆强度上，这一轮排序就用上
     _, events = ranked(config, store, now)
     boards = {name for name, s in sources.items() if s.board}
@@ -85,12 +88,17 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         push.deliver_updates(config.push, updates, now)
         push.deliver_answers(config.push, store, now)
         reports.deliver(config.push, store, now)
-    if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报下一轮推送
+    if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报、值得读又够重要的论文下一轮推送
         stats["briefs"] += refresh_briefs(config, store, llm, now, rewrites=REWRITES)
+        stats["papers"] = papers.judge(config, store, llm, now)
+        picked = papers.to_brief(config, store, now)
+        stats["briefs"] += brief.write_briefs(store, picked, personal.focus(config, store, now), llm, sources, now,
+                                              len(picked), personal.memory_rev(store), brief.READ_WAIT)
         stats["topics"] = brief.assign_topics(store, events, llm, [i["name"] for i in config.interests])
         stats["reports"] = len(reports.run(config, store, llm, now))
         stats["intros"] = intros.run(store, llm, sources, now)  # 写成中文，翻译那一步就不用再翻
         stats["translated"] = translate.run(store, llm, events, [
-            x["summary"][:translate.SUMMARY_CHARS] for name in boards for x in store.board(name)])
+            x["summary"][:translate.SUMMARY_CHARS] for name in boards for x in store.board(name)]
+            + papers.texts(config, store, now))
     log.info("update: %s", stats)
     return stats
