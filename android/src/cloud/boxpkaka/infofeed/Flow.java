@@ -35,12 +35,13 @@ import java.util.Arrays;
 
 /**
  * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，再加雾面颗粒。
- * 一张图（模糊过的封面 192×108，或者按话题生成的抽象封面 384×216，见 art）画三遍，各自绕不同的中心慢慢转、缩放、漂移
+ * 一张图（模糊过的封面，或者按话题生成的抽象封面，都是 192×108，见 art）画三遍，各自绕不同的中心慢慢转、缩放、漂移
  * （来回往复，缓入缓出）；每个点按亮度过一条“金属曲线”：在这张图自己的亮度范围里，66% 那一档起一道窄的亮脊，32% 那一档
  * 压暗一点，颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。图的四周按边上的颜色往外延（CLAMP），转到什么角度
  * 都不露直边。再盖遮罩和颗粒。
  * 安卓 13 起整个在 GPU 上按屏幕像素逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程；
- * 老系统在 4dp 一格的小位图上算（compute），亮度用小数、和上一帧平滑，放大画上去。
+ * 老系统在 4dp 一格的小位图上算（compute），亮度用小数、和上一帧平滑，放大画上去；新系统上软件画布（卡片展开前拍的截图）
+ * 也走这一路，算法相同，颜色接得上。
  * 三种用法：
  * - 卡片（首页“最值得看”、专题卡片、专题标题栏、报告的“要点”）：盖一层遮罩（字压在上面也看得清），边上一圈细倒角，
  *   圆角跟着卡片的背景（右滑时背景的圆角会变）；
@@ -93,6 +94,7 @@ final class Flow extends View {
     private int[] px, px2, res, resMask;
     private float[] acc, tmp, n1, n2;
     private Gpu shade, before; // GPU：现在的这一套；换了来源、正在淡入时，之前的那一套垫在下面
+    private final float[] values = new float[9];
     private long computedAt = -1, frameMs = FRAME_MS; // 多久重算一次：按上一次算了多久定，主线程最多花四分之一在这上面
     private int rimH = -1;
 
@@ -256,14 +258,14 @@ final class Flow extends View {
     }
 
     /**
-     * 没有封面时的“抽象封面”：384×216 的图，话题色系的六种颜色（见 Theme.artColors）铺成七团径向渐变，位置按 seed 定。
+     * 没有封面时的“抽象封面”：192×108 的图（都是很柔的渐变，放大也没有棱角；再大的话在主线程上生成太慢），话题色系的六种颜色（见 Theme.artColors）铺成七团径向渐变，位置按 seed 定。
      * 同一件事（seed 是事件 id）的卡片和详情页、同一个专题（seed 是 seedOf）的卡片和专题页是同一张。pastel 是只有亮色的那张。
      */
     static Bitmap art(Theme t, String key, long seed, boolean pastel) {
         String k = key + "|" + seed + "|" + t.night + "|" + pastel;
         Bitmap b = ARTS.get(k);
         if (b != null) return b;
-        int w = 384, h = 216;
+        int w = 192, h = 108;
         b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(b);
         int[] cols = t.artColors(key, pastel);
@@ -407,12 +409,11 @@ final class Flow extends View {
         boolean moving = ValueAnimator.areAnimatorsEnabled();
         long now = SystemClock.uptimeMillis();
         boolean fading = moving && fadeFrom > 0 && now - fadeFrom < FADE_MS;
-        if (GPU) {
+        if (GPU && canvas.isHardwareAccelerated()) { // 软件画布（Card 给卡片拍截图）不支持 RuntimeShader，那一帧走下面的小位图
             drawGpu(canvas, w, h, (long) ((moving ? now : 0) / slow) + offset, (moving ? now - START : 0) / 1000f + offset / 1000f,
                     fading ? (now - fadeFrom) / (float) FADE_MS : 1);
             if ((moving || fading) && isShown() && getGlobalVisibleRect(visible)) {
-                if (mode == MIST) postInvalidateDelayed(FRAME_MS); // 页面的雾流得慢，三十帧够了
-                else postInvalidateOnAnimation();
+                postInvalidateDelayed(mode == MIST ? FRAME_MS : 16); // 最多六十帧，不跟着高刷屏跑满；页面的雾流得慢，三十帧够了
             }
             return;
         }
@@ -491,7 +492,7 @@ final class Flow extends View {
         RuntimeShader s = g.shader;
         int bh = mode == HEAD ? Math.min(h, Math.round(w * .72f)) : h; // 详情页头部按卡片的比例摆，见 flow
         float side = (float) Math.hypot(w, bh) * 1.4f, left = (w - side) / 2, top = (bh - side) / 2;
-        float[] v = new float[9];
+        float[] v = values;
         for (int i = 0; i < LAYERS.length; i++) {
             float[] l = LAYERS[i];
             float e = ease(t, (long) (l[0] * 1000));
