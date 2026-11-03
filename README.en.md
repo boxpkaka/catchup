@@ -65,7 +65,8 @@ reads the originals to write briefs, ranks them by what it remembers about you, 
 #### 📱 In your pocket
 
 - **Native Android app**: Feed / Topics / Reports pages, gestures that track your finger, cards that expand in place, and memories drawn as bubbles that grow and fade.
-- **Chat**: ask about an event (reads the original, cites sources, streams the answer), or ask your own event library directly.
+- **Chat**: ask about an event (reads the original, cites sources, streams the answer), or ask your own event library directly; on a paper it reads the full text and walks you through it like a peer.
+- **Papers**: every new paper is checked against your memory with a one-line reason why it matters to you; arXiv is searched by your memory, and papers worth reading get a brief.
 - **Share to Catchup**: share or copy a link; it reads the article, files it under an event and writes a brief.
 - **Outage alerts**: when sources keep coming back empty, a small red bar appears at the top of the home page.
 

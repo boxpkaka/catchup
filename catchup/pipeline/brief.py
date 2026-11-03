@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from .. import chat
+from .. import chat, reader
 from ..models import Event
 from ..sources import Source, source_of
 from .events import distinct
@@ -42,6 +42,12 @@ MERGE_SYSTEM = """下面是若干 AI 领域的新闻事件，每行一个，格�
 找出报道的是同一件事的编号，分组输出。只合并确定是同一件事的（同一次发布、同一篇论文、同一个产品更新），
 同一家公司的不同新闻不要合并。输出 JSON：{"groups": [[编号, 编号], ...]}，没有可合并的就输出 {"groups": []}。"""
 
+# 主来源是论文时加在 BRIEF_SYSTEM 后面：写成读论文的简报
+PAPER_NOTE = """
+这件事是一篇论文，附的原文是论文全文的开头。headline 说清它做了什么（如“用 X 让 Y 的 Z 提升多少”），不要直译论文标题；
+summary 写它要解决的问题、核心做法和最关键的结果；points 依次写方法的关键做法、主要实验结果（带数字和比较对象）、作者提到的局限或适用条件；
+insight 写新意在哪、结论有多可靠（比如只在小模型或单一数据集上验证）；questions 写读这篇论文时最可能追问的问题。"""
+
 TOPIC_SYSTEM = """给下面每件 AI 领域的事选一个主话题，只能从这几个里选：{names}。
 看这件事主要讲什么，不要因为顺带提到某个词就归过去：比如世界模型顺带能生成音频，主话题不是 AI 语音；都不太沾边的选“其他”。
 每行是“编号: 标题：概要”。输出 JSON：{{"topics": {{"编号": "话题"}}}}"""
@@ -67,8 +73,8 @@ def candidates(events: list[Event], top: int, sources: dict[str, Source]) -> lis
     """要让模型看的事件：排名前 top 的，加上排在后面但正热门的，和来自只推重要的非榜单来源（创投媒体等）的。
     热门新闻不论和读者的关注有没有关，都先判断重要性、查重，够格就推；不感兴趣的由读者划掉。
     创投媒体量不大、多数排不进前面，每件都要模型判断重要性和主话题，一般的才能留在专题里；
-    榜单在榜单专题里按名次全列，不用逐条判断。"""
-    judged = {name for name, s in sources.items() if s.important_only and not s.board}
+    榜单在榜单专题里按名次全列，不用逐条判断；论文一天几百篇，按和你的关系挑着写（pipeline/papers.py）。"""
+    judged = {name for name, s in sources.items() if s.important_only and not s.board and not s.paper}
     return events[:top] + [e for e in events[top:] if hot(e, sources) or any(s.source in judged for s in e.signals)]
 
 
@@ -174,7 +180,8 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
         if original:
             reports += f"\n\n主来源原文（{_label(e.lead, sources)}）：\n{original[:chat.SOURCE_CHARS]}"
         try:
-            brief = _clean(llm.json(BRIEF_SYSTEM, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=1300))
+            system = BRIEF_SYSTEM + (PAPER_NOTE if reader.arxiv_id(e.lead.url) else "")
+            brief = _clean(llm.json(system, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=1300))
         except Exception as err:
             log.warning("brief for event %d failed: %r", e.id, err)
             continue

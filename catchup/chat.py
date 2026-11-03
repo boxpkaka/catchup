@@ -24,7 +24,10 @@ from datetime import datetime, timedelta, timezone
 from . import personal, reader
 from .tone import TONE
 from .config import Config
+from .models import Event
+from .pipeline import papers
 from .pipeline.events import group_events
+from .pipeline.translate import SUMMARY_CHARS
 from .sources import build_sources, source_of
 from .sources.deepseek import tool
 from .util import clean_text, parse_time
@@ -40,6 +43,11 @@ FAIL_RETRY = timedelta(hours=6)  # 抓取失败的链接隔这么久再重试
 CACHE_HOURS = 24
 SEARCH_RESULTS = 6
 SEARCH_WAIT = 15  # 最多等联网搜索这么多秒，超时就只用已有的材料回答
+PAPER_CHARS = 50000  # 论文全文（去掉参考文献）给模型的字数，正文一般都放得下，长的截掉附录
+PAPER_WAIT = 20      # 论文全文要从 arXiv 现取，比一般网页多等一会儿
+PAPER_TOKENS = 2500  # 讲方法、讲实验的回答比一般问答长
+# 论文详情页“问一问”的建议问题，排在简报给的追问前面
+PAPER_QUESTIONS = ["用几句话讲清这篇论文：问题、方法、结论", "实验结果靠得住吗？有哪些局限？", "对我在做的事有什么可以借鉴的？"]
 
 # 正在抓取的原文，同一进程里的预读和对话共用，避免同一个链接抓两遍；结果由等到它的线程写回缓存
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fetch")
@@ -75,6 +83,26 @@ ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你�
 网页搜索结果：
 {web}"""
 
+PAPER_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手，现在陪他读一篇论文。下面是论文全文（编号 [1]，按章节给出，公式是 LaTeX 原文，表格每行用 | 隔开，太长时截掉了后面的附录）和网页搜索结果（[2] 起）。
+回答要求：
+- 中文，先给结论再展开；像一位读过这篇论文的同行在给他讲，具体到做法、设置和数字，不泛泛复述摘要。
+- 用到论文内容时句末标注 [1]，并说明出处在哪一节、哪张表或哪个公式（如“第 3.2 节”“表 2”）；数字、设置照论文写，不编造。
+- 公式用文字和简单符号讲清楚它在算什么、直觉是什么，不输出 LaTeX；术语第一次出现时用一句话解释。
+- 区分作者的说法和你的看法：评价方法和实验时，看比较对象和基线是否公平、数据和规模、消融是否充分、有没有只报对自己有利的设置，说出可能的局限。
+- 论文里没写的就说没写，可以补充网页搜索结果（标注编号）或你的背景知识（说明是背景知识）。
+- 结合他关注和在做的事，说说哪些地方和他有关、值不值得细读、可以借鉴什么，说成建议。
+不要寒暄，不要复述问题；长问题可以用小标题和列表，篇幅够用就好。
+
+{tone}
+
+用户是谁：
+{focus}
+
+论文：{headline}。{summary}
+
+材料：
+{sources}"""
+
 
 def chat(config: Config, store, llm, body: dict, now: datetime):
     message = str(body.get("message") or "").strip()[:2000]
@@ -94,20 +122,23 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
 
     history = store.messages(thread["id"])[-HISTORY:]
     focus = personal.focus(config, store, now)
-    headline = None
+    headline, paper = None, None
     if event_id is not None:
         brief = store.briefs([event_id]).get(event_id) or {}
         signals = store.event_signals(event_id)
         headline = brief.get("headline") or (signals[0].title if signals else "")
+        paper = paper_of(signals)
         search = _pool.submit(_search, f"{headline} {message}")  # 和读原文同时进行
-        reading = f"正在阅读 {len(_pick(signals))} 篇原文、" if needs_reading(store, signals, now) else "正在"
+        reading = "正在" if not needs_reading(store, signals, now) else \
+            "正在读论文全文、" if paper else f"正在阅读 {len(_pick(signals))} 篇原文、"
         yield {"type": "status", "text": reading + "搜索网页"}
         sources = _sources(config, store, signals, now)
-        refs = [(s.title, s.url) for s in _pick(signals)]
+        refs = _refs(signals)
         found = _wait(search)
         if found:
             sources += "\n\n网页搜索结果：\n" + _web(found, len(refs) + 1)
-        system = EVENT_SYSTEM.format(tone=TONE, focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
+        system = (PAPER_SYSTEM if paper else EVENT_SYSTEM).format(
+            tone=TONE, focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
     else:
         search = _pool.submit(_search, message)
         yield {"type": "status", "text": "正在搜索网页"}
@@ -127,7 +158,7 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
     messages.append({"role": "user", "content": message})
     reply = []
     try:
-        for text in llm.stream(messages):
+        for text in llm.stream(messages, **({"max_tokens": PAPER_TOKENS} if paper else {})):
             reply.append(text)
             yield {"type": "delta", "text": text}
     except Exception as e:
@@ -143,8 +174,8 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
     events = []
     if event_id is None:
         cited = [int(i) for i in dict.fromkeys(re.findall(r"\[E(\d+)\]", answer))]
-        briefs = store.briefs(cited)
-        events = [{"id": i, "headline": briefs[i]["headline"]} for i in cited if i in briefs]
+        titles = {e["id"]: e["headline"] for e in candidates}  # 没写简报的论文用它的中文标题
+        events = [{"id": i, "headline": titles[i]} for i in cited if i in titles]
         if events:
             yield {"type": "refs", "events": events}
     store.add_message(thread["id"], "assistant", answer, now, {"refs": events})
@@ -245,8 +276,10 @@ def _pick(signals) -> list:
 
 
 def _fetch(url: str) -> str:
+    """论文全文多存一些，见 PAPER_CHARS；其余（包括简报读的论文摘要页）存够 SOURCE_CHARS 用的。"""
+    paper = reader.arxiv_id(url)
     try:
-        return reader.read(url)[1][:SOURCE_CHARS * 2]
+        return reader.read(url)[1][:PAPER_CHARS if paper and url == reader.full_text_url(paper) else SOURCE_CHARS * 2]
     except Exception as e:
         log.info("fetch %s failed: %r", url, e)
         return ""
@@ -270,9 +303,31 @@ def _start(url: str) -> Future:
         return _inflight[url]
 
 
+def _lead(signals):
+    return Event("", signals).lead
+
+
+def paper_of(signals) -> str | None:
+    """事件是一篇论文（主来源是 arXiv 或 HF Papers）时返回 arXiv 编号；新闻里顺带链到论文的不算。"""
+    return reader.arxiv_id(_lead(signals).url) if signals else None
+
+
+def _urls(signals) -> list[str]:
+    """要读的原文：论文读全文，其余见 _pick。"""
+    paper = paper_of(signals)
+    return [reader.full_text_url(paper)] if paper else [s.url for s in _pick(signals)]
+
+
+def _refs(signals) -> list[tuple[str, str]]:
+    """原文的编号（[1] 起）对应的标题和链接，回答末尾的来源列表用它；论文链到 arXiv 的摘要页。"""
+    if paper := paper_of(signals):
+        return [(_lead(signals).title, f"https://arxiv.org/abs/{paper}")]
+    return [(s.title, s.url) for s in _pick(signals)]
+
+
 def _read(store, signals, now: datetime, timeout: float | None) -> dict[str, str | None]:
-    """所选来源的原文，见 read_pages。"""
-    return read_pages(store, [s.url for s in _pick(signals)], now, timeout)
+    """要读的原文（_urls），见 read_pages。"""
+    return read_pages(store, _urls(signals), now, timeout)
 
 
 def read_pages(store, urls: list[str], now: datetime, timeout: float | None) -> dict[str, str | None]:
@@ -310,12 +365,14 @@ def prefetch(config: Config, event_id: int) -> None:
 
 
 def needs_reading(store, signals, now: datetime) -> bool:
-    return any(_cached(store, s.url, now) is None for s in _pick(signals))
+    return any(_cached(store, url, now) is None for url in _urls(signals))
 
 
 def _sources(config: Config, store, signals, now: datetime) -> str:
     """来源原文，每个来源截取前 SOURCE_CHARS 字；抓不到就用摘要。原文缓存在 pages 表。"""
     labels = build_sources(config.sources)
+    if paper := paper_of(signals):
+        return _paper_text(store, signals, paper, labels, now)
     picked = _pick(signals)
     texts = _read(store, signals, now, timeout=CHAT_WAIT)
     parts = []
@@ -330,17 +387,44 @@ def _sources(config: Config, store, signals, now: datetime) -> str:
     return "\n\n".join(parts)
 
 
+def _paper_text(store, signals, paper: str, labels, now: datetime) -> str:
+    """论文全文（读不到时用摘要），前面写上标题、作者和编号；另有新闻报道这篇论文的列出标题。"""
+    lead = _lead(signals)
+    text = _read(store, signals, now, timeout=PAPER_WAIT).get(reader.full_text_url(paper)) or ""
+    body = text[:PAPER_CHARS] if text.strip() else "（没读到全文，下面是摘要）\n" + lead.summary
+    authors = next((s.author for s in signals if s.author), "")
+    parts = [f"[1] {lead.title}（arXiv {paper}{'，作者：' + authors[:200] if authors else ''}）\n{body}"]
+    news = [s for s in signals if not reader.arxiv_id(s.url)][:10]
+    if news:
+        parts.append("报道这篇论文的文章标题：\n" + "\n".join(f"- {s.title}（{source_of(s, labels)[0]}）" for s in news))
+    return "\n\n".join(parts)
+
+
 def _retrieve(config: Config, store, question: str, now: datetime, limit: int = 12) -> list[dict]:
-    """在最近两周有简报的事件里按词重合找相关事件；一个都不相关时退回最重要的几件。"""
+    """在最近两周有简报的事件里按词重合找相关事件；一个都不相关时退回最重要的几件。
+    论文的标题前写上“论文：”、概要前写上和你的关系，还没写简报、但和你有关的论文也算（标题、摘要开头用译文，
+    重要性按和你的关系算），问“这周有哪些和我有关的论文”时用得上。"""
     signals = store.recent(now - timedelta(days=ASK_DAYS), now + timedelta(hours=1))
     events = personal.build_ranker(config, store, now).rank(group_events(signals), now)
     briefs = store.briefs(e.id for e in events)
+    marks = store.paper_marks(e.id for e in events if papers.is_paper(e))
+    mine = {i for i, m in marks.items() if i not in briefs and m["relevance"] >= papers.PICK}
+    zh = store.translations([t for e in events if e.id in mine for t in (e.lead.title, e.lead.summary[:SUMMARY_CHARS])])
     terms = _terms(question)
     scored = []
     for e in events:
         b = briefs.get(e.id)
+        if e.id in mine:
+            title, abstract = e.lead.title, e.lead.summary[:SUMMARY_CHARS]
+            b = {"headline": zh.get(title, title), "summary": zh.get(abstract, abstract),
+                 "importance": marks[e.id]["relevance"]}
         if not b:
             continue
+        if papers.is_paper(e):  # 和你越相关排得越前
+            mark = marks.get(e.id) or {"relevance": 0, "why": ""}
+            b = {"headline": b["headline"] if b["headline"].startswith("论文") else "论文：" + b["headline"],
+                 "summary": f"{mark['why']}。{b['summary']}" if mark["why"] else b["summary"],
+                 "importance": max(b["importance"], mark["relevance"])}
         text = " ".join([b["headline"], b["summary"]] + [s.title for s in e.signals[:6]]).lower()
         hits = sum(1 for t in terms if t in text)
         scored.append((hits, b["importance"], e, b))

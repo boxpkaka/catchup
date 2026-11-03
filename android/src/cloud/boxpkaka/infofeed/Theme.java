@@ -109,6 +109,8 @@ final class Theme {
                 return night ? new int[]{0xFF0D3D57, 0xFFD2ECFF, 0xFF6CC4F2} : new int[]{0xFFD2ECFF, 0xFF00324A, 0xFF1E9BD7};
             case "AI 创投":
                 return night ? new int[]{0xFF4E1A5A, 0xFFF8D8FF, 0xFFE48BF5} : new int[]{0xFFF8D8FF, 0xFF4A0057, 0xFFC23BD4};
+            case "papers": // 论文：纸张的暖灰
+                return night ? new int[]{0xFF3D372C, 0xFFF0E8D8, 0xFFCDB68A} : new int[]{0xFFECE6DA, 0xFF2F2A20, 0xFF8F7A55};
             default:
                 return new int[]{sheet, ink, sub};
         }

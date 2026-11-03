@@ -92,6 +92,7 @@ class HFDailyPapers(Source):
     default_tier = "primary"
     default_kind = "论文"
     label_format = "HF Papers"
+    paper = True
 
     def fetch(self):
         signals = []

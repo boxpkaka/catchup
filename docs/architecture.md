@@ -26,7 +26,7 @@ catchup/
   personal.py        个人记忆：提取、反馈学习、漏报、构建带记忆的排序器和“读者是谁”
   chat.py            对话：读原文回答（标注 [1]）或问事件库（标注 [E12]），每轮后提取记忆和待留意的问题
   share.py           分享进来的链接：读原文、归入事件、写简报
-  reader.py          读原文：一般网页走 DeepSeek fetch，Google News 跳转链接、Reddit 帖子、HF 模型页另行处理
+  reader.py          读原文：一般网页走 DeepSeek fetch，Google News 跳转链接、Reddit 帖子、HF 模型页另行处理，论文读 arXiv 的 HTML 全文
   images.py          事件封面（og:image 缩成 720px WebP）和网站图标：替 App 去原网站取，存在 data/images
   pipeline/
     events.py        信号 → 事件：规则聚类，并持久化为有固定 id 的事件
@@ -35,6 +35,7 @@ catchup/
     push.py          选择要推送的事件并经 hub 送达；早上合成早报；追踪进展推送
     follow.py        追踪：主动搜后续报道，判断是否有实质进展
     answers.py       替你留意的问题：在新报道里找答案，写回原对话
+    papers.py        论文专题：一周内的论文另行归入事件、判断和你的关系、给值得读的写简报、按记忆去 arXiv 搜
     intros.py        只有名字的 HF 模型：读模型卡写一句中文简介，榜单和没写简报的事件都显示它
     translate.py     把 App 上会出现的英文原文（来源标题、没写简报的摘要）翻成中文并缓存
     reports.py       日报、周报、月报：时间段结束后写好，周报月报写好后推送

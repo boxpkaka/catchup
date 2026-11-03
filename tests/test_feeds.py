@@ -308,9 +308,39 @@ class ReaderTest(unittest.TestCase):
             self.assertEqual(reader.read("https://huggingface.co/nvidia/personaplex-7b-v1"),
                              ("nvidia/personaplex-7b-v1", "PersonaPlex Full duplex."))
         get.assert_called_with("https://huggingface.co/nvidia/personaplex-7b-v1")
-        with mock.patch("catchup.reader.tool", return_value={"content": "x"}) as tool:
+        missing = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with mock.patch("catchup.reader.http.get", side_effect=missing), \
+                mock.patch("catchup.reader.tool", return_value={"content": "x"}) as tool:
             reader.read("https://huggingface.co/papers/2610.31066")  # 论文页不是模型
-        tool.assert_called_once()
+        tool.assert_called_once_with("fetch", {"url": "https://arxiv.org/abs/2610.31066"})  # 没有 HTML 全文时读摘要页
+
+    def test_paper_full_text_from_arxiv_html(self):
+        from catchup import reader
+        page = b"""<html><head><title>LARC: Latent Reasoning</title></head><body>
+<div class="ltx_page_header">Skip to main content</div>
+<article class="ltx_document"><h1 class="ltx_title">LARC: Latent Reasoning</h1>
+<div class="ltx_authors"><span class="ltx_personname">Ann Lee</span></div>
+<div class="ltx_abstract"><h6>Abstract</h6><p>We reason in latent space.</p></div>
+<section><h2><span class="ltx_tag">1 </span>Method</h2>
+<p>The loss is <math alttext="L=\\sum_i x_i"><mi>L</mi><mo>=</mo></math> as in <cite>[<a>12</a>]</cite>.<span class="ltx_note">footnote</span></p>
+<ul><li><span>&#8226;</span><div><p>RQ1: does it scale?</p></div></li></ul>
+<table><tr><td>Model</td><td>GenEval</td></tr><tr><td>Ours</td><td>0.91</td></tr></table></section>
+<section class="ltx_bibliography"><h2>References</h2><ul><li>[12] Someone.</li></ul></section>
+</article></body></html>"""
+        with mock.patch("catchup.reader.http.get", return_value=page) as get:
+            title, text = reader.read("https://arxiv.org/abs/2610.42149")
+        get.assert_called_once_with("https://arxiv.org/html/2610.42149")
+        self.assertEqual(title, "LARC: Latent Reasoning")
+        self.assertTrue(text.startswith("## LARC: Latent Reasoning\n\n###### Abstract\n\nWe reason in latent space."), text)
+        self.assertIn("## 1 Method", text)
+        self.assertIn("The loss is $L=\\sum_i x_i$ as in .", text)  # 公式用 LaTeX，引用编号去掉
+        self.assertIn("• RQ1: does it scale?", text)
+        self.assertIn("| Ours | 0.91", text)
+        for gone in ("Skip to main", "Ann Lee", "footnote", "References", "Someone"):
+            self.assertNotIn(gone, text)
+        self.assertEqual([reader.arxiv_id(u) for u in ("https://huggingface.co/papers/2610.42149",
+                                                        "https://arxiv.org/pdf/2610.42149", "https://a.com/2610.42149")],
+                         ["2610.42149", "2610.42149", None])
 
     def test_x_post_read_via_oembed(self):
         from catchup import reader

@@ -43,7 +43,8 @@ import java.util.Locale;
  * 一个专题。标题栏是专题卡片的颜色和放大的徽记，从卡片的位置揭开，看起来像卡片长大了。
  * 话题专题按天列这个话题的事件（和信息流的时间线一样），下面是“榜单上的”这个话题的条目；
  * 榜单专题按名次列全部条目，几个榜之间左右滑切换（也可以点标签），可以只看和你相关的。HF 模型都进模型页，
- * 别的条目有事件的进事件详情，没有的弹出简介和“问一问”。右滑返回：榜单专题在第一个榜上再右滑。
+ * 别的条目有事件的进事件详情，没有的弹出简介和“问一问”。论文专题和榜单一样左右滑，三个列表是为你挑的（写着和你的关系）、
+ * 社区热门和最新，点开进论文详情，右上角的“问一问”问这一周的论文。右滑返回：榜单和论文专题在第一页上再右滑。
  * 数据见服务器的 /v1/topics/<key>。
  */
 public class TopicActivity extends Activity {
@@ -197,7 +198,7 @@ public class TopicActivity extends Activity {
     private final Swipe.Pager.Host board = new Swipe.Pager.Host() {
         @Override
         public int count() {
-            if (data == null || !"board".equals(data.optString("kind"))) return 0;
+            if (data == null || !paged()) return 0;
             JSONArray channels = data.optJSONArray("channels");
             return Math.max(1, channels == null ? 0 : channels.length());
         }
@@ -251,11 +252,21 @@ public class TopicActivity extends Activity {
                 }
                 data = got;
                 body.setAlpha(0f); // 内容整块淡入，不突然冒出来
-                if ("board".equals(got.optString("kind"))) renderBoard();
+                if (paged()) renderBoard();
                 else renderTopic();
                 body.animate().alpha(1f).setDuration(220).start();
             });
         }, "topic-load").start();
+    }
+
+    /** 榜单和论文专题：几个列表横向排开，左右滑切换。 */
+    private boolean paged() {
+        String kind = data == null ? "" : data.optString("kind");
+        return "board".equals(kind) || "papers".equals(kind);
+    }
+
+    private boolean papers() {
+        return data != null && "papers".equals(data.optString("kind"));
     }
 
     private void loading() {
@@ -357,7 +368,12 @@ public class TopicActivity extends Activity {
         JSONArray channels = data.optJSONArray("channels");
         String updated = data.isNull("updated") ? "" : MainActivity.clock(Theme.millis(data.optString("updated"))) + " 更新";
         int n = channels == null ? 0 : channels.length();
-        sub.setText(n > 1 ? n + " 个" + ("hf_models".equals(key) ? "分类" : "榜") + " · " + updated : updated);
+        if (papers()) {
+            JSONArray mine = n > 0 ? channels.optJSONObject(0).optJSONArray("items") : null;
+            sub.setText("近 " + data.optInt("days") + " 天为你挑了 " + (mine == null ? 0 : mine.length()) + " 篇 · " + updated);
+        } else {
+            sub.setText(n > 1 ? n + " 个" + ("hf_models".equals(key) ? "分类" : "榜") + " · " + updated : updated);
+        }
         tabs.removeAllViews();
         for (int i = 0; i < n && n > 1; i++) {
             int index = i;
@@ -370,15 +386,21 @@ public class TopicActivity extends Activity {
             lp.rightMargin = t.dp(4);
             tabs.addView(tab, lp);
         }
-        TextView only = t.text(this, "只看相关", 13.5f, related ? t.onInv : t.ink, 800);
+        TextView only = t.text(this, papers() ? "问一问" : "只看相关", 13.5f, related || papers() ? t.onInv : t.ink, 800);
         only.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
-        GradientDrawable outline = t.round(related ? t.inv : Color.TRANSPARENT, 99);
-        if (!related) outline.setStroke(t.dp(1.5f), t.line);
-        only.setBackground(outline);
-        only.setOnClickListener(v -> {
-            related = !related;
-            renderBoard();
-        });
+        if (papers()) { // 论文专题不用筛，换成问这一周的论文
+            only.setTextColor(t.onLime);
+            t.press(only, t.lime, 99);
+            only.setOnClickListener(v -> askPapers());
+        } else {
+            GradientDrawable outline = t.round(related ? t.inv : Color.TRANSPARENT, 99);
+            if (!related) outline.setStroke(t.dp(1.5f), t.line);
+            only.setBackground(outline);
+            only.setOnClickListener(v -> {
+                related = !related;
+                renderBoard();
+            });
+        }
         LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         ol.leftMargin = t.dp(n > 1 ? 8 : 0);
@@ -401,13 +423,16 @@ public class TopicActivity extends Activity {
         JSONArray items = channels == null || index >= channels.length() ? null
                 : channels.optJSONObject(index).optJSONArray("items");
         LinearLayout rows = segmentList(p);
+        boolean paper = papers();
         for (int i = 0; items != null && i < items.length(); i++) {
             JSONObject x = items.optJSONObject(i);
-            if (!related || !x.optString("topic").isEmpty()) rows.addView(itemRow(x, false));
+            if (paper) rows.addView(paperRow(x));
+            else if (!related || !x.optString("topic").isEmpty()) rows.addView(itemRow(x, false));
         }
         if (rows.getChildCount() == 0) {
             p.removeView(rows);
-            note(p, related ? "这个榜现在没有和你相关的" : "这个榜还没有数据");
+            note(p, paper ? (index == 0 ? "这几天还没有和你有关的论文" : "这几天还没有论文")
+                    : related ? "这个榜现在没有和你相关的" : "这个榜还没有数据");
         } else {
             t.segments(rows);
         }
@@ -480,6 +505,68 @@ public class TopicActivity extends Activity {
         });
         if (!x.isNull("event_id")) watch(row, x.optLong("event_id"), "board");
         return row;
+    }
+
+    // ---------- 论文专题 ----------
+
+    /**
+     * 一篇论文：左边是日期；中文标题，下面一行是和你的关系（没有的写概要），最后一行是作者、HF Papers 的点赞数，
+     * 按你的记忆搜到的也写上。正好对上你在做的事（5 分）标“精读”，重要性 5 的标“要闻”。点开是论文详情。
+     */
+    private View paperRow(JSONObject x) {
+        LinearLayout row = new LinearLayout(this);
+        row.setPadding(t.dp(14), t.dp(14), t.dp(18), t.dp(14));
+        TextView date = t.text(this, new java.text.SimpleDateFormat("MM-dd", Locale.CHINA)
+                .format(new java.util.Date(Theme.millis(x.optString("time")))), 13, t.sub, 800);
+        date.setTypeface(Theme.flex(this, 120, 800));
+        date.setPadding(t.dp(4), t.dp(2), 0, 0);
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(t.dp(42), ViewGroup.LayoutParams.WRAP_CONTENT);
+        dl.rightMargin = t.dp(10);
+        row.addView(date, dl);
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        boolean news = x.optInt("importance") >= 5, close = x.optInt("relevance") >= 5;
+        if (news || close) {
+            LinearLayout tagRow = new LinearLayout(this);
+            if (news) tagRow.addView(tag("要闻", t.inv, t.onInv, Theme.R_XS), gap(6));
+            if (close) tagRow.addView(tag("精读", t.chip, t.ink, Theme.R_XS)); // 列表行不用专题色
+            col.addView(tagRow, tagLp());
+        }
+        TextView title = t.text(this, x.optString("title"), 15.5f, t.ink, 800);
+        title.setLineSpacing(t.dp(3), 1f);
+        title.setMaxLines(3);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        col.addView(title);
+        String why = x.optString("why");
+        TextView line = t.text(this, why.isEmpty() ? x.optString("summary") : why, 13.5f, why.isEmpty() ? t.sub : t.ink,
+                why.isEmpty() ? 400 : 600);
+        line.setLineSpacing(t.dp(4), 1f);
+        line.setMaxLines(2);
+        line.setEllipsize(TextUtils.TruncateAt.END);
+        line.setPadding(0, t.dp(4), 0, 0);
+        if (line.getText().length() > 0) col.addView(line);
+        List<CharSequence> parts = new ArrayList<>();
+        if (!x.optString("authors").isEmpty()) parts.add(x.optString("authors"));
+        if (x.optInt("upvotes") > 0) parts.add("♥ " + count(x.optLong("upvotes")));
+        if (!x.optString("chased").isEmpty()) parts.add(ink("按你的记忆搜到", false));
+        SpannableStringBuilder m = new SpannableStringBuilder();
+        for (CharSequence part : parts) {
+            if (m.length() > 0) m.append(" · ");
+            m.append(part);
+        }
+        col.addView(meta(m));
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        long id = x.optLong("event_id");
+        row.setOnClickListener(v -> openEvent(v, id, null));
+        watch(row, id, "papers");
+        return row;
+    }
+
+    /** 问这一周的论文：服务器在最近两周的事件里找，和你有关的论文没写简报也算。 */
+    private void askPapers() {
+        Push.open(this, new Intent(this, ChatActivity.class).putExtra(ChatActivity.EXTRA_QUESTIONS, new String[]{
+                "这周和我有关的论文里，哪几篇最值得读？", "这些论文里有哪些新方法值得留意？"}));
     }
 
     /** “Agent · TypeScript · ★ 5.4k · 今天 +1,068 · 第 3 天”：话题用墨色，今天新增的星数加粗。 */
@@ -578,7 +665,7 @@ public class TopicActivity extends Activity {
     /** 这一行原地展开成事件详情；话题专题里的事件带上列表数据，详情页一开始就有内容。 */
     private void openEvent(View from, long id, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
-                .putExtra(EventActivity.EXTRA_FROM, "topic");
+                .putExtra(EventActivity.EXTRA_FROM, papers() ? "papers" : "topic");
         if (e != null) i.putExtra(EventActivity.EXTRA_JSON, e.toString());
         Card.open(this, from, i);
     }

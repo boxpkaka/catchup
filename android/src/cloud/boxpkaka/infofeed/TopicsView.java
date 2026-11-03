@@ -22,8 +22,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 首页的“专题”页：话题专题（配置里的兴趣：AI 语音、大模型、Agent）和榜单专题（GitHub Trending、HF 模型热榜、
- * Product Hunt）各一张卡片。信息流只放够重要的，专题放一个方向、一个榜单的全部；点卡片进 TopicActivity。
+ * 首页的“专题”页：话题专题（配置里的兴趣：AI 语音、大模型、Agent）、论文专题（这一周和你有关的论文）和榜单专题
+ * （GitHub Trending、HF 模型热榜、Product Hunt）各一张卡片。信息流只放够重要的，专题放一个方向、一个榜单的全部；
+ * 点卡片进 TopicActivity。
  * 专题是固定的几个入口，每个专题有自己的颜色和徽记（Theme.zone、emblem），帮你认路；信息流里没有封面的“最值得看”卡片也用它们。
  * 卡片大小搭配：每组第一张占整行，其余两两一行，落单的占整行。数据见服务器的 /v1/topics。
  */
@@ -99,6 +100,10 @@ final class TopicsView extends FrameLayout {
                 form = new float[]{6, 0.1f};
                 glyph = Shapes.Emblem.YUAN;
                 break;
+            case "papers":
+                form = new float[]{4, 0.12f};
+                glyph = Shapes.Emblem.PAGE;
+                break;
             default:
                 form = new float[]{11, 0.06f};
                 glyph = Shapes.Emblem.SPARK;
@@ -147,13 +152,15 @@ final class TopicsView extends FrameLayout {
     private void render(JSONObject r) {
         shown = r;
         body.removeAllViews();
-        List<JSONObject> topics = new ArrayList<>(), boards = new ArrayList<>();
+        List<JSONObject> topics = new ArrayList<>(), papers = new ArrayList<>(), boards = new ArrayList<>();
         JSONArray all = r.optJSONArray("topics");
         for (int i = 0; all != null && i < all.length(); i++) {
             JSONObject x = all.optJSONObject(i);
-            ("board".equals(x.optString("kind")) ? boards : topics).add(x);
+            String kind = x.optString("kind");
+            ("board".equals(kind) ? boards : "papers".equals(kind) ? papers : topics).add(x);
         }
         group("话题", topics);
+        group("论文", papers);
         group("榜单", boards);
     }
 
@@ -183,7 +190,7 @@ final class TopicsView extends FrameLayout {
         body.addView(row, lp);
     }
 
-    /** 专题卡片：左上徽记，右上大数字，下面是名字、最新的一两条和一行小字。整行的卡片多露一条。 */
+    /** 专题卡片：左上徽记，右上大数字，下面是名字、最新的一两条（论文是最值得读的）和一行小字。整行的卡片多露一条。 */
     private View tile(JSONObject x, boolean wide) {
         String key = x.optString("key");
         int[] z = t.zone(key);
@@ -197,7 +204,7 @@ final class TopicsView extends FrameLayout {
         int size = t.dp(wide ? 54 : 46);
         top.addView(emblem(a, t, key), new LinearLayout.LayoutParams(size, size));
         top.addView(new View(a), new LinearLayout.LayoutParams(0, 1, 1));
-        boolean topic = "topic".equals(x.optString("kind"));
+        boolean topic = "topic".equals(x.optString("kind")), paper = "papers".equals(x.optString("kind"));
         LinearLayout number = new LinearLayout(a);
         number.setOrientation(LinearLayout.VERTICAL);
         number.setGravity(Gravity.END);
@@ -205,7 +212,7 @@ final class TopicsView extends FrameLayout {
         big.setTypeface(Theme.flex(a, wide ? 140 : 125, 900)); // 半张卡片放得下三位数
         big.setSingleLine();
         number.addView(big);
-        TextView unit = t.text(a, topic ? "今天" : unit(key), 11.5f, z[1], 700);
+        TextView unit = t.text(a, topic ? "今天" : paper ? "篇值得读" : unit(key), 11.5f, z[1], 700);
         unit.setAlpha(0.78f);
         unit.setPadding(0, t.dp(6), 0, 0);
         number.addView(unit);
@@ -216,11 +223,12 @@ final class TopicsView extends FrameLayout {
         name.setLineSpacing(t.dp(2), 1f);
         name.setPadding(0, t.dp(10), 0, t.dp(6));
         tile.addView(name);
-        if (topic) {
+        if (topic || paper) {
             JSONArray latest = x.optJSONArray("latest");
             for (int i = 0; latest != null && i < Math.min(latest.length(), wide ? 2 : 1); i++) {
                 JSONObject e = latest.optJSONObject(i);
-                tile.addView(line(MainActivity.clock(Theme.millis(e.optString("time"))), e.optString("headline"), z));
+                String lead = paper ? "" : MainActivity.clock(Theme.millis(e.optString("time")));
+                tile.addView(line(lead, e.optString("headline"), z));
             }
         } else {
             JSONArray top3 = x.optJSONArray("top");
@@ -265,6 +273,7 @@ final class TopicsView extends FrameLayout {
             return n > 0 ? "榜单上还有 " + n + " 个" : "";
         }
         String updated = x.isNull("updated") ? "" : MainActivity.clock(Theme.millis(x.optString("updated"))) + " 更新";
+        if ("papers".equals(x.optString("kind"))) return "近 " + x.optInt("days") + " 天 " + x.optInt("total") + " 篇 · " + updated;
         if ("github_trending".equals(key)) return "和你相关 " + x.optInt("related") + " 个 · " + updated;
         if (x.optInt("channels") > 1) return x.optInt("channels") + " 个分类 · " + updated;
         return updated;

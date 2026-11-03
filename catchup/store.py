@@ -114,6 +114,8 @@ MIGRATIONS = [
     create table memory_asks (id integer primary key, memory_id integer not null, kind text not null,
         text text not null, created text not null, answered text, answer text);
     """,
+    # 论文和你的关系（见 pipeline/papers.py）：0～5 分和一句理由，0 是判过、无关
+    "create table papers (event_id integer primary key, relevance integer not null, why text, judged text not null);",
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
@@ -203,6 +205,7 @@ class Store:
             self.con.execute("delete from briefs where event_id in (?, ?)", (target, o))
             self.con.execute("update or ignore pushes set event_id = ? where event_id = ?", (target, o))
             self.con.execute("update or ignore feedback set event_id = ? where event_id = ?", (target, o))
+            self.con.execute("update or ignore papers set event_id = ? where event_id = ?", (target, o))
 
     def event_created(self, ids: Iterable[int]) -> dict[int, datetime]:
         ids = list(ids)
@@ -244,6 +247,18 @@ class Store:
             out[r[0]]["topic"] = r[11]
             out[r[0]]["insight"] = r[12]
         return out
+
+    def paper_marks(self, ids: Iterable[int]) -> dict[int, dict]:
+        """论文和你的关系：{事件 id: {relevance, why}}，没判过的不在里面。"""
+        ids = list(ids)
+        rows = self.con.execute(f"select event_id, relevance, why from papers where event_id in ({','.join('?' * len(ids))})",
+                                ids)
+        return {r[0]: {"relevance": r[1], "why": r[2] or ""} for r in rows}
+
+    def save_paper_marks(self, marks: dict[int, tuple[int, str]], now: datetime) -> None:
+        self.con.executemany("insert or replace into papers (event_id, relevance, why, judged) values (?, ?, ?, ?)",
+                             [(i, relevance, why, to_iso(now)) for i, (relevance, why) in marks.items()])
+        self.con.commit()
 
     def save_topics(self, topics: dict[int, str]) -> None:
         self.con.executemany("update briefs set topic = ? where event_id = ?", [(t, i) for i, t in topics.items()])
