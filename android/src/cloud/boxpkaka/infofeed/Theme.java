@@ -12,8 +12,10 @@ import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -352,10 +354,10 @@ final class Theme {
                 frost(fill, radiusDp, radiusDp, radiusDp, radiusDp), round(Color.WHITE, radiusDp));
     }
 
-    /** 静止的金属小块（选中的标签、“新”“要闻”、浮动工具栏）：以 base 为中间色的斜向明暗渐变，带倒角。 */
+    /** 静止的金属小块（选中的标签、“新”“要闻”、浮动工具栏）：以 base 为中间色的缎面（见 shine），带倒角。 */
     GradientDrawable metal(int base, float radiusDp) {
         Surface d = new Surface(metalFinish);
-        shine(d, base);
+        shine(d, d.glow, base, 1);
         d.setCornerRadius(dp(radiusDp));
         return d;
     }
@@ -365,16 +367,48 @@ final class Theme {
         metalFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
     }
 
-    /** 把 d 涂成以 base 为中间色的金属：亮—暗—次亮—更暗，从左上斜到右下，像斜着看一块拉丝金属。 */
-    static void shine(GradientDrawable d, int base) {
-        shine(d, base, 1);
+    /**
+     * 把 d 涂成以 base 为中间色的缎面金属：从上往下由亮到深，左上一团很柔的受光（g，画在 d 上面），没有条纹。
+     * 以前是“亮—暗—次亮—更暗”的斜条纹，像拉丝不锈钢。amount 是金属的程度：0 是平涂的 base，1 是缎面；
+     * 平涂和金属之间变化时用（发送按钮从灰变成能按）。
+     */
+    static void shine(GradientDrawable d, Glow g, int base, float amount) {
+        d.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
+        d.setColors(new int[]{mix(base, Color.WHITE, .1f * amount), base, mix(base, Color.BLACK, .38f * amount)},
+                new float[]{0, .42f, 1});
+        g.set(base, amount);
     }
 
-    /** amount 是金属的程度：0 是平涂的 base，1 是 shine；平涂和金属之间变化时用（发送按钮从灰变成能按）。 */
-    static void shine(GradientDrawable d, int base, float amount) {
-        d.setOrientation(GradientDrawable.Orientation.TL_BR);
-        d.setColors(new int[]{mix(base, Color.WHITE, .2f * amount), mix(base, Color.BLACK, .22f * amount),
-                mix(base, Color.WHITE, .1f * amount), mix(base, Color.BLACK, .34f * amount)}, new float[]{0, .4f, .58f, 1});
+    /** 缎面金属左上的一团柔光（见 shine）：椭圆，按高斯衰减，颜色是底色的浅色。画在底色上面、倒角下面。 */
+    static final class Glow {
+        private static final float[] FALL = {1, .8825f, .6065f, .3247f, .1353f, .0439f, 0}; // exp(-2r²)，r 每档 0.25
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Matrix matrix = new Matrix();
+        private final RectF rect = new RectF();
+        private final Path path = new Path();
+        private float amount;
+
+        void set(int base, float amount) {
+            this.amount = amount;
+            float[] h = new float[3];
+            Color.colorToHSV(base, h);
+            int c = hsv(h[0], Math.min(h[1], .35f), Math.min(1, h[2] + .45f)) & 0xFFFFFF;
+            int[] colors = new int[FALL.length];
+            for (int i = 0; i < FALL.length; i++) colors[i] = c | Math.round(255 * .42f * amount * FALL[i]) << 24;
+            paint.setShader(new RadialGradient(0, 0, 1.5f, colors, new float[]{0, 1 / 6f, 2 / 6f, .5f, 4 / 6f, 5 / 6f, 1},
+                    Shader.TileMode.CLAMP));
+        }
+
+        void draw(Canvas c, Rect b, float[] radii) {
+            if (amount <= 0 || b.isEmpty()) return;
+            matrix.setScale(.62f * b.width(), .95f * b.height());
+            matrix.postTranslate(b.left + .3f * b.width(), b.top - .15f * b.height());
+            paint.getShader().setLocalMatrix(matrix);
+            rect.set(b);
+            path.reset();
+            path.addRoundRect(rect, radii, Path.Direction.CW);
+            c.drawPath(path, paint);
+        }
     }
 
     /** 一个圆角背景此刻的四个角（像素）：分开给的直接用，统一给的（胶囊写成 99dp）收到高度的一半。 */
@@ -431,6 +465,7 @@ final class Theme {
     /** 带质感的圆角背景：底色或渐变照 GradientDrawable 画，上面加 Finish。 */
     static final class Surface extends GradientDrawable {
         private final Finish finish;
+        final Glow glow = new Glow(); // 金属的柔光（见 shine），磨砂没有
 
         Surface(Finish finish) {
             this.finish = finish;
@@ -439,7 +474,9 @@ final class Theme {
         @Override
         public void draw(Canvas c) {
             super.draw(c);
-            finish.draw(c, getBounds(), radii(this));
+            float[] r = radii(this);
+            glow.draw(c, getBounds(), r);
+            finish.draw(c, getBounds(), r);
         }
     }
 

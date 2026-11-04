@@ -39,6 +39,10 @@ import java.util.Arrays;
  * 漂移（来回往复，缓入缓出，24～42 秒一个来回）；每个点按亮度过一条“金属曲线”：在这张图自己的亮度范围里，66% 那一档起一道
  * 窄的亮脊，32% 那一档压暗一点，颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。图的四周按边上的颜色往外延
  * （CLAMP），转到什么角度都不露直边。再盖遮罩。
+ * 没有封面的（抽象封面：专题卡片和标题栏、没封面的“最值得看”和它的详情页头部、报告的要点）不过金属曲线，而是缎面（satin）：
+ * 几道舒展的大褶皱，光从左上来，朝光的坡亮、背光的坡暗，高光宽而柔、是同色相的亮色，不发白；暗部压深，对比更高。
+ * 褶皱和颜色各走各的，光不会跟着色块绕圈（抽象封面是几团圆形渐变，过金属曲线会起一圈圈规则的光环，像不锈钢）。
+ * 有封面的还是金属曲线：褶皱压在照片淡出的地方像弄脏了。
  * 小图放大 8 倍左右，金属曲线又在亮脊附近把明暗差放大三四倍，所以底图用 16 位浮点（8 位的一档台阶会被放大成一圈色带），
  * GPU 上按三次 B 样条取样（双线性在每个像素格的边上会折一下，放大后看得出），最后加 ±0.5 档的抖动消掉剩下的色带，看不出来。
  * 安卓 13 起整个在 GPU 上按屏幕像素逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程；
@@ -63,6 +67,8 @@ final class Flow extends View {
             {33, .72f, .24f, .32f, 1.14f, 1.32f, -133, -.11f, .085f},
             {42, .6f, .76f, .68f, 1.24f, 1.06f, 154, .105f, .1f},
     };
+    /** 缎面的褶皱各个相位漂移的速度（弧度每秒，按流动的时钟）：很慢，光是沿着褶皱慢慢滑过去的。 */
+    private static final double[] DRIFT = {.045, .03, .025, .02};
     private static final int CARD = 0, HEAD = 1, MIST = 2;
     private static final float CELL_DP = 4, MIST_CELL_DP = 8; // 小位图一格多少 dp：页面的雾很软，格子大一倍
     private static final long FRAME_MS = 33, MIST_FRAME_MS = 66, FADE_MS = 400;
@@ -82,7 +88,8 @@ final class Flow extends View {
     private final float density;
     private final boolean night;
     private int mode = CARD;
-    private boolean dark, dirty = true;
+    private boolean dark, dirty = true, satin;
+    private final float[] fold = new float[6], phase = new float[4]; // 缎面：褶皱的三个方向；这一帧的四个相位
     private int accent;
     private long offset, fadeFrom;
     private float slow = 1;
@@ -283,6 +290,7 @@ final class Flow extends View {
         mode = card ? CARD : HEAD;
         offset = id % 23 * 1000;
         deep = light = null;
+        satin = false;
         fallback = f16(1, 2);
         fallback.setPixels(new int[]{top, bottom}, 0, 1, 0, 0, 1, 2);
         refresh(false);
@@ -296,10 +304,21 @@ final class Flow extends View {
         refresh(fade);
     }
 
-    /** 没有封面：用话题（或主色、珍珠银）生成的抽象封面，seed 见 art。 */
+    /**
+     * 没有封面：用话题（或主色、珍珠银）生成的抽象封面，seed 见 art；表面是缎面（见类注释），褶皱的方向按 seed 定，
+     * 同一件事的卡片和详情页、同一个专题的卡片和标题栏是同一个方向。
+     */
     void topic(Theme t, String key, long seed) {
         deep = art(t, key, seed, false);
         light = art(t, key, seed, !night);
+        satin = true;
+        double a = seq(seed, 1)[0] * 2 * Math.PI;
+        fold[0] = (float) Math.cos(a);
+        fold[1] = (float) Math.sin(a);
+        fold[2] = (float) Math.cos(a + 1.2);
+        fold[3] = (float) Math.sin(a + 1.2);
+        fold[4] = (float) Math.cos(a - .8);
+        fold[5] = (float) Math.sin(a - .8);
         refresh(false);
     }
 
@@ -457,6 +476,10 @@ final class Flow extends View {
             s.setFloatUniform("ay" + i, v[3], v[4], v[5]);
         }
         s.setFloatUniform("scale2", g.light.getWidth() / (float) g.deep.getWidth(), g.light.getHeight() / (float) g.deep.getHeight());
+        phases(t);
+        s.setFloatUniform("foldD", fold[0], fold[1], fold[2], fold[3]);
+        s.setFloatUniform("foldE", fold[4], fold[5], density, satin ? 1 : 0);
+        s.setFloatUniform("phase", phase[0], phase[1], phase[2], phase[3]);
         Look a = look(g.deep, mode == MIST ? (night ? 2 : 0) : dark ? (night ? 2 : 1) : 0), b = look(g.light, night ? 2 : 0);
         s.setFloatUniform("look", a.lo, a.span, a.cap, 0);
         s.setFloatUniform("look2", b.lo, b.span, b.cap, 0);
@@ -503,7 +526,7 @@ final class Flow extends View {
         }
     }
 
-    /** 和 compute、metal、fog 同一套算法，按屏幕像素逐点算。坐标 p 是视图里的像素。 */
+    /** 和 compute、metal、satin、fog 同一套算法，按屏幕像素逐点算。坐标 p 是视图里的像素。 */
     private static final String SKSL = String.join("\n",
             "uniform shader src;",
             "uniform shader src2;",
@@ -517,6 +540,9 @@ final class Flow extends View {
             "uniform float4 fogB;",
             "uniform float4 fogC;",
             "uniform float3 accent;",
+            "uniform float4 foldD;", // 缎面：褶皱的前两个方向
+            "uniform float4 foldE;", // 第三个方向、像素和 dp 的比例、是不是缎面（1 是）
+            "uniform float4 phase;", // 褶皱的四个相位
             "const float3 LUMA = float3(0.3, 0.59, 0.11);",
             "float bell(float u, float m, float s) { return exp(-(u - m) * (u - m) / (2.0 * s * s)); }",
             "float3 metal(float3 c, float4 lk) {",
@@ -528,6 +554,30 @@ final class Flow extends View {
             "  float3 v = c * (l2 / max(l, 0.01));",
             "  float over = max(v.r, max(v.g, v.b)) - 1.0;",
             "  if (over > 0.0) { v = min(v, float3(1.0)); v += (float3(1.0) - v) * min(1.0, over); }",
+            "  return v;",
+            "}",
+            // 缎面的褶皱：两道波（220dp 一个周期，第二道短一些、斜一些），坐标先被两道更长的波扭弯；返回高度的梯度（每 dp）
+            "float2 slope(float2 q) {",
+            "  float2 d1 = foldD.xy; float2 d2 = foldD.zw; float2 d3 = foldE.xy;",
+            "  float C = dot(q, d3) * 0.017136 + phase.x; float D = dot(q, d2) * 0.025704 - phase.y + 1.7;",
+            "  float w = 1.4 * (sin(C) + 0.55 * sin(D));",
+            "  float2 dw = 1.4 * (cos(C) * 0.017136 * d3 + 0.55 * cos(D) * 0.025704 * d2);",
+            "  float A = dot(q, d1) * 0.02856 + w + phase.z; float B = dot(q, d2) * 0.047124 + 1.25 * w + 2.0 - phase.w;",
+            "  return cos(A) * (0.02856 * d1 + dw) + 0.42 * cos(B) * (0.047124 * d2 + 1.25 * dw);",
+            "}",
+            // 缎面受光：法线按褶皱的坡度，光从左上来；朝光的亮、背光的暗（暗处往这一点自己的色相上收，深而不灰），
+            // 加一层宽而柔的同色高光；亮部不超过金属曲线的上限（白字看得清）
+            "float3 satin(float3 c, float2 p, float4 lk) {",
+            "  float3 n = normalize(float3(-35.014 * slope(p / foldE.z), 1.0));",
+            "  float d = dot(n, float3(-0.410366, -0.72954, 0.547155)) - 0.547155;",
+            "  float s = max(pow(max(dot(n, float3(-0.233286, -0.414731, 0.879532)), 0.0), 6.0) - 0.462913, 0.0);",
+            "  float l = dot(c, LUMA);",
+            "  float3 v = c * mix(0.8, 1.05, smoothstep(0.0, 1.0, clamp((l - lk.x) / lk.y, 0.0, 1.0)));",
+            "  float f = max(0.15, 1.0 + 1.35 * d);",
+            "  v *= f * mix(float3(1.0), v / max(max(v.r, max(v.g, v.b)), 0.02), 0.45 * max(0.0, 1.0 - f));",
+            "  v += mix(c / max(max(c.r, max(c.g, c.b)), 0.02), float3(1.0), 0.22) * 0.5 * s;",
+            "  float l2 = dot(v, LUMA);",
+            "  if (lk.z > 0.0 && l2 > max(l, lk.z)) { v *= max(l, lk.z) / l2; }",
             "  return v;",
             "}",
             "float2 at(float3 ax, float3 ay, float2 p) { float3 q = float3(p, 1.0); return float2(dot(ax, q), dot(ay, q)); }",
@@ -561,6 +611,8 @@ final class Flow extends View {
             "  c = mix(c, cubic2(at(ax1, ay1, p) * scale2), 0.72);",
             "  return mix(c, cubic2(at(ax2, ay2, p) * scale2), 0.6);",
             "}",
+            // 卡片和详情页头部深的一层：抽象封面是缎面，封面过金属曲线
+            "float3 surface(float2 p) { float3 c = flowDeep(p); return foldE.w > 0.5 ? satin(c, p, look) : metal(c, look); }",
             "float hash(float2 p) {",
             "  float3 q = fract(float3(p.x, p.y, p.x) * 0.1031);",
             "  q += dot(q, q.yzx + 33.33);",
@@ -580,7 +632,7 @@ final class Flow extends View {
             "float dither(float2 p) { return (fract(52.9829189 * fract(dot(floor(p), float2(0.06711056, 0.00583715)))) - 0.5) / 255.0; }",
             "half4 main(float2 p) {",
             "  if (head < 0.5) {",
-            "    float3 c = mix(metal(flowDeep(p), look), veil.rgb, veil.a);",
+            "    float3 c = mix(surface(p), veil.rgb, veil.a);",
             "    return half4(half3(c + dither(p)), 1.0);",
             "  }",
             "  float density = fogA.x; float footDp = fogA.y; float width = fogA.z; float t = fogA.w;",
@@ -607,7 +659,7 @@ final class Flow extends View {
             "      + 9.0 * sin(6.2832 * (2.2 * u + fogB.w) - t / 6.5);",
             "  float am = (1.0 - smoothstep(-60.0, 70.0, yy - 150.0 - reach - 70.0 * n)) * fade;",
             "  float ad = 1.0 - smoothstep(-40.0, 45.0, yy - 20.0 - 0.55 * reach - 40.0 * (0.7 * n + 0.3 * nn));",
-            "  float3 d = metal(flowDeep(p), look) * (1.0 - va) + vc * va;",
+            "  float3 d = surface(p) * (1.0 - va) + vc * va;",
             "  float ma = fogC.z > 0.5 ? 0.7 : 0.36;",
             "  float3 mv = fogC.z > 0.5 ? float3(29.0, 30.0, 38.0) / 255.0 : float3(1.0);",
             "  float3 m = metal(flowLight(p), look2) * (1.0 - ma) + mv * ma;",
@@ -660,6 +712,7 @@ final class Flow extends View {
         boolean fresh = acc == null || !moving || now - computedAt > frameMs * 3 + 100; // 隔了一阵才画的（刚滚进来）直接用新的
         if (acc == null) acc = new float[sw * sh * 4];
         float blend = fresh ? 1 : fadeFrom > 0 && now - fadeFrom < FADE_MS ? .12f : .35f;
+        phases(t);
         if (mode == HEAD) {
             if (px2 == null) px2 = new int[sw * sh];
             Bitmap ls = light != null ? light : src;
@@ -667,9 +720,11 @@ final class Flow extends View {
             fog(a, look(ls, night ? 2 : 0), t / 1000f, blend);
         } else {
             float[] lut = a.lut;
+            boolean sat = satin && mode == CARD;
             for (int i = 0, n = sw * sh; i < n; i++) {
                 int c = px[i], o = i * 4;
-                metal(c, lut, tmp, o);
+                if (sat) satin(c, a, (i % sw + .5f) * CELL_DP, (i / sw + .5f) * CELL_DP, tmp, o);
+                else metal(c, lut, tmp, o);
                 acc[o] += (tmp[o] - acc[o]) * blend;
                 acc[o + 1] += (tmp[o + 1] - acc[o + 1]) * blend;
                 acc[o + 2] += (tmp[o + 2] - acc[o + 2]) * blend;
@@ -728,6 +783,44 @@ final class Flow extends View {
         to[o] = R;
         to[o + 1] = G;
         to[o + 2] = B;
+    }
+
+    /** 这一帧褶皱的四个相位：按流动的时钟（毫秒）算，用双精度取余，时钟再大也不丢精度。 */
+    private void phases(long t) {
+        for (int i = 0; i < 4; i++) phase[i] = (float) (t / 1000.0 * DRIFT[i] % (2 * Math.PI));
+    }
+
+    /** 缎面（见 SKSL 的 slope、satin，同一套算法）：c 是流动的颜色，(qx, qy) 是这一格的 dp 坐标，结果（0～255）放进 to[o..o+2]。 */
+    private void satin(int c, Look lk, float qx, float qy, float[] to, int o) {
+        float[] d = fold, ph = phase;
+        float cc = (qx * d[4] + qy * d[5]) * .017136f + ph[0], dd = (qx * d[2] + qy * d[3]) * .025704f - ph[1] + 1.7f;
+        float cosC = (float) Math.cos(cc), cosD = (float) Math.cos(dd);
+        float w = 1.4f * ((float) Math.sin(cc) + .55f * (float) Math.sin(dd));
+        float wx = 1.4f * (cosC * .017136f * d[4] + .55f * cosD * .025704f * d[2]);
+        float wy = 1.4f * (cosC * .017136f * d[5] + .55f * cosD * .025704f * d[3]);
+        float ca = (float) Math.cos((qx * d[0] + qy * d[1]) * .02856f + w + ph[2]);
+        float cb = .42f * (float) Math.cos((qx * d[2] + qy * d[3]) * .047124f + 1.25f * w + 2 - ph[3]);
+        float gx = 35.014f * (ca * (.02856f * d[0] + wx) + cb * (.047124f * d[2] + 1.25f * wx));
+        float gy = 35.014f * (ca * (.02856f * d[1] + wy) + cb * (.047124f * d[3] + 1.25f * wy));
+        float len = (float) Math.sqrt(gx * gx + gy * gy + 1), nx = -gx / len, ny = -gy / len, nz = 1 / len;
+        float dif = -.410366f * nx - .72954f * ny + .547155f * nz - .547155f;
+        float s = Math.max(0, (float) Math.pow(Math.max(0, -.233286f * nx - .414731f * ny + .879532f * nz), 6) - .462913f);
+        float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, b = (c & 0xFF) / 255f;
+        float l = .3f * r + .59f * g + .11f * b, u = clamp((l - lk.lo) / lk.span), tone = .8f + .25f * u * u * (3 - 2 * u);
+        float vr = r * tone, vg = g * tone, vb = b * tone, vm = Math.max(.02f, Math.max(vr, Math.max(vg, vb)));
+        float f = Math.max(.15f, 1 + 1.35f * dif), k = .45f * Math.max(0, 1 - f);
+        vr *= f * (1 + (vr / vm - 1) * k);
+        vg *= f * (1 + (vg / vm - 1) * k);
+        vb *= f * (1 + (vb / vm - 1) * k);
+        float cm = Math.max(.02f, Math.max(r, Math.max(g, b))), hs = .5f * s;
+        vr += (r / cm + (1 - r / cm) * .22f) * hs;
+        vg += (g / cm + (1 - g / cm) * .22f) * hs;
+        vb += (b / cm + (1 - b / cm) * .22f) * hs;
+        float l2 = .3f * vr + .59f * vg + .11f * vb, top = Math.max(l, lk.cap);
+        float scale = lk.cap > 0 && l2 > top ? top / l2 : 1;
+        to[o] = Math.min(255, vr * scale * 255);
+        to[o + 1] = Math.min(255, vg * scale * 255);
+        to[o + 2] = Math.min(255, vb * scale * 255);
     }
 
     /**
@@ -794,7 +887,8 @@ final class Flow extends View {
                 float am = (1 - smooth(-60, 70, yy - 150 - reach[x] - 70 * n)) * fade;
                 float ad = 1 - smooth(-40, 45, yy - 20 - .55f * reach[x] - 40 * (.7f * n + .3f * nn));
                 int i = y * sw + x, o = i * 4;
-                metal(px[i], deepLook.lut, d, 0);
+                if (satin) satin(px[i], deepLook, (x + .5f) * CELL_DP, yDp, d, 0);
+                else metal(px[i], deepLook.lut, d, 0);
                 metal(px2[i], lightLook.lut, m, 0);
                 float a = ad + am * (1 - ad);
                 for (int ch = 0; ch < 3; ch++) {
