@@ -1,9 +1,8 @@
-<!-- 通知栏单色图标：与桌面图标同一图形，裁掉自适应图标四周的留白 -->
+<!-- 通知栏单色图标：与桌面图标同一图形，裁掉四周的留白 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="24dp" android:viewportWidth="72" android:viewportHeight="72">
-    <group android:translateX="-18" android:translateY="-18">
-        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="10" android:strokeLineCap="round"
-            android:pathData="M64.93,40.98 A17,17 0 1 0 64.93,67.02" />
-        <path android:fillColor="#FFFFFFFF" android:pathData="M65,54 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 Z" />
+    android:width="24dp" android:height="24dp" android:viewportWidth="64" android:viewportHeight="64">
+    <group android:translateX="-23.25" android:translateY="-23.05">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M72.683,40.224C68.106,32.273 58.914,29.057 49.68,32.175C40.445,35.292 33.141,44.079 31.401,54.162C29.661,64.246 33.857,73.473 41.902,77.252C49.946,81.032 60.12,78.557 67.362,71.059L67.721,67.005C63.185,73.662 56.667,76.213 51.578,73.324C46.488,70.435 43.983,62.762 45.374,54.319C46.765,45.877 51.734,38.584 57.684,36.255C63.633,33.927 69.209,37.092 71.495,44.096ZM80.182,41.4C80.834,36.761 77.601,33 72.962,33C68.323,33 64.034,36.761 63.382,41.4C62.73,46.039 65.962,49.8 70.601,49.8C75.24,49.8 79.53,46.039 80.182,41.4Z" />
     </group>
 </vector>

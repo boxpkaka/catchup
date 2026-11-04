@@ -63,7 +63,7 @@ public class ModelActivity extends Activity {
         mist.mist(t, Theme.PEARL, 7);
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new Elastic(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         page = new LinearLayout(this);
@@ -195,9 +195,9 @@ public class ModelActivity extends Activity {
             t.segments(events);
         }
 
-        TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
+        TextView ask = t.text(this, "问一问", 15, 0, 800);
         ask.setGravity(Gravity.CENTER);
-        t.press(ask, t.lime, 99);
+        t.askButton(ask, t.ask(Theme.PEARL), 99);
         String shortName = TopicsView.shortName(name());
         ask.setOnClickListener(v -> Push.open(this, new Intent(this, ChatActivity.class).putExtra(
                 ChatActivity.EXTRA_QUESTIONS,

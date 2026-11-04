@@ -282,10 +282,10 @@ public class MainActivity extends Activity {
         topBar = new LinearLayout(this);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(6));
-        topBar.addView(wordmark(), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView ask = t.text(this, "问一问", 13.5f, t.onLime, 700);
+        topBar.addView(new Wordmark(this, t), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView ask = t.text(this, "问一问", 13.5f, 0, 700);
         ask.setGravity(Gravity.CENTER);
-        t.press(ask, t.lime, 99);
+        t.askButton(ask, t.ask(Theme.PEARL), 99);
         ask.setPadding(t.dp(16), t.dp(9), t.dp(16), t.dp(9));
         ask.setOnClickListener(v -> {
             Push.open(this, new Intent(this, ChatActivity.class));
@@ -522,7 +522,9 @@ public class MainActivity extends Activity {
         updateNotice = notice(t.inv);
         updateText = t.text(this, "", 14.5f, t.onInv, 700);
         updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        updateAction = noticeAction("更新", t.lime, t.onLime);
+        int[] ask = t.ask(Theme.PEARL);
+        updateAction = noticeAction("更新", ask[0], ask[1]);
+        updateAction.setBackground(t.metal(ask[0], 99));
         updateNotice.addView(updateAction);
         updateNotice.setOnClickListener(v -> installUpdate());
         updateNotice.setVisibility(View.GONE);
@@ -2228,19 +2230,6 @@ public class MainActivity extends Activity {
         if (e instanceof java.net.ConnectException) return "无法访问服务器";
         if (e instanceof javax.net.ssl.SSLException) return "安全连接失败";
         return String.valueOf(e == null ? "未知错误" : e.getMessage());
-    }
-
-    /** 字标：钴蓝软六边形 + 加宽的 catchup。 */
-    private TextView wordmark() {
-        TextView v = t.text(this, "catchup", 24, t.ink, 800);
-        v.setTypeface(Theme.flex(this, 125, 800));
-        v.setLetterSpacing(-0.02f);
-        Drawable mark = new Shapes.Blob(Shapes.SOFT, t.pri);
-        mark.setBounds(0, 0, t.dp(18), t.dp(18));
-        v.setCompoundDrawablesRelative(mark, null, null, null);
-        v.setCompoundDrawablePadding(t.dp(6));
-        v.setGravity(Gravity.CENTER_VERTICAL);
-        return v;
     }
 
     private LinearLayout notice(int color) {

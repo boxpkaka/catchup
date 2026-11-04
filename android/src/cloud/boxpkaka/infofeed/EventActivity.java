@@ -17,6 +17,7 @@ import android.graphics.Rect;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,7 +31,6 @@ import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -44,7 +44,7 @@ import java.util.Locale;
  * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的颜色：封面铺满顶上，底下是和卡片一样流动的雾面金属（Flow），
  * 往下淌成一团雾，深色在标题下面化开、浅雾淌进正文，一侧淌得深、一侧早收住。整页的底是这件事颜色的雾（封面或话题，
  * 没有话题的是珍珠银），正文不用方框，靠留白和小标题分段。返回、追踪是磨砂按钮。
- * 底部悬浮工具栏：金属的有用 / 不需要，旁边是酸橙色的问一问。
+ * 底部悬浮工具栏：金属的有用 / 不需要，旁边是这一页颜色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
 public class EventActivity extends Activity {
@@ -73,12 +73,13 @@ public class EventActivity extends Activity {
     private int[] tone; // 从彩色卡片点开时卡片的颜色，其余为 null
     private boolean iconsLight;
     private LinearLayout relation, points, insight, updates, ask; // 正文里会随服务器数据更新的几块，原地更新、不整页重建
-    private TextView useful, follow, summary, topicChip, badge, headline, meta, original;
+    private TextView useful, follow, summary, topicChip, badge, headline, meta, original, askButton;
     private String shownRelation, shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
     private int topInset;
+    private int pulled; // 到顶往下拉了多少：头部（和封面）就高出多少，见 pull
     private String feedback;
     private boolean following;
-    private ScrollView scroll;
+    private Elastic scroll;
     private String from;
     private long resumedAt, readMs; // 停留时间只算页面在前台的部分
     private int depth;              // 读到页面的百分之几
@@ -146,8 +147,9 @@ public class EventActivity extends Activity {
         mist = new Flow(this); // 颜色在第一次显示内容时定，见 buildHead
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        scroll = new ScrollView(this);
+        scroll = new Elastic(this);
         scroll.setClipToPadding(false);
+        scroll.setOnPull(this::pull);
         scroll.setVerticalScrollBarEnabled(false);
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -211,7 +213,7 @@ public class EventActivity extends Activity {
         fl.setMargins(0, t.dp(10), t.dp(12), 0);
         root.addView(follow, fl);
 
-        // 悬浮工具栏：墨色金属的胶囊里放“想多看 / 不需要”，问一问单独做成酸橙色的大按钮
+        // 悬浮工具栏：墨色金属的胶囊里放“想多看 / 不需要”，问一问单独做成这一页颜色的金属大按钮（颜色见 buildHead）
         actions = new LinearLayout(this);
         actions.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout bar = new LinearLayout(this);
@@ -223,9 +225,9 @@ public class EventActivity extends Activity {
         gap.leftMargin = t.dp(4);
         bar.addView(action("不需要", v -> notNeeded()), gap);
         actions.addView(bar, weight());
-        TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
+        TextView ask = askButton = t.text(this, "问一问", 15, 0, 800);
         ask.setGravity(Gravity.CENTER);
-        t.press(ask, t.lime, Theme.R_L);
+        t.askButton(ask, t.ask(tone != null ? tone : t.field(Theme.PEARL)), Theme.R_L);
         ask.setOnClickListener(v -> openChat(null));
         LinearLayout.LayoutParams askLp = new LinearLayout.LayoutParams(t.dp(104), t.dp(64));
         askLp.leftMargin = t.dp(10);
@@ -532,6 +534,15 @@ public class EventActivity extends Activity {
             mist.animate().alpha(1f).setDuration(400).start();
         }
         mist.mist(t, art, id);
+        if (tone == null) { // 从卡片点开的在 build 里就定了；别的按整页的雾的颜色，第一帧之后才定的慢慢变过去
+            int[] a = t.ask(t.field(art));
+            if (askButton.isLaidOut()) {
+                ((Spring.Shape) ((RippleDrawable) askButton.getBackground()).getDrawable(0)).morph(t.dp(Theme.R_L), a[0], true);
+                ObjectAnimator.ofArgb(askButton, "textColor", askButton.getCurrentTextColor(), a[1]).setDuration(400).start();
+            } else {
+                t.askButton(askButton, a, Theme.R_L);
+            }
+        }
         if (tone != null) {
             backdrop = new Flow(this);
             backdrop.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, false, id);
@@ -606,11 +617,26 @@ public class EventActivity extends Activity {
         int top = topInset + t.dp(68);
         if (headCover != null) {
             int h = topInset + getResources().getDisplayMetrics().widthPixels * 9 / 16;
-            headCover.getLayoutParams().height = h;
+            headCover.getLayoutParams().height = h + pulled;
             headCover.requestLayout();
             top = Math.max(top, h - t.dp(36));
         }
-        head.setPadding(t.dp(22), top, t.dp(22), t.dp(26));
+        head.setPadding(t.dp(22), top + pulled, t.dp(22), t.dp(26));
+    }
+
+    /**
+     * 到顶往下拉（见 Elastic）：有彩色头部的，头部原地变高，顶边一直贴着屏幕顶，往下淌的颜色跟着撑开、照常流动，
+     * 封面跟着变高（按比例放大铺满，不拉长变形），标题和正文一起往下移。没有彩色头部的返回 false，内容整块平移，
+     * 露出这一页的雾；到底往上拉也是整块平移。
+     */
+    private boolean pull(float offset) {
+        if (backdrop == null && headCover == null) return false;
+        int p = Math.round(Math.max(0, offset));
+        if (p != pulled) {
+            pulled = p;
+            padHead();
+        }
+        return offset > 0;
     }
 
     /** 浅色模式下从深色卡片点开：深色头部还在状态栏下面时状态栏图标用浅色，滚过去以后换回深色。 */

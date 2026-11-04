@@ -49,7 +49,8 @@ import java.util.Map;
  * 视觉规范（雾面金属，见 docs/design.md）：整个 App 只有一种材质，按浓淡分三级——金属是门面（最值得看、专题卡片和标题栏、
  * 详情页头部、报告的要点，见 Flow）和选中的状态（标签、“新”“要闻”，静止的金属小块，见 metal）；雾是每一页的底（Flow.mist，
  * 同一页颜色的亮色版本）；磨砂是雾上面的行、标签栏、按钮（frost：半透明，带颗粒和一圈细倒角）。
- * 钴蓝是主色，表示新的、有变化的；酸橙只给“问一问”和发送；墨色给“要闻”和选中的标签。
+ * 钴蓝是主色，表示新的、有变化的；墨色给“要闻”和选中的标签；问一问和发送是这一页颜色的一小块金属（见 ask），
+ * 整页只有一个色相。
  * 话题有自己的颜色（zone），首页、专题、专题页、详情页是同一种颜色。颜色一律按用途取，深浅色各一套。
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
@@ -65,7 +66,7 @@ final class Theme {
 
     final boolean night;
     final int bg, sheet, hi, ink, sub, line, chip;
-    final int pri, onPri, pc, onPc, lime, onLime, inv, onInv, invPri, err, onErr;
+    final int pri, onPri, pc, onPc, inv, onInv, invPri, err, onErr;
     /** 磨砂：行和标签栏的底、按钮的底（更不透明一些，浮在内容上面也看得清）。 */
     final int frost, frostButton;
     private final float density;
@@ -85,8 +86,6 @@ final class Theme {
         onPri = night ? 0xFF0D1A86 : 0xFFFFFFFF;
         pc = night ? 0xFF283180 : 0xFFDCE0FF;
         onPc = night ? 0xFFDCE0FF : 0xFF0E1C8F;
-        lime = night ? 0xFFC4E65A : 0xFFD6F36B;
-        onLime = night ? 0xFF1C2A00 : 0xFF1F2E00;
         inv = night ? 0xFFE6E6EF : 0xFF2C2D36; // 底部工具栏、撤销条、更新提示
         onInv = night ? 0xFF22232B : 0xFFF1F1F6;
         invPri = night ? 0xFF3443F5 : 0xFFB9C0FF;
@@ -112,7 +111,7 @@ final class Theme {
 
     /**
      * 专题的颜色 {底色, 文字色, 形状色}，按专题的 key（兴趣名或榜单来源名）。用在专题页的卡片、专题标题栏和信息流里
-     * 没有封面的“最值得看”卡片上，列表行里不出现；避开了钴蓝（新）、酸橙（问一问）和红色（不需要）。没登记的专题用卡片色。
+     * 没有封面的“最值得看”卡片上，列表行里不出现；避开了钴蓝（新）和红色（不需要）。没登记的专题用卡片色。
      */
     int[] zone(String key) {
         switch (key) {
@@ -214,6 +213,27 @@ final class Theme {
         String topic = topicOf(e);
         int[] z = topic.isEmpty() ? null : zone(topic);
         return z == null || z[0] == sheet ? pri : z[2];
+    }
+
+    /**
+     * 问一问、发送这类主要入口的颜色 {底, 字}：这一页颜色的一小块静止金属。page 是这一页的配色（field 或 cover 的
+     * {上, 下, 文字, 点缀}）：浅色模式取上面的颜色和文字色里深的那个、白字；深色模式取点缀色的浅金属、深字，
+     * 和深色模式下选中的标签一样。
+     */
+    int[] ask(int[] page) {
+        if (night) return new int[]{mix(page[3], Color.WHITE, .12f), mix(page[0], Color.BLACK, .4f)};
+        return new int[]{Color.luminance(page[0]) < Color.luminance(page[2]) ? page[0] : page[2], Color.WHITE};
+    }
+
+    /** 不属于某件事的页面（首页、对话、记忆、模型页）用珍珠银，专题页用专题色，见 field。 */
+    int[] ask(String key) {
+        return ask(field(key));
+    }
+
+    /** 做成问一问的样子：ask 的金属底和字，按下同 press。 */
+    void askButton(TextView v, int[] ask, float radiusDp) {
+        v.setTextColor(ask[1]);
+        press(v, ask[0], radiusDp, true);
     }
 
     /** a 往 b 走 f（0 到 1）的颜色。 */
@@ -342,11 +362,21 @@ final class Theme {
         return d;
     }
 
+    /** 在 b 里画金属的颗粒和倒角（圆角 radiusPx），给自己画底的金属用（首页的标记，见 Wordmark）。 */
+    void metalFinish(Canvas c, Rect b, float radiusPx) {
+        metalFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
+    }
+
     /** 把 d 涂成以 base 为中间色的金属：亮—暗—次亮—更暗，从左上斜到右下，像斜着看一块拉丝金属。 */
     static void shine(GradientDrawable d, int base) {
+        shine(d, base, 1);
+    }
+
+    /** amount 是金属的程度：0 是平涂的 base，1 是 shine；平涂和金属之间变化时用（发送按钮从灰变成能按）。 */
+    static void shine(GradientDrawable d, int base, float amount) {
         d.setOrientation(GradientDrawable.Orientation.TL_BR);
-        d.setColors(new int[]{mix(base, Color.WHITE, .2f), mix(base, Color.BLACK, .22f), mix(base, Color.WHITE, .1f),
-                mix(base, Color.BLACK, .34f)}, new float[]{0, .4f, .58f, 1});
+        d.setColors(new int[]{mix(base, Color.WHITE, .2f * amount), mix(base, Color.BLACK, .22f * amount),
+                mix(base, Color.WHITE, .1f * amount), mix(base, Color.BLACK, .34f * amount)}, new float[]{0, .4f, .58f, 1});
     }
 
     /** 一个圆角背景此刻的四个角（像素）：分开给的直接用，统一给的（胶囊写成 99dp）收到高度的一半。 */
@@ -461,12 +491,18 @@ final class Theme {
 
     /**
      * 可以按的按钮：按下时圆角收到 12、整体略微缩小，松手弹回，比水波纹更直接地告诉你“按到了”。
-     * 磨砂色（frostButton）的是磨砂按钮；酸橙、主色、墨色这些实色的是静止的金属；别的颜色照旧平涂。
+     * 磨砂色（frostButton）的是磨砂按钮；主色、墨色这些实色的是静止的金属；别的颜色照旧平涂。
      */
     void press(View v, int color, float radiusDp) {
+        press(v, color, radiusDp, color == pri || color == inv);
+    }
+
+    /** metal 为 true 时是以 color 为中间色的静止金属（问一问，见 ask）。 */
+    void press(View v, int color, float radiusDp, boolean metal) {
         Spring.Shape shape = new Spring.Shape(color, dp(radiusDp), dp(R_S));
         if (color == frostButton || color == frost) shape.finish(frostFinish);
-        else if (color == lime || color == pri || color == inv) shape.finish(metalFinish).metal(color);
+        else shape.sheenFinish(metalFinish); // 金属的颗粒和倒角，平涂的按钮变成金属时（发送）一起显出来
+        if (metal) shape.metal(color);
         v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), shape, null));
         StateListAnimator scale = new StateListAnimator();
         scale.addState(new int[]{android.R.attr.state_pressed}, scaleTo(v, 0.95f));

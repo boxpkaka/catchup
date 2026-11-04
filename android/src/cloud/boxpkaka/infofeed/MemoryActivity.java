@@ -72,7 +72,7 @@ public class MemoryActivity extends Activity {
         mist.mist(t, Theme.PEARL, 7);
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new Elastic(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         body = new LinearLayout(this);
@@ -98,9 +98,9 @@ public class MemoryActivity extends Activity {
         t.press(add, t.inv, 99);
         add.setOnClickListener(v -> editor(null));
         actions.addView(add, new LinearLayout.LayoutParams(0, t.dp(60), 1));
-        TextView miss = t.text(this, "报告漏报", 15, t.onLime, 800);
+        TextView miss = t.text(this, "报告漏报", 15, 0, 800);
         miss.setGravity(Gravity.CENTER);
-        t.press(miss, t.lime, Theme.R_L);
+        t.askButton(miss, t.ask(Theme.PEARL), Theme.R_L);
         miss.setOnClickListener(v -> reportMiss());
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(120), t.dp(64));
         ml.leftMargin = t.dp(10);

@@ -24,7 +24,7 @@ import java.util.Random;
 
 /**
  * 记忆气泡：每条记忆一个气泡。越强越大（服务器给的 strength）；越近被你的行为印证越亮、越靠上，
- * 久没印证的变淡、往下沉；两天内被印证过的外面有一圈呼吸的光环，一天内新记下的右上角有个酸橙色的点。
+ * 久没印证的变淡、往下沉；两天内被印证过的外面有一圈呼吸的光环，一天内新记下的右上角有个钴蓝的点。
  * 打开时从底下依次浮上来，平时轻轻漂浮，删除时破掉。只有长期关注和正在做会淡忘，其余几类亮度不变。
  * 系统关掉动画时一律静止。
  */
@@ -91,9 +91,9 @@ final class MemoryBubbles extends View {
         b.phase = rnd.nextFloat() * TAU;
         b.period = 4200 + rnd.nextInt(2400);
         switch (kind) {
-            case "task": // 正在做：权重最高，用最跳的酸橙色
-                b.fill = t.lime;
-                b.ink = t.onLime;
+            case "task": // 正在做：权重最高，用墨色（和“要闻”一样）
+                b.fill = t.inv;
+                b.ink = t.onInv;
                 break;
             case "interest":
                 b.fill = t.pri;
@@ -260,7 +260,7 @@ final class MemoryBubbles extends View {
             }
             if (b.fresh24h && b.pop < 0f) {
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(withAlpha(b.fill == t.lime ? t.pri : t.lime, eased));
+                paint.setColor(withAlpha(b.fill == t.pri ? t.inv : t.pri, eased));
                 c.drawCircle(cx + r * 0.7f, cy - r * 0.7f, t.dp(5), paint);
             }
             text.setColor(withAlpha(b.ink, Math.min(1f, alpha * 1.4f)));

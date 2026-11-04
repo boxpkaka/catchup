@@ -53,7 +53,7 @@ final class TopicsView extends FrameLayout {
         body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(t.dp(12), 0, t.dp(12), 0);
-        scroll = new ScrollView(a);
+        scroll = new Elastic(a);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setPadding(0, 0, 0, t.dp(96));
@@ -187,6 +187,7 @@ final class TopicsView extends FrameLayout {
         name.setLineSpacing(t.dp(2), 1f);
         name.setPadding(0, t.dp(10), 0, t.dp(6));
         tile.addView(name);
+        frame.setTag(new Card.Parts(name)); // 点开时卡片长成专题页的标题栏，标题飞过去（见 Card.Hero）
         if (topic || paper) {
             JSONArray latest = x.optJSONArray("latest");
             for (int i = 0; latest != null && i < Math.min(latest.length(), wide ? 2 : 1); i++) {
