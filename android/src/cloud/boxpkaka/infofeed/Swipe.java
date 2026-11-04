@@ -354,7 +354,7 @@ final class Swipe extends FrameLayout {
             target = to;
             float w = width(), last = Math.max(0, host.count() - 1);
             // 没有橡皮筋的（嵌在外层里的）弹到头不越界，免得露出空白
-            motion = Spring.PAGE.fling(position * w, to * w, velocity,
+            motion = Motion.now().page.fling(position * w, to * w, velocity,
                     x -> move(rubbery() ? x / w : Math.max(0, Math.min(last, x / w))), () -> land(to));
         }
 
@@ -566,7 +566,7 @@ final class Swipe extends FrameLayout {
 
         private void slide(float from, float to, float velocity, Runnable end) {
             if (motion != null) motion.cancel();
-            motion = Spring.PAGE.fling(from, to, velocity, y -> {
+            motion = Motion.now().page.fling(from, to, velocity, y -> {
                 box.setTranslationY(Math.max(0, y));
                 dim(1 - Math.max(0, y) / Math.max(1, box.getHeight()));
             }, end);

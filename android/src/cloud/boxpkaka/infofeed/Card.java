@@ -138,9 +138,12 @@ final class Card implements Nav {
         open(from, card, weak(card), i, request);
     }
 
-    /** anchor：关的时候怎么重新找到这张卡片；request 不小于 0 时用 startActivityForResult。 */
+    /**
+     * anchor：关的时候怎么重新找到这张卡片；request 不小于 0 时用 startActivityForResult。
+     * 当前风格不原地展开（Motion.expand）时不交接卡片，新页面由 Nav.of 改用从右边推进来。
+     */
     static void open(Activity from, View card, Anchor anchor, Intent i, int request) {
-        Shot s = capture(card);
+        Shot s = Motion.now().expand ? capture(card) : null;
         if (s != null && i.getComponent() != null) {
             Handoff h = new Handoff();
             try {
@@ -252,7 +255,7 @@ final class Card implements Nav {
                 whenShown(() -> {
                     if (leaving) return;
                     hide(source);
-                    grow = Spring.CARD.fling(0, FULL, 0, x -> {
+                    grow = Motion.now().card.fling(0, FULL, 0, x -> {
                         q = x / FULL;
                         place();
                     }, Card.this::settled);
@@ -315,7 +318,7 @@ final class Card implements Nav {
             close(vx, a::onBackPressed);
             return;
         }
-        shrink = Spring.PAGE.fling(d * FULL, 0, vx / width() * FULL, x -> {
+        shrink = Motion.now().page.fling(d * FULL, 0, vx / width() * FULL, x -> {
             d = Math.max(0, x / FULL);
             place();
         }, this::settled);
@@ -354,7 +357,7 @@ final class Card implements Nav {
                 faceText.setImageBitmap(f.text);
                 faceText.setLayoutParams(new FrameLayout.LayoutParams(Math.round(f.rect.width()), Math.round(f.rect.height())));
                 hide(source);
-                grow = Spring.CARD.fling(q * FULL, 0, -velocity / width() * FULL, x -> {
+                grow = Motion.now().card.fling(q * FULL, 0, -velocity / width() * FULL, x -> {
                     q = x / FULL;
                     place();
                 }, () -> {
@@ -377,7 +380,7 @@ final class Card implements Nav {
             source = null;
         }
         moving();
-        grow = Spring.CARD.fling(q * FULL, 0, -velocity / width() * FULL, x -> {
+        grow = Motion.now().card.fling(q * FULL, 0, -velocity / width() * FULL, x -> {
             q = x / FULL;
             place();
         }, () -> {

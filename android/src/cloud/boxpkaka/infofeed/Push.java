@@ -171,7 +171,7 @@ final class Push implements Nav {
 
     private void settle(float to, float velocity, Runnable end) {
         if (motion != null) motion.cancel();
-        motion = Spring.PAGE.fling(page.getTranslationX(), to, velocity, this::place, end);
+        motion = Motion.now().page.fling(page.getTranslationX(), to, velocity, this::place, end);
     }
 
     /** 停稳在原位：窗口底色换回页面底色；下面那页整个被盖住，它的流动停下（手指按着时先不停）。 */

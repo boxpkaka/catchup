@@ -8,22 +8,11 @@ import android.animation.ValueAnimator;
 import android.graphics.drawable.GradientDrawable;
 
 /**
- * 弹簧插值：用刚度和阻尼比算出一条曲线，时长取停稳（离终点不到 0.3%）的时间。
- * 位置和形状用会轻微回弹的弹簧，颜色和透明度用不回弹的 FX。系统关闭动画时 ValueAnimator 直接跳到终点。
+ * 弹簧插值：用刚度和阻尼比算出一条曲线，时长取停稳（离终点不到 0.3%）的时间。按用途的几条弹簧由风格给（见 Motion）。
+ * 系统关闭动画时 ValueAnimator 直接跳到终点。
  * 跟手的东西松手时用 fling：从当前位置带着手指的速度弹过去，不会先停一下再走。
  */
 final class Spring implements TimeInterpolator {
-    /** 按压、开关、勾选。 */
-    static final Spring FAST = new Spring(1400, 0.6);
-    /** 卡片飞出、撤销条升起。 */
-    static final Spring STD = new Spring(700, 0.75);
-    /** 颜色、透明度。 */
-    static final Spring FX = new Spring(900, 1);
-    /** 翻页、推入推出、松手归位：接着手指的速度走，几乎不回弹。 */
-    static final Spring PAGE = new Spring(380, 0.95);
-    /** 卡片展开、收拢，面板弹出：比翻页软一点，到位时有一丝回弹。 */
-    static final Spring CARD = new Spring(260, 0.84);
-
     interface Step {
         void at(float x);
     }
@@ -31,7 +20,7 @@ final class Spring implements TimeInterpolator {
     final long duration;
     private final double w0, z, wd, end;
 
-    private Spring(double stiffness, double damping) {
+    Spring(double stiffness, double damping) {
         w0 = Math.sqrt(stiffness);
         z = damping;
         wd = w0 * Math.sqrt(Math.max(1e-6, 1 - z * z));
@@ -183,8 +172,9 @@ final class Spring implements TimeInterpolator {
             float fromSheen = sheen;
             ArgbEvaluator argb = new ArgbEvaluator();
             tint = ValueAnimator.ofFloat(0, 1);
-            tint.setDuration(FX.duration);
-            tint.setInterpolator(FX);
+            Spring fx = Motion.now().fx;
+            tint.setDuration(fx.duration);
+            tint.setInterpolator(fx);
             tint.addUpdateListener(a -> {
                 float f = (float) a.getAnimatedValue();
                 int c = (int) argb.evaluate(f, fromColor, toColor);
@@ -206,8 +196,9 @@ final class Spring implements TimeInterpolator {
         private void animateRadius(float to) {
             if (shape != null) shape.cancel();
             shape = ValueAnimator.ofFloat(visible(getCornerRadius()), visible(to));
-            shape.setDuration(FAST.duration);
-            shape.setInterpolator(FAST);
+            Spring fast = Motion.now().fast;
+            shape.setDuration(fast.duration);
+            shape.setInterpolator(fast);
             shape.addUpdateListener(a -> setCornerRadius(Math.max(0, (float) a.getAnimatedValue())));
             shape.start();
         }

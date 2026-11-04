@@ -75,7 +75,7 @@ final class FeedList {
         this.t = t;
         this.list = list;
         this.host = host;
-        ui = new FeedRows(a, t);
+        ui = Style.current().feedRows(a, t);
         list.setAdapter(adapter);
     }
 

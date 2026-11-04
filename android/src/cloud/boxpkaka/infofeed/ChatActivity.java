@@ -81,7 +81,7 @@ public class ChatActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        t = new Theme(this);
+        t = Theme.of(this);
         t.applyWindow(this);
         eventId = getIntent().getLongExtra(EXTRA_EVENT, -1);
         topic = getIntent().getStringExtra(EventActivity.EXTRA_ART);
@@ -513,7 +513,7 @@ public class ChatActivity extends Activity {
         card.setAlpha(0f); // 等正文最后几个字浮现出来，再从下面轻轻升上来
         card.setTranslationY(t.dp(12));
         card.animate().alpha(1f).translationY(0).setStartDelay(160)
-                .setInterpolator(Spring.FX).setDuration(Spring.FX.duration).start();
+                .setInterpolator(Motion.now().fx).setDuration(Motion.now().fx.duration).start();
     }
 
     /** 回答末尾来源列表的起点，没有返回 -1。每行都得是来源格式，免得把回答自己写的“来源”小标题当成列表。 */
@@ -581,7 +581,7 @@ public class ChatActivity extends Activity {
             if (open) for (String[] s : items) card.addView(sourceRow(s)); // 每次新建：收起时的行还在淡出，不能再加回来
             else card.removeViews(1, card.getChildCount() - 1);
             t.segments(card);
-            arrow.animate().rotation(open ? -90 : 90).setInterpolator(Spring.FAST).setDuration(Spring.FAST.duration)
+            arrow.animate().rotation(open ? -90 : 90).setInterpolator(Motion.now().fast).setDuration(Motion.now().fast.duration)
                     .start();
         });
         t.segments(card);
@@ -679,8 +679,8 @@ public class ChatActivity extends Activity {
         }
         status.setTag(true); // 已经在收起
         ValueAnimator fold = ValueAnimator.ofFloat(1f, 0f);
-        fold.setDuration(Spring.FX.duration);
-        fold.setInterpolator(Spring.FX);
+        fold.setDuration(Motion.now().fx.duration);
+        fold.setInterpolator(Motion.now().fx);
         fold.addUpdateListener(a -> {
             float f = (float) a.getAnimatedValue();
             status.setAlpha(f * f);

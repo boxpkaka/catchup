@@ -130,7 +130,7 @@ final class Undo {
         undoBar.setTranslationY(t.dp(160));
         undoBar.setAlpha(1f);
         undoBar.setVisibility(View.VISIBLE);
-        undoBar.animate().translationY(0).setInterpolator(Spring.STD).setDuration(Spring.STD.duration).start();
+        undoBar.animate().translationY(0).setInterpolator(Motion.now().std).setDuration(Motion.now().std.duration).start();
         undoCountdown.countdown(UNDO_MS);
         main.removeCallbacks(commitDismiss);
         main.postDelayed(commitDismiss, UNDO_MS);
@@ -277,7 +277,7 @@ final class Undo {
     private void hideUndo() {
         if (undoBar.getVisibility() != View.VISIBLE) return;
         undoCountdown.stop();
-        undoBar.animate().translationY(t.dp(24)).alpha(0f).setInterpolator(Spring.FX).setDuration(Spring.FX.duration)
+        undoBar.animate().translationY(t.dp(24)).alpha(0f).setInterpolator(Motion.now().fx).setDuration(Motion.now().fx.duration)
                 .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
     }
 

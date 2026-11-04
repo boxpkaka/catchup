@@ -45,6 +45,15 @@ final class Store {
     }
 
     /** 上次离开首页的时间；比它晚出现的事件算“新的”。0 表示从没看过。 */
+    /** 选的界面风格（Style 的 key），没选过是空串。 */
+    static String style(Context c) {
+        return prefs(c).getString("style", "");
+    }
+
+    static void setStyle(Context c, String key) {
+        prefs(c).edit().putString("style", key).apply();
+    }
+
     static long seenAt(Context c) {
         return prefs(c).getLong("seenAt", 0);
     }
