@@ -3,7 +3,6 @@ package cloud.boxpkaka.infofeed;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
@@ -180,34 +179,21 @@ final class Sheets {
         want.setOnClickListener(v -> {
             want.setEnabled(false);
             want.setText("记下中…");
-            Context app = a.getApplicationContext();
-            new Thread(() -> {
-                JSONObject r = null;
-                try {
-                    r = Api.post(app, "/v1/events/" + id + "/feedback",
-                            new JSONObject().put("value", "useful").put("reason", "topic"));
-                } catch (Exception err) {
-                    Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
+            Feedback.want(a, id, got -> {
+                if (got == null) {
+                    want.setEnabled(true);
+                    want.setText("想看这类");
+                    toast("没有记下，请重试");
+                    return;
                 }
-                JSONObject got = r;
-                a.runOnUiThread(() -> {
-                    if (a.isDestroyed()) return;
-                    if (got == null) {
-                        want.setEnabled(true);
-                        want.setText("想看这类");
-                        toast("没有记下，请重试");
-                        return;
-                    }
-                    done(want, "✓ 已记下");
-                    JSONObject memory = got.optJSONObject("memory");
-                    JSONArray added = memory == null ? null : memory.optJSONArray("added");
-                    if (added != null && added.length() > 0) {
-                        meta.setText("记住了：" + added.optJSONObject(0).optString("text"));
-                        meta.setTextColor(t.ink);
-                    }
-                    host.reload();
-                });
-            }, "want").start();
+                done(want, "✓ 已记下");
+                String said = Feedback.remembered(got);
+                if (said != null) {
+                    meta.setText(said);
+                    meta.setTextColor(t.ink);
+                }
+                host.reload();
+            });
             Trace.log(a, "ui.want", "id=" + id);
         });
         return row;
@@ -253,28 +239,16 @@ final class Sheets {
         restore.setOnClickListener(v -> {
             restore.setEnabled(false);
             restore.setText("恢复中");
-            Context app = a.getApplicationContext();
-            new Thread(() -> {
-                boolean ok = true;
-                try {
-                    Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", JSONObject.NULL));
-                } catch (Exception err) {
-                    ok = false;
-                    Trace.log(app, "feedback.fail", "id=" + id + " restore " + err);
+            Feedback.clear(a, id, got -> {
+                if (got == null) {
+                    restore.setEnabled(true);
+                    restore.setText("恢复");
+                    toast("恢复失败，请重试");
+                    return;
                 }
-                boolean done = ok;
-                a.runOnUiThread(() -> {
-                    if (a.isDestroyed()) return;
-                    if (!done) {
-                        restore.setEnabled(true);
-                        restore.setText("恢复");
-                        toast("恢复失败，请重试");
-                        return;
-                    }
-                    done(restore, "✓ 已恢复");
-                    host.restored(id);
-                });
-            }, "restore").start();
+                done(restore, "✓ 已恢复");
+                host.restored(id);
+            });
             Trace.log(a, "ui.restore", "id=" + id);
         });
         return row;

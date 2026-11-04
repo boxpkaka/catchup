@@ -901,36 +901,12 @@ public class EventActivity extends Activity {
         updateActions();
         useful.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
         Trace.log(this, "ui.feedback", "id=" + id + " value=" + value);
-        android.content.Context app = getApplicationContext();
-        long eventId = id;
-        new Thread(() -> {
-            JSONObject r = null;
-            try {
-                r = Api.post(app, "/v1/events/" + eventId + "/feedback", new JSONObject()
-                        .put("value", value == null ? JSONObject.NULL : value)
-                        .put("reason", value == null ? JSONObject.NULL : "topic"));
-            } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + eventId + " " + err);
-            }
-            JSONObject got = r;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (got == null) toast("没有记下，请重试");
-                else if (value != null) toast(wantNote(got));
-            });
-        }, "want").start();
-    }
-
-    /** “想多看”之后的提示：记下或加强了哪条记忆，说成“以后多帮你留意「…」”；都没有时说这类内容。 */
-    static String wantNote(JSONObject r) {
-        JSONObject m = r.optJSONObject("memory");
-        for (String key : new String[]{"added", "updated", "related"}) {
-            JSONArray items = m == null ? null : m.optJSONArray(key);
-            if (items != null && items.length() > 0) {
-                return "好的，以后多帮你留意「" + MemoryBubbles.label(items.optJSONObject(0).optString("text")) + "」";
-            }
-        }
-        return "好的，以后多帮你留意这类内容";
+        Feedback.Done done = got -> {
+            if (got == null) toast("没有记下，请重试");
+            else if (value != null) toast(Feedback.wantNote(got));
+        };
+        if (value == null) Feedback.clear(this, id, done);
+        else Feedback.want(this, id, done);
     }
 
     private void notNeeded() {
@@ -938,18 +914,14 @@ public class EventActivity extends Activity {
             // 从首页打开的：交回首页移除，首页会给出撤销
             setResult(RESULT_OK, new Intent().putExtra(EXTRA_DISMISSED, id));
         } else {
-            send("not_needed");
+            Feedback.notNeeded(this, id, null, null, null);
+            Trace.log(this, "ui.feedback", "id=" + id + " value=not_needed");
             toast("已标记为不需要，可在菜单“不需要的内容”里恢复");
         }
         finish();
     }
 
-    private void send(String value) {
-        post("/feedback", "value", value == null ? JSONObject.NULL : value);
-        Trace.log(this, "ui.feedback", "id=" + id + " value=" + value);
-    }
-
-    /** 后台把这件事上的一个动作（反馈、看原文）报给服务器，失败只记日志。 */
+    /** 后台把这件事上的一个动作（看原文）报给服务器，失败只记日志。 */
     private void post(String action, String key, Object value) {
         android.content.Context app = getApplicationContext();
         long eventId = id;
