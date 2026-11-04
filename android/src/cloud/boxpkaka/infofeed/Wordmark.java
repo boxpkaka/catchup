@@ -13,7 +13,7 @@ import android.view.View;
 
 /**
  * 首页左上角的字标：左边是和桌面图标同一个标记（钴蓝雾面金属的底、珍珠收笔的 c，静止，预先渲染好的
- * logo_mark.png），带金属的颗粒、倒角和一点投影；右边是 Great Vibes 的 catchup（矢量 wordmark.xml），墨色。
+ * logo_mark.png），带金属的倒角和一点投影；右边是 Great Vibes 的 catchup（矢量 wordmark.xml），墨色。
  * 尺寸照设计原型：标记 26dp、圆角 8dp，隔 6dp 接字，字号 37dp，基线比标记的中线低 6.5dp。
  */
 final class Wordmark extends View {

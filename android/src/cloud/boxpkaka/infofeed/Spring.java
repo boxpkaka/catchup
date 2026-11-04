@@ -115,7 +115,7 @@ final class Spring implements TimeInterpolator {
             setCornerRadius(radiusPx);
         }
 
-        /** 磨砂或金属的质感（颗粒和倒角），见 Theme.Finish。 */
+        /** 磨砂或金属的质感（倒角），见 Theme.Finish。 */
         Shape finish(Theme.Finish f) {
             finish = f;
             return this;

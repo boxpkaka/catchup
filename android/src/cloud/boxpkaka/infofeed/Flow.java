@@ -3,16 +3,14 @@ package cloud.boxpkaka.infofeed;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
-import android.content.res.Resources;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.BitmapShader;
 import android.graphics.BlendMode;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
-import android.graphics.ComposeShader;
+import android.graphics.ColorSpace;
 import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
@@ -28,17 +26,21 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.SystemClock;
+import android.util.Half;
 import android.util.LruCache;
 import android.view.View;
 
+import java.nio.ShortBuffer;
 import java.util.Arrays;
 
 /**
- * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，再加雾面颗粒。
- * 一张图（模糊过的封面，或者按话题生成的抽象封面，都是 192×108，见 art）画三遍，各自绕不同的中心慢慢转、缩放、漂移
- * （来回往复，缓入缓出）；每个点按亮度过一条“金属曲线”：在这张图自己的亮度范围里，66% 那一档起一道窄的亮脊，32% 那一档
- * 压暗一点，颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。图的四周按边上的颜色往外延（CLAMP），转到什么角度
- * 都不露直边。再盖遮罩和颗粒。
+ * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，表面是干净的，不加颗粒。
+ * 一张图（模糊过的封面，或者按话题生成的抽象封面，都是 192×108、16 位浮点，见 art）画三遍，各自绕不同的中心慢慢转、缩放、
+ * 漂移（来回往复，缓入缓出，24～42 秒一个来回）；每个点按亮度过一条“金属曲线”：在这张图自己的亮度范围里，66% 那一档起一道
+ * 窄的亮脊，32% 那一档压暗一点，颜色流动时亮脊沿着等高线滑动、变形，像流动的金属，色相不变。图的四周按边上的颜色往外延
+ * （CLAMP），转到什么角度都不露直边。再盖遮罩。
+ * 小图放大 8 倍左右，金属曲线又在亮脊附近把明暗差放大三四倍，所以底图用 16 位浮点（8 位的一档台阶会被放大成一圈色带），
+ * GPU 上按三次 B 样条取样（双线性在每个像素格的边上会折一下，放大后看得出），最后加 ±0.5 档的抖动消掉剩下的色带，看不出来。
  * 安卓 13 起整个在 GPU 上按屏幕像素逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程；
  * 老系统在 4dp 一格的小位图上算（compute），亮度用小数、和上一帧平滑，放大画上去；新系统上软件画布（卡片展开前拍的截图）
  * 也走这一路，算法相同，颜色接得上。
@@ -48,15 +50,18 @@ import java.util.Arrays;
  * - 详情页头部（bleed）：比头部长出一截，往下淌成一团雾。深的一层在标题下面化开，浅的一层（同一张图的亮色版本）淌进正文；
  *   雾的边由“淌到多深”的起伏和一张流动的噪声决定，一团团、一缕缕，没有固定的轮廓；
  * - 页面的雾（mist）：每一页最底下，同一页颜色的亮色版本盖一层白（深色模式压暗），流得是卡片的三分之一快。
- * 颗粒见 Grain。动画按全局时钟加每件事的错开量算，同一件事的卡片和详情页走在同一个位置，展开时接得上；系统关了动画时静止。
+ * 动画按全局时钟加每件事的错开量算，同一件事的卡片和详情页走在同一个位置，展开时接得上；系统关了动画时静止。
  * 圆角靠 clipPath 而不是轮廓裁剪，Card 用 View.draw 截图时也是圆角。
  */
 final class Flow extends View {
-    /** 三层：时长（秒）、透明度、转动中心（占这一层的比例）、缩放起止、转角、平移（占这一层的比例）。 */
+    /**
+     * 三层：时长（秒）、透明度、转动中心（占这一层的比例）、缩放起止、转角、平移（占这一层的比例）。柔和、缓慢：一个来回
+     * 24～42 秒，幅度不大，亮脊是慢慢滑过去的，不是飞过去的；幅度也不能太小，否则会长时间停在图的一角，颜色轮换不起来。
+     */
     private static final float[][] LAYERS = {
-            {8, 1f, .5f, .5f, 1f, 1.32f, 150, .14f, -.10f},
-            {11, .72f, .24f, .32f, 1.14f, 1.4f, -190, -.16f, .12f},
-            {14, .6f, .76f, .68f, 1.26f, 1.02f, 220, .15f, .14f},
+            {24, 1f, .5f, .5f, 1f, 1.22f, 105, .1f, -.07f},
+            {33, .72f, .24f, .32f, 1.14f, 1.32f, -133, -.11f, .085f},
+            {42, .6f, .76f, .68f, 1.24f, 1.06f, 154, .105f, .1f},
     };
     private static final int CARD = 0, HEAD = 1, MIST = 2;
     private static final float CELL_DP = 4, MIST_CELL_DP = 8; // 小位图一格多少 dp：页面的雾很软，格子大一倍
@@ -76,7 +81,6 @@ final class Flow extends View {
     private final Path clip = new Path();
     private final float density;
     private final boolean night;
-    private final Grain grain;
     private int mode = CARD;
     private boolean dark, dirty = true;
     private int accent;
@@ -104,87 +108,8 @@ final class Flow extends View {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
         dstIn.setBlendMode(BlendMode.DST_IN);
-        grain = new Grain(c);
         rim.setStyle(Paint.Style.STROKE);
         rim.setStrokeWidth(2 * density); // 一半在形状外面被裁掉，露出 1dp
-    }
-
-    /**
-     * 雾面颗粒：一张 512×512、可以无缝平铺的胶片颗粒（res/drawable-nodpi/grain.png，见 tools/grain.py），颗粒边缘是柔的，
-     * 一格就是一个屏幕像素，原样取样，不放大、不插值，所以既不会是一格一格的方块，也不发虚。拆成亮粒（带透明度的白）和暗粒（带透明度的黑）两张，
-     * 普通叠加，不用 OVERLAY 这种各家 GPU 表现不一、还要回读底色的混合模式；两张的强度按底色的亮度配比（set），
-     * 效果接近 OVERLAY：深底上主要是暗粒在压、亮粒轻一些，浅底上反过来，颗粒都是随着底色起伏，而不是一层白点或黑点。
-     */
-    static final class Grain {
-        private static BitmapShader lightShader, darkShader, grayShader; // gray：GPU 上直接读灰度（128 是不变）
-        private final Paint light = new Paint(Paint.FILTER_BITMAP_FLAG), dark = new Paint(Paint.FILTER_BITMAP_FLAG);
-        private Grain lower; // fade：下面一段，按自己的底色配比
-        private float fadeFrom = Float.NaN, fadeTo;
-
-        Grain(Context c) {
-            if (lightShader == null) load(c.getResources());
-            light.setShader(lightShader);
-            dark.setShader(darkShader);
-        }
-
-        private static void load(Resources r) {
-            BitmapFactory.Options o = new BitmapFactory.Options();
-            o.inScaled = false;
-            Bitmap g = BitmapFactory.decodeResource(r, R.drawable.grain, o);
-            int w = g.getWidth(), h = g.getHeight();
-            int[] p = new int[w * h], up = new int[w * h], down = new int[w * h];
-            g.getPixels(p, 0, w, 0, 0, w, h);
-            for (int i = 0; i < p.length; i++) {
-                int v = (p[i] & 0xFF) - 128; // 128 是不变，往上是亮粒、往下是暗粒
-                up[i] = Math.min(255, Math.max(0, v) * 2) << 24 | 0xFFFFFF;
-                down[i] = Math.min(255, Math.max(0, -v) * 2) << 24;
-            }
-            lightShader = shader(Bitmap.createBitmap(up, w, h, Bitmap.Config.ARGB_8888));
-            darkShader = shader(Bitmap.createBitmap(down, w, h, Bitmap.Config.ARGB_8888));
-            grayShader = shader(g);
-        }
-
-        private static BitmapShader shader(Bitmap b) {
-            return new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-        }
-
-        /** 亮粒、暗粒各自的强度（0 到 1）：strength 是颗粒有多重，base 是底色大致的亮度（0 到 1）。 */
-        static float[] weights(float strength, float base) {
-            float b = Math.max(.05f, Math.min(.95f, base));
-            return new float[]{strength * (b < .5f ? b / (1 - b) : 1), strength * (b < .5f ? 1 : (1 - b) / b)};
-        }
-
-        Grain set(float strength, float base) {
-            float[] w = weights(strength, base);
-            light.setAlpha(Math.round(255 * w[0]));
-            dark.setAlpha(Math.round(255 * w[1]));
-            return this;
-        }
-
-        void draw(Canvas c, float l, float t, float r, float b) {
-            c.drawRect(l, t, r, b, light);
-            c.drawRect(l, t, r, b, dark);
-        }
-
-        /**
-         * 上下两段底色不一样（详情页头部：上面是标题底下的深色，往下是雾）：从 y0 到 y1 渐渐从上面的配比换成下面的配比，
-         * 不出接缝。top、bottom 是两段底色的亮度。
-         */
-        void drawFade(Canvas c, Context ctx, float w, float h, float y0, float y1, float strength, float top, float bottom) {
-            if (lower == null) lower = new Grain(ctx);
-            if (y0 != fadeFrom || y1 != fadeTo) {
-                fadeFrom = y0;
-                fadeTo = y1;
-                LinearGradient upper = new LinearGradient(0, y0, 0, y1, 0xFF000000, 0, Shader.TileMode.CLAMP);
-                LinearGradient below = new LinearGradient(0, y0, 0, y1, 0, 0xFF000000, Shader.TileMode.CLAMP);
-                light.setShader(new ComposeShader(upper, lightShader, BlendMode.SRC_IN));
-                dark.setShader(new ComposeShader(upper, darkShader, BlendMode.SRC_IN));
-                lower.light.setShader(new ComposeShader(below, lightShader, BlendMode.SRC_IN));
-                lower.dark.setShader(new ComposeShader(below, darkShader, BlendMode.SRC_IN));
-            }
-            set(strength, top).draw(c, 0, 0, w, h);
-            lower.set(strength, bottom).draw(c, 0, 0, w, h);
-        }
     }
 
     /** 做过的模糊小图，没做过返回 null。 */
@@ -193,8 +118,8 @@ final class Flow extends View {
     }
 
     /**
-     * 封面缩成 192×108、横竖各模糊三遍（半径 12，三遍盒子模糊接近高斯）的图；同一张只做一次。图比要铺的地方小，
-     * 但已经很模糊了，放大不会有棱角。
+     * 封面缩成 192×108、横竖各模糊三遍（半径 12，三遍盒子模糊接近高斯）的图；同一张只做一次。模糊按小数算、存成 16 位浮点，
+     * 不取整（见类注释）。图比要铺的地方小，但已经很模糊了，放大不会有棱角。
      */
     static Bitmap blurred(String key, Bitmap cover) {
         Bitmap b = BLURRED.get(key);
@@ -202,40 +127,68 @@ final class Flow extends View {
         int w = 192, h = 108;
         int[] px = new int[w * h];
         Bitmap.createScaledBitmap(cover, w, h, true).getPixels(px, 0, w, 0, 0, w, h);
-        int[] tmp = new int[w * h];
-        for (int pass = 0; pass < 3; pass++) {
-            box(px, tmp, w, h, 12, true);
-            box(tmp, px, w, h, 12, false);
+        float[] a = new float[w * h * 3], tmp = new float[w * h * 3];
+        for (int i = 0; i < w * h; i++) {
+            a[i * 3] = ((px[i] >> 16) & 0xFF) / 255f;
+            a[i * 3 + 1] = ((px[i] >> 8) & 0xFF) / 255f;
+            a[i * 3 + 2] = (px[i] & 0xFF) / 255f;
         }
-        b = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+        for (int pass = 0; pass < 3; pass++) {
+            box(a, tmp, w, h, 12, true);
+            box(tmp, a, w, h, 12, false);
+        }
+        b = f16(a, w, h);
         BLURRED.put(key, b);
         return b;
     }
 
-    /** 盒子模糊一遍（横或竖）：滑动窗口累加，边上按最边上的颜色往外延。 */
-    private static void box(int[] in, int[] out, int w, int h, int r, boolean horizontal) {
-        int lines = horizontal ? h : w, len = horizontal ? w : h, n = 2 * r + 1;
+    /** 盒子模糊一遍（横或竖）：滑动窗口累加，边上按最边上的颜色往外延。in、out 是每点三个小数（RGB）。 */
+    private static void box(float[] in, float[] out, int w, int h, int r, boolean horizontal) {
+        int lines = horizontal ? h : w, len = horizontal ? w : h;
+        float n = 2 * r + 1;
         for (int line = 0; line < lines; line++) {
-            int rs = 0, gs = 0, bs = 0;
+            float rs = 0, gs = 0, bs = 0;
             for (int k = -r; k <= r; k++) {
-                int c = in[at(line, Math.max(0, Math.min(len - 1, k)), w, horizontal)];
-                rs += (c >> 16) & 0xFF;
-                gs += (c >> 8) & 0xFF;
-                bs += c & 0xFF;
+                int c = at(line, Math.max(0, Math.min(len - 1, k)), w, horizontal);
+                rs += in[c];
+                gs += in[c + 1];
+                bs += in[c + 2];
             }
             for (int i = 0; i < len; i++) {
-                out[at(line, i, w, horizontal)] = 0xFF000000 | (rs / n) << 16 | (gs / n) << 8 | (bs / n);
-                int add = in[at(line, Math.min(len - 1, i + r + 1), w, horizontal)];
-                int drop = in[at(line, Math.max(0, i - r), w, horizontal)];
-                rs += ((add >> 16) & 0xFF) - ((drop >> 16) & 0xFF);
-                gs += ((add >> 8) & 0xFF) - ((drop >> 8) & 0xFF);
-                bs += (add & 0xFF) - (drop & 0xFF);
+                int o = at(line, i, w, horizontal);
+                out[o] = rs / n;
+                out[o + 1] = gs / n;
+                out[o + 2] = bs / n;
+                int add = at(line, Math.min(len - 1, i + r + 1), w, horizontal), drop = at(line, Math.max(0, i - r), w, horizontal);
+                rs += in[add] - in[drop];
+                gs += in[add + 1] - in[drop + 1];
+                bs += in[add + 2] - in[drop + 2];
             }
         }
     }
 
     private static int at(int line, int i, int w, boolean horizontal) {
-        return horizontal ? line * w + i : i * w + line;
+        return (horizontal ? line * w + i : i * w + line) * 3;
+    }
+
+    /** 一张空的 16 位浮点图（sRGB，不透明的颜色照常画上去）。 */
+    private static Bitmap f16(int w, int h) {
+        return Bitmap.createBitmap(w, h, Bitmap.Config.RGBA_F16, true, ColorSpace.get(ColorSpace.Named.EXTENDED_SRGB));
+    }
+
+    /** 把每点三个小数（RGB，0 到 1）存成 16 位浮点图。 */
+    private static Bitmap f16(float[] rgb, int w, int h) {
+        Bitmap b = f16(w, h);
+        short[] half = new short[w * h * 4];
+        short one = Half.toHalf(1f);
+        for (int i = 0; i < w * h; i++) {
+            half[i * 4] = Half.toHalf(rgb[i * 3]);
+            half[i * 4 + 1] = Half.toHalf(rgb[i * 3 + 1]);
+            half[i * 4 + 2] = Half.toHalf(rgb[i * 3 + 2]);
+            half[i * 4 + 3] = one;
+        }
+        b.copyPixelsFromBuffer(ShortBuffer.wrap(half));
+        return b;
     }
 
     /** 浅色模式的浅雾用的封面：提亮、加饱和、去灰，冲淡了也是干净的同色，不发灰。 */
@@ -249,7 +202,7 @@ final class Flow extends View {
         cm.postConcat(bright);
         float c = 0.8f, o = (1 - c) * 127.5f;
         cm.postConcat(new ColorMatrix(new float[]{c, 0, 0, 0, o, 0, c, 0, 0, o, 0, 0, c, 0, o, 0, 0, 0, 1, 0}));
-        b = Bitmap.createBitmap(blurred.getWidth(), blurred.getHeight(), Bitmap.Config.ARGB_8888);
+        b = f16(blurred.getWidth(), blurred.getHeight());
         Paint p = new Paint();
         p.setColorFilter(new ColorMatrixColorFilter(cm));
         new Canvas(b).drawBitmap(blurred, 0, 0, p);
@@ -259,6 +212,7 @@ final class Flow extends View {
 
     /**
      * 没有封面时的“抽象封面”：192×108 的图（都是很柔的渐变，放大也没有棱角；再大的话在主线程上生成太慢），话题色系的六种颜色（见 Theme.artColors）铺成七团径向渐变，位置按 seed 定。
+     * 画在 16 位浮点的图上：渐变不取整，也没有 8 位画布上的抖动花纹（放大以后是一格一格的）。
      * 同一件事（seed 是事件 id）的卡片和详情页、同一个专题（seed 是 seedOf）的卡片和专题页是同一张。pastel 是只有亮色的那张。
      */
     static Bitmap art(Theme t, String key, long seed, boolean pastel) {
@@ -266,13 +220,13 @@ final class Flow extends View {
         Bitmap b = ARTS.get(k);
         if (b != null) return b;
         int w = 192, h = 108;
-        b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        b = f16(w, h);
         Canvas c = new Canvas(b);
         int[] cols = t.artColors(key, pastel);
         c.drawColor(cols[0]);
         float[] r = seq(seed, 24);
         float[][] blobs = {{1, .42f}, {2, .36f}, {3, .36f}, {4, .24f}, {5, .22f}, {1, .2f}, {2, .18f}};
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         for (int i = 0; i < blobs.length; i++) {
             int col = cols[(int) blobs[i][0]] & 0xFFFFFF;
             float x = r[i * 3] * w, y = r[i * 3 + 1] * h, rad = (blobs[i][1] + r[i * 3 + 2] * .14f) * w;
@@ -329,7 +283,8 @@ final class Flow extends View {
         mode = card ? CARD : HEAD;
         offset = id % 23 * 1000;
         deep = light = null;
-        fallback = Bitmap.createBitmap(new int[]{top, bottom}, 1, 2, Bitmap.Config.ARGB_8888);
+        fallback = f16(1, 2);
+        fallback.setPixels(new int[]{top, bottom}, 0, 1, 0, 0, 1, 2);
         refresh(false);
     }
 
@@ -434,21 +389,15 @@ final class Flow extends View {
         }
         float cell = cell() * density;
         dst.set(0, 0, Math.round(sw * cell), Math.round(sh * cell));
-        if (mode == HEAD) { // 颗粒先叠在不透明的颜色上（随着底色起伏），再整个按雾的浓淡淡出
+        if (mode == HEAD) { // 不透明的颜色按雾的浓淡淡出
             int layer = canvas.saveLayer(0, 0, w, h, null);
             canvas.drawBitmap(out, null, dst, image);
-            float foot = h - tail; // 头部的底边：上面是标题底下的颜色，往下是雾（浅色模式是同色的浅色，深色模式还是深的）
-            grain.drawFade(canvas, getContext(), w, h, foot - 40 * density, foot + 140 * density, .15f,
-                    dark ? .3f : .85f, night ? .25f : .82f);
             canvas.drawBitmap(mask, null, dst, dstIn);
             canvas.restoreToCount(layer);
         } else {
             canvas.drawBitmap(out, null, dst, image);
             veil.setColor(mode == MIST ? (night ? 0xBD101117 : 0x99FFFFFF) : dark ? 0x6B08080C : 0x94FFFFFF);
             canvas.drawRect(0, 0, w, h, veil);
-            if (mode == MIST) grain.set(night ? .16f : .13f, night ? .1f : .92f);
-            else grain.set(.15f, dark ? .32f : .86f);
-            grain.draw(canvas, 0, 0, w, h);
             if (radii != null) drawRim(canvas, w, h);
         }
         canvas.restoreToCount(save);
@@ -464,7 +413,7 @@ final class Flow extends View {
         if (src == null) return;
         if (shade == null || shade.deep != src || shade.light != src2) {
             before = shade != null && fadeFrom > 0 ? shade : null;
-            shade = new Gpu(getContext(), src, src2);
+            shade = new Gpu(src, src2);
         }
         if (in >= 1) before = null;
         int save = canvas.save();
@@ -487,7 +436,7 @@ final class Flow extends View {
         canvas.restoreToCount(save);
     }
 
-    /** 这一帧的参数：三层各自从屏幕像素到图上像素的变换、两张图的金属曲线、遮罩、颗粒，详情页头部再加雾。 */
+    /** 这一帧的参数：三层各自从屏幕像素到图上像素的变换、两张图的金属曲线、遮罩，详情页头部再加雾。 */
     private void uniforms(Gpu g, int w, int h, long t, float ts) {
         RuntimeShader s = g.shader;
         int bh = mode == HEAD ? Math.min(h, Math.round(w * .72f)) : h; // 详情页头部按卡片的比例摆，见 flow
@@ -512,10 +461,7 @@ final class Flow extends View {
         s.setFloatUniform("look", a.lo, a.span, a.cap, 0);
         s.setFloatUniform("look2", b.lo, b.span, b.cap, 0);
         if (mode == HEAD) {
-            float foot = h - tail; // 颗粒：标题底下按深色配比，往下渐渐换成雾的配比，见 Grain.drawFade
-            float[] up = Grain.weights(.15f, dark ? .3f : .85f), down = Grain.weights(.15f, night ? .25f : .82f);
-            s.setFloatUniform("grainW", up[0], up[1], down[0], down[1]);
-            s.setFloatUniform("grainY", foot - 40 * density, foot + 140 * density);
+            float foot = h - tail; // 头部的底边：上面是标题底下的颜色，往下是雾
             s.setFloatUniform("head", 1);
             s.setFloatUniform("fogA", density, foot / density, w, ts);
             s.setFloatUniform("fogB", side, k, r0, r1);
@@ -525,9 +471,6 @@ final class Flow extends View {
         } else {
             int c = mode == MIST ? (night ? 0xBD101117 : 0x99FFFFFF) : dark ? 0x6B08080C : 0x94FFFFFF;
             s.setFloatUniform("veil", Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f, Color.alpha(c) / 255f);
-            float[] gw = mode == MIST ? Grain.weights(night ? .16f : .13f, night ? .1f : .92f) : Grain.weights(.15f, dark ? .32f : .86f);
-            s.setFloatUniform("grainW", gw[0], gw[1], gw[0], gw[1]);
-            s.setFloatUniform("grainY", 0, 1);
             s.setFloatUniform("head", 0);
             s.setFloatUniform("fogA", density, 0, w, 0);
             s.setFloatUniform("fogB", 0, 0, 0, 0);
@@ -538,21 +481,19 @@ final class Flow extends View {
     }
 
     /**
-     * GPU 上的一套：一个 RuntimeShader（见 SKSL）和它读的两张图（深的一层、详情页往下淌的浅雾，其余用法两张是同一张）
-     * 和颗粒。图按线性插值取样、四周往外延。
+     * GPU 上的一套：一个 RuntimeShader（见 SKSL）和它读的两张图（深的一层、详情页往下淌的浅雾，其余用法两张是同一张）。
+     * 图按线性插值取样、四周往外延，着色器里拼成三次 B 样条。
      */
     private static final class Gpu {
         final Bitmap deep, light;
         final RuntimeShader shader = new RuntimeShader(SKSL);
         final Paint paint = new Paint();
 
-        Gpu(Context c, Bitmap deep, Bitmap light) {
+        Gpu(Bitmap deep, Bitmap light) {
             this.deep = deep;
             this.light = light;
-            if (Grain.grayShader == null) Grain.load(c.getResources());
             shader.setInputShader("src", linear(deep));
             shader.setInputShader("src2", linear(light));
-            shader.setInputShader("grain", Grain.grayShader);
         }
 
         private static BitmapShader linear(Bitmap b) {
@@ -566,14 +507,11 @@ final class Flow extends View {
     private static final String SKSL = String.join("\n",
             "uniform shader src;",
             "uniform shader src2;",
-            "uniform shader grain;",
             "uniform float3 ax0; uniform float3 ay0; uniform float3 ax1; uniform float3 ay1; uniform float3 ax2; uniform float3 ay2;",
             "uniform float2 scale2;",
             "uniform float4 look;",
             "uniform float4 look2;",
             "uniform float4 veil;",
-            "uniform float4 grainW;",
-            "uniform float2 grainY;",
             "uniform float head;",
             "uniform float4 fogA;",
             "uniform float4 fogB;",
@@ -593,15 +531,35 @@ final class Flow extends View {
             "  return v;",
             "}",
             "float2 at(float3 ax, float3 ay, float2 p) { float3 q = float3(p, 1.0); return float2(dot(ax, q), dot(ay, q)); }",
+            // 三次 B 样条取样：四次双线性取样拼成（GPU Gems 2 第 20 章），c 是图上的像素坐标
+            "float2 bw0(float2 f) { return (1.0 - f) * (1.0 - f) * (1.0 - f) / 6.0; }",
+            "float2 bw1(float2 f) { return (4.0 - 6.0 * f * f + 3.0 * f * f * f) / 6.0; }",
+            "float2 bw3(float2 f) { return f * f * f / 6.0; }",
+            "void bspline(float2 c, out float2 h0, out float2 h1, out float2 s0, out float2 s1) {",
+            "  float2 x = c - 0.5; float2 i = floor(x); float2 f = x - i;",
+            "  float2 w0 = bw0(f); float2 w1 = bw1(f); float2 w3 = bw3(f);",
+            "  s0 = w0 + w1; s1 = 1.0 - s0;",
+            "  h0 = i - 0.5 + w1 / s0; h1 = i + 1.5 + w3 / s1;",
+            "}",
+            "float3 cubic(float2 c) {",
+            "  float2 h0; float2 h1; float2 s0; float2 s1; bspline(c, h0, h1, s0, s1);",
+            "  return s0.y * (s0.x * src.eval(h0).rgb + s1.x * src.eval(float2(h1.x, h0.y)).rgb)",
+            "       + s1.y * (s0.x * src.eval(float2(h0.x, h1.y)).rgb + s1.x * src.eval(h1).rgb);",
+            "}",
+            "float3 cubic2(float2 c) {",
+            "  float2 h0; float2 h1; float2 s0; float2 s1; bspline(c, h0, h1, s0, s1);",
+            "  return s0.y * (s0.x * src2.eval(h0).rgb + s1.x * src2.eval(float2(h1.x, h0.y)).rgb)",
+            "       + s1.y * (s0.x * src2.eval(float2(h0.x, h1.y)).rgb + s1.x * src2.eval(h1).rgb);",
+            "}",
             "float3 flowDeep(float2 p) {",
-            "  float3 c = src.eval(at(ax0, ay0, p)).rgb;",
-            "  c = mix(c, src.eval(at(ax1, ay1, p)).rgb, 0.72);",
-            "  return mix(c, src.eval(at(ax2, ay2, p)).rgb, 0.6);",
+            "  float3 c = cubic(at(ax0, ay0, p));",
+            "  c = mix(c, cubic(at(ax1, ay1, p)), 0.72);",
+            "  return mix(c, cubic(at(ax2, ay2, p)), 0.6);",
             "}",
             "float3 flowLight(float2 p) {",
-            "  float3 c = src2.eval(at(ax0, ay0, p) * scale2).rgb;",
-            "  c = mix(c, src2.eval(at(ax1, ay1, p) * scale2).rgb, 0.72);",
-            "  return mix(c, src2.eval(at(ax2, ay2, p) * scale2).rgb, 0.6);",
+            "  float3 c = cubic2(at(ax0, ay0, p) * scale2);",
+            "  c = mix(c, cubic2(at(ax1, ay1, p) * scale2), 0.72);",
+            "  return mix(c, cubic2(at(ax2, ay2, p) * scale2), 0.6);",
             "}",
             "float hash(float2 p) {",
             "  float3 q = fract(float3(p.x, p.y, p.x) * 0.1031);",
@@ -618,16 +576,12 @@ final class Flow extends View {
             "       + 0.3 * vnoise(p * float2(2.1, 2.3) + float2(17.0 - t * 0.05, t * 0.03))",
             "       + 0.15 * vnoise(p * float2(4.3, 4.1) + float2(41.0 + t * 0.07, -t * 0.04));",
             "}",
-            "float3 grainOn(float3 c, float2 p) {",
-            "  float n = (grain.eval(p).r * 255.0 - 128.0) / 127.0;",
-            "  float f = clamp((p.y - grainY.x) / max(1.0, grainY.y - grainY.x), 0.0, 1.0);",
-            "  float2 w = mix(grainW.xy, grainW.zw, f);",
-            "  return n > 0.0 ? c + (float3(1.0) - c) * (n * w.x) : c * (1.0 + n * w.y);",
-            "}",
+            // ±0.5 档的抖动（interleaved gradient noise）：消掉 8 位屏幕上剩下的色带，看不出来
+            "float dither(float2 p) { return (fract(52.9829189 * fract(dot(floor(p), float2(0.06711056, 0.00583715)))) - 0.5) / 255.0; }",
             "half4 main(float2 p) {",
             "  if (head < 0.5) {",
             "    float3 c = mix(metal(flowDeep(p), look), veil.rgb, veil.a);",
-            "    return half4(half3(grainOn(c, p)), 1.0);",
+            "    return half4(half3(c + dither(p)), 1.0);",
             "  }",
             "  float density = fogA.x; float footDp = fogA.y; float width = fogA.z; float t = fogA.w;",
             "  float2 q = p / density;",
@@ -659,8 +613,7 @@ final class Flow extends View {
             "  float3 m = metal(flowLight(p), look2) * (1.0 - ma) + mv * ma;",
             "  float a = ad + am * (1.0 - ad);",
             "  float3 c = a > 0.001 ? (d * ad + m * am * (1.0 - ad)) / a : m;",
-            "  c = grainOn(c, p);",
-            "  return half4(half3(c * a), half(a));",
+            "  return half4(half3((c + dither(p)) * a), half(a));",
             "}");
 
     /** 卡片边上一圈金属倒角：上沿一道细亮线，下沿一道细暗线。 */
