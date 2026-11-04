@@ -36,7 +36,8 @@ import java.util.regex.Pattern;
 /**
  * 对话回复用的 Markdown：标题、列表（可以嵌套，含任务列表）、引用、代码块、表格、分隔线，行内的粗体、斜体、粗斜体、删除线、
  * `代码`、[链接](url) 和网址。整段回答是一个 TextView 里的文字（逐字浮现见 Reveal），代码块和表格的底、引用的竖线、
- * 分隔线用段落 span 画。来源引用 [1] 显示为主色容器里的小方块数字，事件引用 [E12] 可点击打开那件事。
+ * 分隔线用段落 span 画。来源引用 [1] 显示为点缀色淡底上的小方块数字（和详情页的来源编号一样），事件引用 [E12] 可点击打开
+ * 那件事；代码块和表格的底是磨砂。
  */
 final class Markdown {
     interface OnEvent {
@@ -317,10 +318,11 @@ final class Markdown {
             box.set(x + t.dp(2), mid - h / 2, x + t.dp(2) + w, mid + h / 2);
             int color = p.getColor(), a = Math.round(alpha * 255);
             Typeface face = p.getTypeface();
-            p.setColor(t.pc);
-            p.setAlpha(a);
+            int tint = (t.pri & 0x00FFFFFF) | (t.night ? 0x38000000 : 0x1F000000);
+            p.setColor(tint);
+            p.setAlpha(Math.round(Color.alpha(tint) * alpha));
             c.drawRoundRect(box, t.dp(6), t.dp(6), p);
-            p.setColor(t.onPc);
+            p.setColor(t.pri);
             p.setAlpha(a);
             p.setTextSize(size * 0.7f);
             p.setTypeface(Typeface.create(Typeface.DEFAULT, 800, false));
@@ -395,8 +397,8 @@ final class Markdown {
             int color = p.getColor();
             Paint.Style style = p.getStyle();
             p.setStyle(Paint.Style.FILL);
-            p.setColor(t.sheet);
-            p.setAlpha(Math.round(Color.alpha(t.sheet) * alpha));
+            p.setColor(t.frost);
+            p.setAlpha(Math.round(Color.alpha(t.frost) * alpha));
             float r = t.dp(Theme.R_S);
             for (int i = 0; i < 8; i++) radii[i] = (i < 4 ? first : last) ? r : 0;
             box.set(left - bleed, top, right + bleed, last ? baseline + below : bottom);

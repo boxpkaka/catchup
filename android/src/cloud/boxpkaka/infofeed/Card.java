@@ -222,7 +222,10 @@ final class Card implements Nav {
         return s;
     }
 
-    /** 从卡片展开：第一帧画之前就摆成卡片的样子，等第一帧要画时开始长。 */
+    /**
+     * 从卡片展开：第一帧画之前就摆成卡片的样子；这一页真的显示出来以后（见 whenShown）才把列表里的卡片藏起来、开始长。
+     * 第一帧画好到窗口显示出来还要一两帧，早藏的话列表先画出缺了这张卡片的一帧，闪一下。
+     */
     @Override
     public void enter() {
         if (Build.VERSION.SDK_INT >= 34) {
@@ -240,11 +243,14 @@ final class Card implements Nav {
                 page.getViewTreeObserver().removeOnPreDrawListener(this);
                 if (leaving) return true;
                 place(); // 有了真实大小再摆一次
-                hide(source);
-                grow = Spring.CARD.fling(0, FULL, 0, x -> {
-                    q = x / FULL;
-                    place();
-                }, Card.this::settled);
+                whenShown(() -> {
+                    if (leaving) return;
+                    hide(source);
+                    grow = Spring.CARD.fling(0, FULL, 0, x -> {
+                        q = x / FULL;
+                        place();
+                    }, Card.this::settled);
+                });
                 return true;
             }
         });
@@ -330,7 +336,7 @@ final class Card implements Nav {
                 }, () -> {
                     show(source);
                     gone = true;
-                    then.run();
+                    landed(source, then);
                 });
                 return;
             }
@@ -353,7 +359,7 @@ final class Card implements Nav {
         }, () -> {
             show(source);
             gone = true;
-            then.run();
+            landed(source, then);
         });
     }
 
@@ -457,7 +463,51 @@ final class Card implements Nav {
     /** 一个动画停了：展开和弹回都停了、手也没按着，才算停在整页。 */
     private void settled() {
         boolean busy = grow != null && grow.isRunning() || shrink != null && shrink.isRunning();
-        if (!busy && !dragging && !leaving) rest();
+        if (!busy && !dragging && !leaving && grow != null) rest(); // grow 还没开始（等窗口显示出来）不算停
+    }
+
+    /**
+     * 这一页的窗口真的显示出来以后再跑 r：拿到焦点时（安卓 12 起焦点要等窗口显示出来才给），最多等 150ms。
+     */
+    private void whenShown(Runnable r) {
+        ViewTreeObserver vto = page.getViewTreeObserver();
+        boolean[] done = {false};
+        ViewTreeObserver.OnWindowFocusChangeListener[] l = new ViewTreeObserver.OnWindowFocusChangeListener[1];
+        Runnable once = () -> {
+            if (done[0]) return;
+            done[0] = true;
+            if (vto.isAlive()) vto.removeOnWindowFocusChangeListener(l[0]);
+            r.run();
+        };
+        if (page.hasWindowFocus()) {
+            once.run();
+            return;
+        }
+        l[0] = has -> {
+            if (has) once.run();
+        };
+        vto.addOnWindowFocusChangeListener(l[0]);
+        page.postDelayed(once, 150);
+    }
+
+    /**
+     * 收回到了：卡片已经放回来（show），等它所在的窗口把这一帧交出去、再过一帧才关这一页。马上关的话，这一页的窗口可能
+     * 先没了、列表里的卡片还没画上，中间闪一下。最多等 100ms。
+     */
+    private void landed(View v, Runnable then) {
+        if (v == null || !v.isAttachedToWindow()) {
+            then.run();
+            return;
+        }
+        boolean[] done = {false};
+        Runnable once = () -> {
+            if (done[0]) return;
+            done[0] = true;
+            then.run();
+        };
+        v.getViewTreeObserver().registerFrameCommitCallback(() -> v.postOnAnimation(once));
+        v.invalidate();
+        v.postDelayed(once, 100);
     }
 
     /** 停在整页：拿掉容器和截图，不再裁剪，窗口底色换回页面底色。 */
@@ -548,10 +598,12 @@ final class Card implements Nav {
         int cw = Math.max(1, Math.round(lerp(from.width(), to.width(), q)));
         int ch = Math.max(1, Math.round(lerp(from.height(), to.height(), q)));
         ViewGroup.LayoutParams lp = stage.getLayoutParams();
-        if (lp.width != cw || lp.height != ch) {
+        if (lp.width != cw || lp.height != ch) { // 不 setLayoutParams：每帧整个窗口重新排版太费，只量好、摆好这一块
             lp.width = cw;
             lp.height = ch;
-            stage.setLayoutParams(lp);
+            stage.measure(View.MeasureSpec.makeMeasureSpec(cw, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(ch, View.MeasureSpec.EXACTLY));
+            stage.layout(0, 0, cw, ch);
         }
         stage.setTranslationX(l);
         stage.setTranslationY(t);
@@ -695,11 +747,17 @@ final class Card implements Nav {
         hider = new WeakReference<>(this);
     }
 
-    /** 收完了，藏着的卡片放回来；收回途中又点开了同一张、它已经被新的页面藏起来了，就留给那一页。 */
+    /**
+     * 收完了，藏着的卡片放回来；收回途中又点开了同一张、它已经被新的页面藏起来了，就留给那一页。点开时的水波纹在藏着的
+     * 时候可能没播完，先直接放到终点，放回来时不会再闪一下。
+     */
     private void show(View v) {
         boolean mine = hider != null && hider.get() == this;
         boolean taken = !mine && hidden != null && hidden.get() == v;
-        if (v != null && !taken) v.setAlpha(1f);
+        if (v != null && !taken) {
+            v.jumpDrawablesToCurrentState();
+            v.setAlpha(1f);
+        }
         if (mine) {
             hidden = null;
             hider = null;

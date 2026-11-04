@@ -101,6 +101,10 @@ public class ChatActivity extends Activity {
         super.onBackPressed();
     }
 
+    /**
+     * 和详情页、记忆页一样：没有标题栏，标题是页面内容的开头，返回按钮浮在左上角；输入框和发送按钮浮在底部，下面垫一层渐隐，
+     * 内容从按钮下面滚过去。整页的底是珍珠银的雾，读的地方是磨砂，发送和你问的话是这一页颜色（珍珠银）的金属。
+     */
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
@@ -108,62 +112,55 @@ public class ChatActivity extends Activity {
         mist.mist(t, Theme.PEARL, 7);
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        LinearLayout column = new LinearLayout(this);
-        column.setOrientation(LinearLayout.VERTICAL);
-        root.addView(column, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-
-        // 标题栏：延伸到状态栏下面，中性的底色，不按话题上色
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(t.dp(12), t.dp(12), t.dp(16), t.dp(14));
-        top.setBackground(t.frost(t.frostButton, 0, 0, Theme.R_XL, Theme.R_XL));
-        top.addView(t.backButton(this), new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
-        LinearLayout titles = new LinearLayout(this);
-        titles.setOrientation(LinearLayout.VERTICAL);
-        titles.setPadding(t.dp(12), 0, 0, 0);
-        String title = getIntent().getStringExtra(EXTRA_TITLE);
-        TextView h = t.text(this, eventId > 0 && title != null ? title : "问 Catchup", 16, t.ink, 800);
-        h.setSingleLine();
-        h.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        titles.addView(h);
-        TextView sub = t.text(this, eventId > 0 ? "基于原文和网页搜索回答" : "基于你的事件库和网页搜索回答", 12, t.ink, 400);
-        sub.setAlpha(0.78f);
-        sub.setPadding(0, t.dp(3), 0, 0);
-        titles.addView(sub);
-        top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        column.addView(top);
 
         scroll = new Elastic(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         messages = new LinearLayout(this);
         messages.setOrientation(LinearLayout.VERTICAL);
-        messages.setPadding(t.dp(20), t.dp(8), t.dp(20), t.dp(16));
+        messages.setPadding(t.dp(20), t.dp(72), t.dp(20), t.dp(120));
         messages.setClipChildren(false); // 回答里代码块、表格的卡片底左右伸出正文，见 Markdown.Block
         scroll.addView(messages);
+        root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        messages.addView(head());
+
+        // 按钮下面垫一层半透明的渐隐（和详情页一样），不用阴影：顶上的等内容滚上去才出现
+        int haze = t.night ? 0xB31D1E26 : 0xA6FFFFFF;
+        View topFade = t.fade(this, false, haze);
+        topFade.setAlpha(0f);
+        FrameLayout.LayoutParams tfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(80));
+        root.addView(topFade, tfl);
+        View bottomFade = t.fade(this, true, haze);
+        FrameLayout.LayoutParams bfl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(124),
+                Gravity.BOTTOM);
+        root.addView(bottomFade, bfl);
         scroll.setOnTouchListener((v, ev) -> {
             int a = ev.getActionMasked();
             touching = a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE;
             return false;
         });
         scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+            topFade.setAlpha(Math.max(0f, Math.min(1f, y / (float) t.dp(32))));
             if (touching && y < oldY) follow = false;
             else if (y + scroll.getHeight() >= messages.getHeight() - t.dp(24)) follow = true;
         });
-        column.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // 输入框和发送按钮分开：空着时发送是灰色圆形，有字时变成这一页颜色（珍珠银）的金属圆角方块
+        TextView back = t.backButton(this);
+        FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(t.dp(48), t.dp(48));
+        bl.setMargins(t.dp(12), t.dp(10), 0, 0);
+        root.addView(back, bl);
+
+        // 输入框和发送按钮分开：输入框是磨砂；空着时发送是磨砂的圆，有字时变成这一页颜色（珍珠银）的金属圆角方块
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.BOTTOM);
         bar.setBaselineAligned(false); // 按底边对齐：按文字基线对齐时发送按钮会被顶出内边距，上沿被裁掉一条
-        bar.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(12));
         input = new EditText(this);
         input.setHint(eventId > 0 ? "问问这件事…" : "想知道什么？");
         input.setHintTextColor(t.sub);
         input.setTextColor(t.ink);
         input.setTextSize(15);
-        input.setBackground(t.round(t.sheet, Theme.R_XL));
+        input.setBackground(t.frost(t.frostButton, Theme.R_XL, Theme.R_XL, Theme.R_XL, Theme.R_XL));
         input.setMaxLines(5);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -189,24 +186,62 @@ public class ChatActivity extends Activity {
         send.setGravity(Gravity.CENTER);
         send.setContentDescription("发送");
         send.setOnClickListener(v -> sendMessage(input.getText().toString()));
-        t.press(send, t.hi, 99);
+        t.press(send, t.frostButton, 99);
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(t.dp(52), t.dp(52));
         sl.leftMargin = t.dp(8);
         bar.addView(send, sl);
         styleSend();
-        column.addView(bar);
+        FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+        cl.setMargins(t.dp(12), 0, t.dp(12), t.dp(12));
+        root.addView(bar, cl);
+        // 最后一条留出浮着的输入框的高度（输入框会随字数变高）
+        bar.addOnLayoutChangeListener((v, l, tp, r, b, ol, ot, or, ob) -> {
+            int pad = v.getHeight() + ((FrameLayout.LayoutParams) v.getLayoutParams()).bottomMargin + t.dp(20);
+            if (pad != messages.getPaddingBottom()) {
+                messages.setPadding(messages.getPaddingLeft(), messages.getPaddingTop(), messages.getPaddingRight(), pad);
+            }
+        });
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
                 Insets ime = insets.getInsets(WindowInsets.Type.ime());
-                top.setPadding(t.dp(12), bars.top + t.dp(12), t.dp(16), t.dp(14));
-                bar.setPadding(t.dp(12), t.dp(8), t.dp(12), Math.max(bars.bottom, ime.bottom) + t.dp(12));
+                int bottom = Math.max(bars.bottom, ime.bottom);
+                bl.topMargin = bars.top + t.dp(10);
+                back.setLayoutParams(bl);
+                tfl.height = bars.top + t.dp(64);
+                topFade.setLayoutParams(tfl);
+                messages.setPadding(t.dp(20), bars.top + t.dp(72), t.dp(20), messages.getPaddingBottom());
+                cl.bottomMargin = bottom + t.dp(12);
+                bar.setLayoutParams(cl);
+                bfl.height = bottom + t.dp(112);
+                bottomFade.setLayoutParams(bfl);
                 if (ime.bottom > 0) scrollToEnd();
                 return WindowInsets.CONSUMED;
             });
         }
         return root;
+    }
+
+    /** 页面内容的开头：问谁（在某件事下面问的写这件事的标题），以及基于什么回答。 */
+    private View head() {
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setPadding(t.dp(2), 0, t.dp(2), 0);
+        String title = getIntent().getStringExtra(EXTRA_TITLE);
+        boolean about = eventId > 0 && title != null;
+        head.addView(t.text(this, about ? "问这件事" : "问 Catchup", 13, t.sub, 800));
+        if (about) {
+            TextView h = t.text(this, title, 22, t.ink, 900);
+            h.setLineSpacing(t.dp(3), 1f);
+            h.setPadding(0, t.dp(8), 0, 0);
+            head.addView(h);
+        }
+        TextView sub = t.text(this, eventId > 0 ? "基于原文和网页搜索回答" : "基于你的事件库和网页搜索回答", 12.5f, t.sub, 500);
+        sub.setPadding(0, t.dp(about ? 8 : 4), 0, 0);
+        head.addView(sub);
+        return head;
     }
 
     // ---------- 历史与建议问题 ----------
@@ -245,7 +280,7 @@ public class ChatActivity extends Activity {
                 if (asked != null) { // 这个问题问过了：直接看上次的回答，不再重新生成
                     View target = asked;
                     follow = false;
-                    scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, target.getTop() - t.dp(12))));
+                    scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, target.getTop() - messages.getPaddingTop())));
                     return;
                 }
                 scrollToEnd();
@@ -264,7 +299,7 @@ public class ChatActivity extends Activity {
         suggestions.setOrientation(LinearLayout.VERTICAL);
         if (eventId <= 0) {
             TextView hello = t.text(this, "想知道什么？", 30, t.ink, 900);
-            hello.setPadding(t.dp(2), t.dp(56), 0, 0);
+            hello.setPadding(t.dp(2), t.dp(36), 0, 0);
             suggestions.addView(hello);
         }
         TextView label = t.text(this, eventId > 0 ? "可以这样问" : "试试问", 13, t.sub, 700);
@@ -276,11 +311,7 @@ public class ChatActivity extends Activity {
             TextView chip = t.text(this, q, 15, t.ink, 600);
             chip.setLineSpacing(t.dp(3), 1f);
             chip.setGravity(Gravity.CENTER_VERTICAL);
-            chip.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-            Drawable mark = new Shapes.Blob(Shapes.SOFT, t.pri);
-            mark.setBounds(0, 0, t.dp(22), t.dp(22));
-            chip.setCompoundDrawablesRelative(mark, null, null, null);
-            chip.setCompoundDrawablePadding(t.dp(12));
+            chip.setPadding(t.dp(18), t.dp(15), t.dp(18), t.dp(15));
             chip.setOnClickListener(v -> sendMessage(q));
             list.addView(chip);
         }
@@ -386,11 +417,16 @@ public class ChatActivity extends Activity {
 
     // ---------- 消息气泡 ----------
 
+    /** 你问的话：和发送按钮一样，是这一页颜色（珍珠银）的金属，右下角收小。 */
     private View addUser(String text) {
-        TextView v = t.text(this, text, 15, t.onPri, 500);
+        int[] ask = t.ask(Theme.PEARL);
+        TextView v = t.text(this, text, 15, ask[1], 500);
         v.setLineSpacing(t.dp(4), 1f);
         v.setPadding(t.dp(16), t.dp(11), t.dp(16), t.dp(11));
-        v.setBackground(t.round(t.pri, Theme.R_L, Theme.R_L, 6, Theme.R_L));
+        GradientDrawable bubble = t.metal(ask[0], Theme.R_L);
+        float r = t.dp(Theme.R_L), corner = t.dp(6);
+        bubble.setCornerRadii(new float[]{r, r, r, r, corner, corner, r, r});
+        v.setBackground(bubble);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.END;
@@ -534,11 +570,11 @@ public class ChatActivity extends Activity {
     private View sourceRow(String[] s) {
         LinearLayout row = new LinearLayout(this);
         row.setPadding(t.dp(14), t.dp(12), t.dp(16), t.dp(13));
-        TextView num = t.text(this, s[0], 11, t.onPc, 800);
+        TextView num = t.text(this, s[0], 11, t.pri, 800);
         num.setGravity(Gravity.CENTER);
         num.setMinWidth(t.dp(20));
         num.setPadding(t.dp(4), 0, t.dp(4), 0);
-        num.setBackground(t.round(t.pc, 6));
+        num.setBackground(t.round((t.pri & 0x00FFFFFF) | (t.night ? 0x38000000 : 0x1F000000), Theme.R_XS)); // 点缀色的淡底，和详情页一样
         LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, t.dp(18));
         nl.rightMargin = t.dp(12);
         row.addView(num, nl);
@@ -620,7 +656,7 @@ public class ChatActivity extends Activity {
         int[] ask = t.ask(Theme.PEARL); // 能发的时候和问一问一样，是这一页颜色的金属
         send.setTextColor(ready ? ask[1] : t.sub);
         ((Spring.Shape) ((android.graphics.drawable.RippleDrawable) send.getBackground()).getDrawable(0))
-                .morph(t.dp(ready ? 18 : 99), ready ? ask[0] : t.hi, ready);
+                .morph(t.dp(ready ? 18 : 99), ready ? ask[0] : t.frostButton, ready);
     }
 
     /** 这一轮的“记住了 / 会替你留意”放在同一个分段列表里。 */
@@ -651,8 +687,11 @@ public class ChatActivity extends Activity {
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(t.dp(14), t.dp(11), t.dp(8), t.dp(11));
             View dot = new View(this);
-            dot.setBackground(new Shapes.Blob(Shapes.SOFT, t.pri));
-            row.addView(dot, new LinearLayout.LayoutParams(t.dp(12), t.dp(12)));
+            GradientDrawable fill = new GradientDrawable(); // 实心圆点：记住了；空心圆环是还在等答案（见 addWatch）
+            fill.setShape(GradientDrawable.OVAL);
+            fill.setColor(t.pri);
+            dot.setBackground(fill);
+            row.addView(dot, new LinearLayout.LayoutParams(t.dp(11), t.dp(11)));
             TextView text = t.text(this, verb + "：" + m.optString("text"), 13, t.ink, 600);
             text.setLineSpacing(t.dp(2), 1f);
             text.setPadding(t.dp(10), 0, t.dp(8), 0);
