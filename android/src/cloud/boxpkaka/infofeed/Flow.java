@@ -1,7 +1,9 @@
 package cloud.boxpkaka.infofeed;
 
 import android.animation.ValueAnimator;
+import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapShader;
@@ -29,9 +31,14 @@ import android.os.SystemClock;
 import android.util.Half;
 import android.util.LruCache;
 import android.view.View;
+import android.view.ViewTreeObserver;
 
 import java.nio.ShortBuffer;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * 雾面金属（见 docs/design.md）：像 Apple Music 播放页那样流动的颜色，过一条“金属曲线”，表面是干净的，不加颗粒。
@@ -73,6 +80,8 @@ final class Flow extends View {
     private static final LruCache<Bitmap, Look[]> LOOKS = new LruCache<>(96);
     private static final boolean GPU = Build.VERSION.SDK_INT >= 33;
     private static final long START = SystemClock.uptimeMillis(); // GPU 上雾的噪声按进程启动以来的秒数算，数小，精度够
+    private static final Set<Activity> HELD = Collections.newSetFromMap(new WeakHashMap<>()); // 被上面一页整个盖住的页面，见 hold
+    private static final Set<Flow> PARKED = Collections.newSetFromMap(new WeakHashMap<>()); // 因此停下没再排下一帧的
 
     private final Paint image = new Paint(Paint.FILTER_BITMAP_FLAG), layer = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Paint veil = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -371,9 +380,7 @@ final class Flow extends View {
         if (GPU && canvas.isHardwareAccelerated()) { // 软件画布（Card 给卡片拍截图）不支持 RuntimeShader，那一帧走下面的小位图
             drawGpu(canvas, w, h, (long) ((moving ? now : 0) / slow) + offset, (moving ? now - START : 0) / 1000f + offset / 1000f,
                     fading ? (now - fadeFrom) / (float) FADE_MS : 1);
-            if ((moving || fading) && isShown() && getGlobalVisibleRect(visible)) {
-                postInvalidateDelayed(mode == MIST ? FRAME_MS : 16); // 最多六十帧，不跟着高刷屏跑满；页面的雾流得慢，三十帧够了
-            }
+            if (next(moving || fading)) postInvalidateDelayed(mode == MIST ? FRAME_MS : 16); // 最多六十帧，不跟着高刷屏跑满；页面的雾流得慢，三十帧够了
             return;
         }
         if (size(w, h) || dirty || (moving && now - computedAt >= frameMs)) {
@@ -405,7 +412,82 @@ final class Flow extends View {
             if (radii != null) drawRim(canvas, w, h);
         }
         canvas.restoreToCount(save);
-        if ((moving || fading) && isShown() && getGlobalVisibleRect(visible)) postInvalidateOnAnimation();
+        if (next(moving || fading)) postInvalidateOnAnimation();
+    }
+
+    /**
+     * 要不要排下一帧：还在动、看得见、这一页没被盖住。被盖住的记下来，露出来时一起叫醒（hold）；在屏幕外的（从右边推进来的
+     * 页面第一帧在屏幕外，滚出去的卡片）等窗口下次画的时候看一眼，回到屏幕上就接着流，不会一直停在那一帧。
+     */
+    private boolean next(boolean animating) {
+        if (!animating || !isShown()) return false;
+        if (!getGlobalVisibleRect(visible)) {
+            watch(true);
+            return false;
+        }
+        if (held()) {
+            PARKED.add(this);
+            return false;
+        }
+        return true;
+    }
+
+    private ViewTreeObserver watched;
+    private final ViewTreeObserver.OnPreDrawListener peek = () -> {
+        if (isShown() && getGlobalVisibleRect(visible)) {
+            watch(false);
+            invalidate();
+        }
+        return true;
+    };
+
+    private void watch(boolean on) {
+        if (on == (watched != null)) return;
+        if (on) {
+            watched = getViewTreeObserver();
+            watched.addOnPreDrawListener(peek);
+        } else {
+            if (watched.isAlive()) watched.removeOnPreDrawListener(peek);
+            watched = null;
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        watch(false);
+    }
+
+    /**
+     * page 被上面停稳的一页整个盖住了（on 为 true），或者马上要露出来（false）。盖住的时候这一页的流动画完手上这一帧就
+     * 不再排下一帧（看不见，白占显卡，也拖慢上面那页）；露出来之前叫醒，下一帧按统一的时钟画出此刻的样子，接得上，
+     * 不会从停下的地方跳过去。返回这一页之前是不是停着的（Card、Push 据此决定要不要晚一帧再动，先让它画好）。
+     */
+    static boolean hold(Activity page, boolean on) {
+        if (page == null) return false;
+        if (on) return !HELD.add(page);
+        if (!HELD.remove(page)) return false;
+        for (Iterator<Flow> it = PARKED.iterator(); it.hasNext(); ) {
+            Flow f = it.next();
+            if (activity(f.getContext()) == page) {
+                it.remove();
+                f.invalidate();
+            }
+        }
+        return true;
+    }
+
+    private boolean held() {
+        return !HELD.isEmpty() && HELD.contains(activity(getContext()));
+    }
+
+    /** 控件所在的页面。 */
+    static Activity activity(Context c) {
+        while (c instanceof ContextWrapper) {
+            if (c instanceof Activity) return (Activity) c;
+            c = ((ContextWrapper) c).getBaseContext();
+        }
+        return null;
     }
 
     /**

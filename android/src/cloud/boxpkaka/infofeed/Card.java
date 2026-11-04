@@ -117,6 +117,7 @@ final class Card implements Nav {
     private ValueAnimator grow, shrink; // grow 动 q（展开、收拢），shrink 动 d（右滑没过线时弹回）
     private float q, d, from; // q：0 是卡片，1 是整页；d：右滑缩小了多少，0 到 1
     private boolean dragging, leaving, gone, fade, attached;
+    private boolean resting, touching; // 停在整页、手指按着：停着又没按着时，下面那页的流动停下（见 cover）
     // 长成标题栏（见 Hero）：hero 为 null 时是普通的展开
     private Hero hero;
     private Face face;
@@ -215,6 +216,11 @@ final class Card implements Nav {
             public void release(float vx) {
                 Card.this.release(vx);
             }
+
+            @Override
+            public void touch(boolean down) {
+                Card.this.touch(down);
+            }
         });
         s.addView(page, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -263,8 +269,24 @@ final class Card implements Nav {
 
     /** 展开途中也可以接住：展开接着走，手指只管缩小。 */
     @Override
+    public void touch(boolean down) {
+        touching = down;
+        cover(!down && resting);
+    }
+
+    /**
+     * 下面那页（卡片所在的页面）被这一页整个盖住了没有：停在整页、手指没按着时是，它的流动停下（Flow.hold）；手指一按下、
+     * 开始右滑或者要收回，先叫醒它。收回的弹簧第一帧还在原地，下面那页这一帧就画好了此刻的样子，露出来时接得上。
+     */
+    private void cover(boolean on) {
+        Flow.hold(Push.Stack.below(a), on);
+    }
+
+    @Override
     public void grab() {
         if (leaving) return;
+        resting = false;
+        cover(false);
         if (shrink != null) shrink.cancel();
         dragging = true;
         moving();
@@ -316,6 +338,8 @@ final class Card implements Nav {
 
     /** 收回卡片：重新找它、拍一张，在屏幕上就收回去，不然原地缩小淡出。velocity 是松手时往右的速度。 */
     private void close(float velocity, Runnable then) {
+        resting = false;
+        cover(false);
         leaving = true;
         a.getWindow().addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE); // 手指落到下面的列表上（见 follow）
         if (grow != null) grow.cancel();
@@ -512,6 +536,8 @@ final class Card implements Nav {
 
     /** 停在整页：拿掉容器和截图，不再裁剪，窗口底色换回页面底色。 */
     private void rest() {
+        resting = true;
+        cover(!touching);
         q = 1;
         d = 0;
         place();
