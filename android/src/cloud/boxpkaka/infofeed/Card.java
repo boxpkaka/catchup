@@ -9,6 +9,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Outline;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -22,6 +23,7 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -33,7 +35,10 @@ import java.lang.ref.WeakReference;
  * 卡片的样子淡出、页面内容淡入（都按容器宽度等比缩放、贴着容器顶部，不会各自乱跑），下面的列表稍稍压暗。
  * 关的时候反过来收回到列表里那张卡片上：关之前重新找它、重新拍一张（列表刷新过、滚动过也能对上），找不到或者不在
  * 屏幕上就原地缩小淡出。右滑时整页跟着手指缩小、变圆角，松手过线就收回卡片，否则弹回。
- * 展开和收拢的时候那张卡片藏起来，看起来就是它自己飞出去、又飞回来。
+ * 展开和收拢的时候那张卡片藏起来，看起来就是它自己飞出去、又飞回来。卡片滚到了列表边上、一截藏在标签栏下面时，
+ * 从露出来的那部分开始长，藏着的那截跟着慢慢露出来，不会一下子盖到标签栏上；收回时也收回到露出来的那部分。
+ * 动画途中也不挡手指：展开和弹回的途中可以直接滚页面、点里面的东西、右滑返回；收回途中窗口不接手指，手指落到下面的
+ * 列表上，列表可以接着滚，卡片每帧重新找那张卡片、跟着它现在的位置收回去。
  * 打开的一方用 Card.open 把卡片交给新页面（同一进程，放在静态变量里），新页面用 Nav.of 接过来。
  *
  * 专题卡片换一种展开（Hero）：卡片不长成整页，而是长成专题页的标题栏。同一块流动的雾面金属从卡片的位置、大小、圆角
@@ -74,20 +79,21 @@ final class Card implements Nav {
     private static final float FULL = 1000; // 展开程度用千分比算弹簧，弹簧在差半个单位时停
     private static Handoff pending;
     private static WeakReference<View> hidden;
+    private static WeakReference<Card> hider; // 谁藏的（见 show）
 
-    /** 一张卡片此刻的样子：截图、在屏幕上的位置、圆角、底色。 */
+    /** 一张卡片此刻的样子：截图、在屏幕上的位置、圆角、底色，上下被外面裁掉的两截（见 cut）。 */
     private static final class Shot {
         Bitmap bitmap;
         RectF rect;
-        float radius;
+        float radius, top, bottom;
         int color;
     }
 
-    /** 长成标题栏的卡片此刻的样子：不带金属和标题的字（截图）、卡片和标题在屏幕上的位置、标题的字号（像素）、圆角。 */
+    /** 长成标题栏的卡片此刻的样子：不带金属和标题的字（截图）、卡片和标题在屏幕上的位置、标题的字号（像素）、圆角，上下被裁掉的两截。 */
     private static final class Face {
         Bitmap text;
         RectF rect;
-        float titleX, titleY, titleSize, radius;
+        float titleX, titleY, titleSize, radius, top, bottom;
     }
 
     private static final class Handoff {
@@ -105,12 +111,12 @@ final class Card implements Nav {
     private final Anchor anchor;
     private final ArgbEvaluator argb = new ArgbEvaluator();
     private final Clip pageClip = new Clip(), boxClip = new Clip(), shotClip = new Clip();
-    private View source, box, shield;
+    private View source, box;
     private ImageView image;
     private Shot shot;
     private ValueAnimator grow, shrink; // grow 动 q（展开、收拢），shrink 动 d（右滑没过线时弹回）
     private float q, d, from; // q：0 是卡片，1 是整页；d：右滑缩小了多少，0 到 1
-    private boolean dragging, leaving, gone, fade;
+    private boolean dragging, leaving, gone, fade, attached;
     // 长成标题栏（见 Hero）：hero 为 null 时是普通的展开
     private Hero hero;
     private Face face;
@@ -171,6 +177,7 @@ final class Card implements Nav {
         View v = hidden == null ? null : hidden.get();
         if (v != null) v.setAlpha(1f);
         hidden = null;
+        hider = null;
     }
 
     private Card(Activity a, View page, int bg, Handoff h) {
@@ -304,6 +311,7 @@ final class Card implements Nav {
     /** 收回卡片：重新找它、拍一张，在屏幕上就收回去，不然原地缩小淡出。velocity 是松手时往右的速度。 */
     private void close(float velocity, Runnable then) {
         leaving = true;
+        a.getWindow().addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE); // 手指落到下面的列表上（见 follow）
         if (grow != null) grow.cancel();
         if (shrink != null) shrink.cancel();
         restore(); // 原来藏起来的那个控件可能已经被列表拿去显示别的了
@@ -320,8 +328,7 @@ final class Card implements Nav {
                     q = x / FULL;
                     place();
                 }, () -> {
-                    source.setAlpha(1f);
-                    hidden = null;
+                    show(source);
                     gone = true;
                     then.run();
                 });
@@ -344,31 +351,24 @@ final class Card implements Nav {
             q = x / FULL;
             place();
         }, () -> {
-            if (source != null) source.setAlpha(1f);
-            hidden = null;
+            show(source);
             gone = true;
             then.run();
         });
     }
 
     /**
-     * 容器放到页面下面、截图放到上面，最上面一层透明的挡板在动的时候挡住点按（免得点到缩放中的内容）。
+     * 容器放到页面下面、截图放到上面。动的时候不挡手指：缩放中的页面按它画出来的样子接点按和滚动。
      * 都不设 elevation：Z 一样才按加入顺序画，不然容器会盖在页面上面。
      */
     private void attach() {
+        attached = true;
         ViewGroup parent = (ViewGroup) page.getParent();
         if (hero != null) {
             attachHero(parent);
         } else {
             attachShot(parent);
         }
-        if (shield != null) parent.removeView(shield); // 从长成标题栏换回普通的：挡板要在最上面
-        else {
-            shield = new View(a);
-            shield.setClickable(true);
-        }
-        parent.addView(shield, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
         page.setPivotX(0);
         page.setPivotY(0);
         page.setOutlineProvider(pageClip);
@@ -439,9 +439,9 @@ final class Card implements Nav {
         attach();
     }
 
-    /** 要动了：容器、截图（或长成标题栏的几层）和挡板出来，页面按轮廓裁剪。 */
+    /** 要动了：容器、截图（或长成标题栏的几层）出来，页面按轮廓裁剪。 */
     private void moving() {
-        if (shield == null) attach();
+        if (!attached) attach();
         if (hero == null) {
             box.setVisibility(View.VISIBLE);
             image.setVisibility(View.VISIBLE);
@@ -451,7 +451,6 @@ final class Card implements Nav {
             pageBg = page.getBackground();
             page.setBackground(null);
         }
-        shield.setVisibility(View.VISIBLE);
         page.setClipToOutline(true);
     }
 
@@ -472,13 +471,13 @@ final class Card implements Nav {
         } else if (pageBg != null) {
             page.setBackground(pageBg);
         }
-        shield.setVisibility(View.GONE);
         page.setClipToOutline(false);
         a.getWindow().getDecorView().setBackgroundColor(bg);
     }
 
     /** 按 q 和 d 摆好容器、页面和截图。 */
     private void place() {
+        if (leaving) follow();
         if (hero != null) {
             placeHero();
             return;
@@ -493,12 +492,14 @@ final class Card implements Nav {
         float cw = Math.max(1, lerp(s.width(), ow, q)), ch = Math.max(1, lerp(s.height(), oh, q));
         float radius = Math.max(0, lerp(fade ? dp(24) : shot.radius, orad, q));
         float k = Math.max(0, Math.min(1, q));
+        // 卡片在列表里被裁掉的上下两截：一开始照样裁掉（直边），越长越露出来
+        float ct = fade ? 0 : shot.top * (1 - k), cb = fade ? 0 : shot.bottom * (1 - k);
 
         float ps = cw / w;
-        frame(page, pageClip, l, t, ps, ch, radius);
-        frame(box, boxClip, l, t, ps, ch, radius);
+        frame(page, pageClip, l, t, ps, ch, radius, ct, cb);
+        frame(box, boxClip, l, t, ps, ch, radius, ct, cb);
         float is = cw / Math.max(1, shot.rect.width());
-        frame(image, shotClip, l, t, is, ch, radius);
+        frame(image, shotClip, l, t, is, ch, radius, ct, cb);
 
         // 页面先在截图下面完全显出来，截图再淡出：两层不会同时半透明，封面中途不会变暗
         image.setAlpha(fade ? 0 : 1 - clamp((k - 0.32f) / 0.3f));
@@ -519,7 +520,7 @@ final class Card implements Nav {
         float sigma = 1 - 0.16f * d, ow = w * sigma, oh = h * sigma;
         float ol = (w - ow) / 2 + d * w * 0.2f, ot = (h - oh) / 2;
         float orad = dp(32) * Math.min(1, d * 4);
-        frame(page, pageClip, ol, ot, sigma, oh, orad);
+        frame(page, pageClip, ol, ot, sigma, oh, orad, 0, 0);
         float k = clamp(q);
         // 没有压暗：首页的雾和列表由页面自己盖住（Hero.morph）；右滑缩小时才压暗一点，和普通的一样
         a.getWindow().getDecorView().setBackgroundColor(Color.argb(
@@ -557,6 +558,9 @@ final class Card implements Nav {
         float top = Math.max(0, lerp(face.radius, Math.max(hr[0] * s, orad), q));
         float bottom = Math.max(0, lerp(face.radius, hr[4] * s, q));
         stageShape.setCornerRadii(new float[]{top, top, top, top, bottom, bottom, bottom, bottom});
+        float ct = face.top * (1 - k), cb = face.bottom * (1 - k); // 卡片在列表里被裁掉的上下两截，见 place
+        boolean clipped = ct > 0 || cb > 0;
+        stage.setClipBounds(clipped ? new Rect(0, Math.round(ct), Integer.MAX_VALUE, Math.round(ch - cb)) : null);
 
         faceText.setAlpha(1 - clamp(q / 0.35f));
         ViewGroup.LayoutParams mp = mirror.getLayoutParams();
@@ -585,14 +589,20 @@ final class Card implements Nav {
             fy = at[1] - py + title.getPaddingTop() * s;
             fs = s;
         }
+        float ft = lerp(ey, fy, q), fsc = lerp(es, fs, q);
         flier.setTranslationX(lerp(ex, fx, q));
-        flier.setTranslationY(lerp(ey, fy, q));
-        flier.setScaleX(lerp(es, fs, q));
-        flier.setScaleY(lerp(es, fs, q));
+        flier.setTranslationY(ft);
+        flier.setScaleX(fsc);
+        flier.setScaleY(fsc);
+        flier.setClipBounds(clipped ? new Rect(0, Math.round((t + ct - ft) / fsc), Integer.MAX_VALUE,
+                Math.round((t + ch - cb - ft) / fsc)) : null); // 标题藏着的那截也和金属一起裁
     }
 
-    /** 控件左上角放在 (l, t)、等比缩放 scale、只露出高 ch（屏幕上的像素）、圆角 radius。 */
-    private static void frame(View v, Clip clip, float l, float t, float scale, float ch, float radius) {
+    /**
+     * 控件左上角放在 (l, t)、等比缩放 scale、只露出高 ch（屏幕上的像素）、圆角 radius；上下再用直边裁掉 top、bottom
+     * （屏幕上的像素，左右不裁，圆角轮廓已经裁了）。
+     */
+    private static void frame(View v, Clip clip, float l, float t, float scale, float ch, float radius, float top, float bottom) {
         v.setTranslationX(l);
         v.setTranslationY(t);
         v.setScaleX(scale);
@@ -600,6 +610,8 @@ final class Card implements Nav {
         clip.height = ch / scale;
         clip.radius = radius / scale;
         v.invalidateOutline();
+        v.setClipBounds(top > 0 || bottom > 0
+                ? new Rect(0, Math.round(top / scale), Integer.MAX_VALUE, Math.round((ch - bottom) / scale)) : null);
     }
 
     /** 屏幕坐标换成页面所在外框里的坐标（页面的位移相对外框算；Android 10 上外框在状态栏下面）。 */
@@ -633,10 +645,65 @@ final class Card implements Nav {
         return Math.max(0, Math.min(1, x));
     }
 
-    private static void hide(View v) {
+    /**
+     * 收回途中下面的列表可能在滚：重新找那张卡片，收回的终点跟着它现在的位置和被裁掉的部分走。行被列表拿去显示别的了
+     * 就放回来、换成新找到的那行；整行滚出去找不到了，就收到最后看到它的地方，从它出去的那一边整个裁掉。原地淡出的不用找。
+     */
+    private void follow() {
+        if (hero == null && fade) return;
+        View now = anchor.find();
+        if (now != null && (!now.isAttachedToWindow() || now.getParent() == null)) now = null;
+        if (now != source) {
+            show(source);
+            if (now == null && source != null) lost();
+            source = now;
+            hide(now);
+        }
+        if (source == null) return;
+        int[] p = new int[2];
+        source.getLocationOnScreen(p);
+        RectF r = hero != null ? face.rect : shot.rect;
+        float dx = p[0] - r.left, dy = p[1] - r.top;
+        r.offset(dx, dy);
+        float[] hid = cut(source, r);
+        if (hero != null) {
+            face.titleX += dx;
+            face.titleY += dy;
+            face.top = hid[0];
+            face.bottom = hid[1];
+        } else {
+            shot.top = hid[0];
+            shot.bottom = hid[1];
+        }
+    }
+
+    /** 那张卡片整行滚出去了：被裁掉多的那一边整个裁掉，收回时收进列表边上。 */
+    private void lost() {
+        if (hero != null) {
+            if (face.top >= face.bottom) face.top = face.rect.height();
+            else face.bottom = face.rect.height();
+        } else {
+            if (shot.top >= shot.bottom) shot.top = shot.rect.height();
+            else shot.bottom = shot.rect.height();
+        }
+    }
+
+    private void hide(View v) {
         if (v == null) return;
         v.setAlpha(0f);
         hidden = new WeakReference<>(v);
+        hider = new WeakReference<>(this);
+    }
+
+    /** 收完了，藏着的卡片放回来；收回途中又点开了同一张、它已经被新的页面藏起来了，就留给那一页。 */
+    private void show(View v) {
+        boolean mine = hider != null && hider.get() == this;
+        boolean taken = !mine && hidden != null && hidden.get() == v;
+        if (v != null && !taken) v.setAlpha(1f);
+        if (mine) {
+            hidden = null;
+            hider = null;
+        }
     }
 
     /** 卡片还挂在界面上、看得见，而且有一部分在屏幕里。 */
@@ -654,6 +721,9 @@ final class Card implements Nav {
         int[] at = new int[2];
         v.getLocationOnScreen(at);
         s.rect = new RectF(at[0], at[1], at[0] + v.getWidth(), at[1] + v.getHeight());
+        float[] hid = cut(v, s.rect);
+        s.top = hid[0];
+        s.bottom = hid[1];
         s.bitmap = Bitmap.createBitmap(v.getWidth(), v.getHeight(), Bitmap.Config.ARGB_8888);
         v.draw(new Canvas(s.bitmap)); // draw() 不管控件自己的 alpha，藏着的卡片也拍得到
         s.radius = radius(v);
@@ -671,6 +741,9 @@ final class Card implements Nav {
         v.getLocationOnScreen(at);
         float s = v.getScaleX();
         f.rect = new RectF(at[0], at[1], at[0] + v.getWidth() * s, at[1] + v.getHeight() * s);
+        float[] hid = cut(v, f.rect);
+        f.top = hid[0];
+        f.bottom = hid[1];
         f.text = Bitmap.createBitmap(v.getWidth(), v.getHeight(), Bitmap.Config.ARGB_8888);
         drawExcept(new Canvas(f.text), v, false, title);
         title.getLocationOnScreen(at);
@@ -679,6 +752,20 @@ final class Card implements Nav {
         f.titleSize = title.getTextSize() * s;
         f.radius = radius(v) * s;
         return f;
+    }
+
+    /**
+     * 卡片（屏幕上在 rect）被外面的容器裁掉了多少：滚到了列表上沿、一截藏在标签栏下面，或者下面出了屏幕。
+     * 返回 {上面, 下面}，屏幕上的像素；整张都看不见时当作上面全裁掉。
+     */
+    private static float[] cut(View v, RectF rect) {
+        Rect seen = new Rect();
+        if (!v.getGlobalVisibleRect(seen)) return new float[]{rect.height(), 0};
+        int[] win = new int[2], screen = new int[2];
+        v.getLocationInWindow(win);
+        v.getLocationOnScreen(screen);
+        float dy = screen[1] - win[1]; // 看得见的部分是按窗口算的，换成屏幕上的
+        return new float[]{Math.max(0, seen.top + dy - rect.top), Math.max(0, rect.bottom - seen.bottom - dy)};
     }
 
     /**
