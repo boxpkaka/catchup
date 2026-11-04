@@ -103,7 +103,9 @@ final class Spring implements TimeInterpolator {
         private int color;
         private boolean pressed;
         private ValueAnimator shape, tint;
-        private Theme.Finish finish;
+        private Theme.Finish finish, sheenFinish;
+        private float sheen; // 金属的程度：0 平涂，1 金属（见 Theme.shine）
+        private android.graphics.RectF layer;
 
         Shape(int color, float radiusPx, float pressedRadiusPx) {
             this.color = color;
@@ -119,8 +121,16 @@ final class Spring implements TimeInterpolator {
             return this;
         }
 
+        /** 金属的质感：跟着金属的程度显出来，平涂时没有。 */
+        Shape sheenFinish(Theme.Finish f) {
+            sheenFinish = f;
+            return this;
+        }
+
         /** 涂成以 base 为中间色的金属，见 Theme.shine。 */
         Shape metal(int base) {
+            color = base;
+            sheen = 1;
             Theme.shine(this, base);
             return this;
         }
@@ -129,22 +139,48 @@ final class Spring implements TimeInterpolator {
         public void draw(android.graphics.Canvas c) {
             super.draw(c);
             if (finish != null) finish.draw(c, getBounds(), Theme.radii(this));
+            if (sheenFinish == null || sheen <= 0) return;
+            if (sheen >= 1) {
+                sheenFinish.draw(c, getBounds(), Theme.radii(this));
+                return;
+            }
+            if (layer == null) layer = new android.graphics.RectF();
+            layer.set(getBounds());
+            int save = c.saveLayerAlpha(layer, Math.round(255 * sheen));
+            sheenFinish.draw(c, getBounds(), Theme.radii(this));
+            c.restoreToCount(save);
         }
 
         float radius() {
             return radius;
         }
 
-        /** 弹到新的圆角和颜色。 */
+        /** 弹到新的圆角和颜色（平涂）。 */
         void morph(float toRadius, int toColor) {
+            morph(toRadius, toColor, false);
+        }
+
+        /** 弹到新的圆角和颜色；metal 为 true 时变成以 toColor 为中间色的金属，颜色和金属感一起慢慢变。 */
+        void morph(float toRadius, int toColor, boolean metal) {
             radius = toRadius;
             animateRadius(toRadius);
             if (tint != null) tint.cancel();
-            if (toColor == color) return;
-            tint = ValueAnimator.ofObject(new ArgbEvaluator(), color, toColor);
+            float toSheen = metal ? 1 : 0;
+            if (toColor == color && toSheen == sheen) return;
+            int fromColor = color;
+            float fromSheen = sheen;
+            ArgbEvaluator argb = new ArgbEvaluator();
+            tint = ValueAnimator.ofFloat(0, 1);
             tint.setDuration(FX.duration);
             tint.setInterpolator(FX);
-            tint.addUpdateListener(a -> setColor((int) a.getAnimatedValue()));
+            tint.addUpdateListener(a -> {
+                float f = (float) a.getAnimatedValue();
+                int c = (int) argb.evaluate(f, fromColor, toColor);
+                sheen = fromSheen + (toSheen - fromSheen) * f;
+                if (sheen > 0) Theme.shine(this, c, sheen);
+                else setColor(c);
+                invalidateSelf();
+            });
             tint.start();
             color = toColor;
         }

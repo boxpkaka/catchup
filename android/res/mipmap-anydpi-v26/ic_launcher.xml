@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标：钴蓝底 + 白色粗体 c 和缺口处的酸橙点；monochrome 供系统主题图标使用 -->
+<!-- 自适应图标：钴蓝的雾面金属底（预先渲染的高清位图，静止）+ 珍珠收笔的 c（上端的收笔圆点就是那颗珍珠）；
+     monochrome 供系统主题图标使用 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/launcher_bg" />
+    <background android:drawable="@drawable/ic_launcher_bg" />
     <foreground android:drawable="@drawable/ic_launcher_fg" />
     <monochrome android:drawable="@drawable/ic_launcher_mono" />
 </adaptive-icon>

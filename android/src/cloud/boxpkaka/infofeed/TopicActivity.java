@@ -24,7 +24,6 @@ import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -48,7 +47,7 @@ import java.util.Locale;
  * 社区热门和最新，点开进论文详情，右上角的“问一问”问这一周的论文。右滑返回：榜单和论文专题在第一页上再右滑。
  * 数据见服务器的 /v1/topics/<key>。
  */
-public class TopicActivity extends Activity {
+public class TopicActivity extends Activity implements Card.Hero {
     static final String EXTRA_KEY = "key";
     static final String EXTRA_TITLE = "title";
 
@@ -62,9 +61,16 @@ public class TopicActivity extends Activity {
     private Swipe.Tabs tabs;
     private Swipe.Pager pager;
     private Nav nav;
-    private ScrollView scroll;
+    private Elastic scroll;
     private HorizontalScrollView tabScroll;
     private TextView sub;
+    private FrameLayout root;
+    private Flow mist, pearl; // 专题色的雾；首页的珍珠银雾（卡片展开时先盖住首页的列表，见 morph）
+    private TextView title;
+    private float morphed = 1; // 上一次 morph 到的位置：停在整页以后（右滑缩小时也一直是 1）不再动列表
+    private FrameLayout bar; // 标题栏：和专题卡片同一张流动的雾面金属
+    private int barTop, barHeight; // 标题栏里内容的上边距、最小高度（随状态栏高度定）
+    private int pulled; // 到顶往下拉了多少，标题栏就高出多少
     private JSONObject data;
     private int channel;
     private boolean related;
@@ -121,14 +127,15 @@ public class TopicActivity extends Activity {
 
     /** fresh（不是转屏之类的重建）时从点开的卡片展开，或者从右边推进来。 */
     private View build(boolean fresh) {
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        Flow mist = new Flow(this);
+        mist = new Flow(this);
         mist.mist(t, key, Flow.seedOf(key));
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
-        scroll = new ScrollView(this);
+        scroll = new Elastic(this);
         scroll.setClipToPadding(false);
+        scroll.setOnPull(this::pull);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.getViewTreeObserver().addOnScrollChangedListener(this::noteSeen);
         scroll.getViewTreeObserver().addOnGlobalLayoutListener(this::noteSeen);
@@ -137,13 +144,12 @@ public class TopicActivity extends Activity {
         page.setPadding(0, 0, 0, t.dp(48));
 
         // 标题栏：和专题卡片同一张流动的雾面金属，不放徽记
-        FrameLayout bar = new FrameLayout(this);
+        bar = new FrameLayout(this);
         bar.setBackground(t.round(fc[0], 0, 0, Theme.R_2XL, Theme.R_2XL));
-        bar.setMinimumHeight(t.dp(178));
-        Flow flow = new Flow(this);
-        flow.gradient(fc[0], fc[1], Color.luminance(fc[2]) > 0.5f, true, Flow.seedOf(key));
-        flow.topic(t, key, Flow.seedOf(key));
-        flow.slow(2); // 和专题卡片一样慢、一样的时钟，卡片长成标题栏时颜色接得上
+        barTop = t.dp(10);
+        barHeight = t.dp(178);
+        bar.setMinimumHeight(barHeight);
+        Flow flow = flow();
         flow.corners(bar);
         bar.addView(flow, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -154,7 +160,7 @@ public class TopicActivity extends Activity {
         back.setTextColor(fc[2]);
         back.setBackground(t.frostRipple((fc[2] & 0x00FFFFFF) | 0x1F000000, 99));
         head.addView(back, new LinearLayout.LayoutParams(t.dp(48), t.dp(48)));
-        TextView title = t.text(this, getIntent().getStringExtra(EXTRA_TITLE), 30, fc[2], 900);
+        title = t.text(this, getIntent().getStringExtra(EXTRA_TITLE), 30, fc[2], 900);
         title.setLineSpacing(t.dp(2), 1f);
         title.setPadding(t.dp(6), t.dp(18), 0, 0);
         head.addView(title);
@@ -189,8 +195,10 @@ public class TopicActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
                 Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-                head.setPadding(t.dp(16), bars.top + t.dp(10), t.dp(22), t.dp(22));
-                bar.setMinimumHeight(bars.top + t.dp(178));
+                barTop = bars.top + t.dp(10);
+                barHeight = bars.top + t.dp(178);
+                bar.setMinimumHeight(barHeight + pulled);
+                head.setPadding(t.dp(16), barTop + pulled, t.dp(22), t.dp(22));
                 page.setPadding(0, 0, 0, bars.bottom + t.dp(48));
                 return WindowInsets.CONSUMED;
             });
@@ -202,6 +210,89 @@ public class TopicActivity extends Activity {
         pager.frame.addView(root);
         if (fresh) nav.enter();
         return pager.frame;
+    }
+
+    // ---------- 卡片长成标题栏（见 Card.Hero） ----------
+
+    @Override
+    public View header() {
+        return bar;
+    }
+
+    @Override
+    public TextView title() {
+        return title;
+    }
+
+    /** 和专题卡片一样的流动金属：同一张抽象封面、一样慢、一样的时钟，卡片长成标题栏时颜色接得上。 */
+    @Override
+    public Flow flow() {
+        Flow f = new Flow(this);
+        f.gradient(fc[0], fc[1], Color.luminance(fc[2]) > 0.5f, true, Flow.seedOf(key));
+        f.topic(t, key, Flow.seedOf(key));
+        f.slow(2);
+        return f;
+    }
+
+    /**
+     * 卡片展开到 q 时页面自己的部分：先铺一层和首页一模一样的珍珠银雾（同一张图、同一个时钟），首页的列表在前 35% 里
+     * 消失；专题色的雾在前 55% 里盖上来；列表一行一行从下面浮上来（每行晚一点，最晚的也在 q 到 1 时到位）。收回时倒着走。
+     */
+    @Override
+    public void morph(float q) {
+        if (pearl == null && q < 1) {
+            pearl = new Flow(this);
+            pearl.mist(t, Theme.PEARL, 7);
+            root.addView(pearl, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        if (pearl != null) {
+            pearl.setAlpha(clamp(q / 0.35f));
+            pearl.setVisibility(q < 1 ? View.VISIBLE : View.INVISIBLE);
+        }
+        mist.setAlpha(clamp(q / 0.55f));
+        if (q == morphed && q >= 1) return;
+        morphed = q;
+        int i = 0;
+        for (View row : rows()) {
+            float start = 0.36f + 0.03f * Math.min(i++, 8), p = clamp((q - start) / 0.4f);
+            row.setAlpha(p);
+            row.setTranslationY((1 - p) * t.dp(40));
+        }
+    }
+
+    /** 标题栏下面依次浮上来的：榜单的标签、每个小标题和每一行（分段列表拆开成行）。 */
+    private List<View> rows() {
+        List<View> out = new ArrayList<>();
+        if (tabScroll.getVisibility() == View.VISIBLE) out.add(tabScroll);
+        for (int i = 0; i < body.getChildCount(); i++) {
+            View v = body.getChildAt(i);
+            if (v instanceof LinearLayout && ((LinearLayout) v).getOrientation() == LinearLayout.VERTICAL) {
+                LinearLayout list = (LinearLayout) v;
+                for (int j = 0; j < list.getChildCount(); j++) out.add(list.getChildAt(j));
+            } else {
+                out.add(v);
+            }
+        }
+        return out;
+    }
+
+    private static float clamp(float x) {
+        return Math.max(0, Math.min(1, x));
+    }
+
+    /**
+     * 到顶往下拉（见 Elastic）：标题栏原地变高，顶边一直贴着屏幕顶，金属在更高的面上照常流动；标题、返回按钮和下面的
+     * 列表一起往下移。到底往上拉是内容整块平移，这里不管。
+     */
+    private boolean pull(float offset) {
+        int p = Math.round(Math.max(0, offset));
+        if (p != pulled) {
+            pulled = p;
+            bar.setMinimumHeight(barHeight + p);
+            head.setPadding(t.dp(16), barTop + p, t.dp(22), t.dp(22));
+        }
+        return offset > 0;
     }
 
     /** 榜单专题的几个榜：横向排开，左右滑或点标签切换。不是榜单时没有页，只能右滑返回。 */
@@ -399,8 +490,7 @@ public class TopicActivity extends Activity {
         TextView only = t.text(this, papers() ? "问一问" : "只看相关", 13.5f, related || papers() ? t.onInv : t.ink, 800);
         only.setPadding(t.dp(14), t.dp(8), t.dp(14), t.dp(8));
         if (papers()) { // 论文专题不用筛，换成问这一周的论文
-            only.setTextColor(t.onLime);
-            t.press(only, t.lime, 99);
+            t.askButton(only, t.ask(key), 99);
             only.setOnClickListener(v -> askPapers());
         } else {
             GradientDrawable outline = t.round(related ? t.inv : Color.TRANSPARENT, 99);
@@ -654,9 +744,9 @@ public class TopicActivity extends Activity {
             }
         });
         buttons.addView(open, new LinearLayout.LayoutParams(0, t.dp(52), 1));
-        TextView ask = t.text(this, "问一问", 15, t.onLime, 800);
+        TextView ask = t.text(this, "问一问", 15, 0, 800);
         ask.setGravity(Gravity.CENTER);
-        t.press(ask, t.lime, 99);
+        t.askButton(ask, t.ask(key), 99);
         ask.setOnClickListener(v -> {
             d.dismiss();
             Push.open(this, new Intent(this, ChatActivity.class).putExtra(ChatActivity.EXTRA_QUESTIONS,

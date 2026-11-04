@@ -79,7 +79,7 @@ final class ReportView extends FrameLayout {
         }
         column.addView(deck);
 
-        scroll = new ScrollView(a);
+        scroll = new Elastic(a);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setPadding(0, 0, 0, t.dp(96));

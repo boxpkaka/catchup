@@ -134,7 +134,7 @@ public class ChatActivity extends Activity {
         top.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         column.addView(top);
 
-        scroll = new ScrollView(this);
+        scroll = new Elastic(this);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
         messages = new LinearLayout(this);
@@ -153,9 +153,10 @@ public class ChatActivity extends Activity {
         });
         column.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // 输入框和发送按钮分开：空着时发送是灰色圆形，有字时变成酸橙色的圆角方块
+        // 输入框和发送按钮分开：空着时发送是灰色圆形，有字时变成这一页颜色（珍珠银）的金属圆角方块
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.BOTTOM);
+        bar.setBaselineAligned(false); // 按底边对齐：按文字基线对齐时发送按钮会被顶出内边距，上沿被裁掉一条
         bar.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(12));
         input = new EditText(this);
         input.setHint(eventId > 0 ? "问问这件事…" : "想知道什么？");
@@ -184,7 +185,7 @@ public class ChatActivity extends Activity {
             }
         });
         bar.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        send = t.text(this, "↑", 20, t.onLime, 900);
+        send = t.text(this, "↑", 20, t.sub, 900);
         send.setGravity(Gravity.CENTER);
         send.setContentDescription("发送");
         send.setOnClickListener(v -> sendMessage(input.getText().toString()));
@@ -616,9 +617,10 @@ public class ChatActivity extends Activity {
 
     private void styleSend() {
         boolean ready = !busy && input.getText().toString().trim().length() > 0;
-        send.setTextColor(ready ? t.onLime : t.sub);
+        int[] ask = t.ask(Theme.PEARL); // 能发的时候和问一问一样，是这一页颜色的金属
+        send.setTextColor(ready ? ask[1] : t.sub);
         ((Spring.Shape) ((android.graphics.drawable.RippleDrawable) send.getBackground()).getDrawable(0))
-                .morph(t.dp(ready ? 18 : 99), ready ? t.lime : t.hi);
+                .morph(t.dp(ready ? 18 : 99), ready ? ask[0] : t.hi, ready);
     }
 
     /** 这一轮的“记住了 / 会替你留意”放在同一个分段列表里。 */

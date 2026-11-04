@@ -163,13 +163,14 @@ python3 -m unittest                   # 测试
 
 - 感谢上面列出的每一个信息源，Catchup 只是替你读它们。
 - App 字体使用 [Roboto Flex](https://github.com/googlefonts/roboto-flex)（SIL Open Font License 1.1，见 `android/OFL-roboto-flex.txt`）。
+- 首页的字标是 [Great Vibes](https://github.com/googlefonts/great-vibes)（SIL Open Font License 1.1）写的 catchup，转成了矢量轮廓，App 里不带字体文件。
 
 ## 📄 许可证
 
-[MIT](LICENSE)。App 内置的 Roboto Flex 字体仍按 SIL Open Font License 1.1 授权。
+[MIT](LICENSE)。App 内置的 Roboto Flex 字体和字标用的 Great Vibes 轮廓仍按 SIL Open Font License 1.1 授权。
 
 <br>
 
 <div align="center">
-<sub>图标缺口处那颗酸橙色的点：没跟上的，替你补上。</sub>
+<sub>图标是一个珍珠收笔的 c：上端那颗珍珠，替你接住要紧的那一颗。</sub>
 </div>

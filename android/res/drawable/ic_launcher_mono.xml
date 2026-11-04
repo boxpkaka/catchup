@@ -1,7 +1,6 @@
-<!-- 主题图标：同一图形的单色版本 -->
+<!-- 主题图标：同一图形的单色版本（珍珠收笔的 c，珍珠和 c 连成一体）；内容在 66dp 安全区内 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="10" android:strokeLineCap="round"
-        android:pathData="M64.93,40.98 A17,17 0 1 0 64.93,67.02" />
-    <path android:fillColor="#FFFFFFFF" android:pathData="M65,54 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 Z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M66.455,44.816C63.404,39.516 57.276,37.371 51.12,39.45C44.964,41.528 40.094,47.386 38.934,54.108C37.774,60.831 40.572,66.982 45.934,69.502C51.297,72.021 58.08,70.371 62.908,65.373L63.147,62.67C60.123,67.108 55.778,68.809 52.385,66.883C48.992,64.956 47.322,59.841 48.249,54.213C49.177,48.584 52.49,43.723 56.456,42.17C60.422,40.618 64.139,42.728 65.663,47.397ZM71.454,45.6C71.889,42.507 69.734,40 66.641,40C63.549,40 60.689,42.507 60.254,45.6C59.82,48.693 61.975,51.2 65.067,51.2C68.16,51.2 71.02,48.693 71.454,45.6Z" />
 </vector>

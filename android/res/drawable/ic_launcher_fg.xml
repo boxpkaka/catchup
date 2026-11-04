@@ -1,7 +1,0 @@
-<!-- 图标前景：白色粗体 c，缺口处一颗酸橙色的点（没跟上的，替你补上）；内容在 66dp 安全区内 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="10" android:strokeLineCap="round"
-        android:pathData="M64.93,40.98 A17,17 0 1 0 64.93,67.02" />
-    <path android:fillColor="#FFD6F36B" android:pathData="M65,54 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 Z" />
-</vector>

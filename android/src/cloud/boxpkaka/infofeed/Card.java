@@ -3,6 +3,7 @@ package cloud.boxpkaka.infofeed;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -15,6 +16,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.SystemClock;
+import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -22,6 +24,7 @@ import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
 
@@ -32,11 +35,39 @@ import java.lang.ref.WeakReference;
  * 屏幕上就原地缩小淡出。右滑时整页跟着手指缩小、变圆角，松手过线就收回卡片，否则弹回。
  * 展开和收拢的时候那张卡片藏起来，看起来就是它自己飞出去、又飞回来。
  * 打开的一方用 Card.open 把卡片交给新页面（同一进程，放在静态变量里），新页面用 Nav.of 接过来。
+ *
+ * 专题卡片换一种展开（Hero）：卡片不长成整页，而是长成专题页的标题栏。同一块流动的雾面金属从卡片的位置、大小、圆角
+ * 长成标题栏，全程在流动，没有截图；标题单独飞到标题栏的位置、一路放大；卡片上别的字先淡出，标题栏的返回和小字最后淡入；
+ * 页面自己的雾和列表跟着变（见 Hero.morph）。收回时倒着走。右滑时整页还是跟着手指缩小，松手后从标题栏当时的样子收回卡片。
  */
 final class Card implements Nav {
     /** 关的时候去哪儿找那张卡片：列表复用行的按 id 找；找不到返回 null。 */
     interface Anchor {
         View find();
+    }
+
+    /** 能长成标题栏的卡片：用 setTag 挂在卡片上，告诉 Card 哪个是标题（卡片上的 Flow 是那块流动的金属）。 */
+    static final class Parts {
+        final TextView title;
+
+        Parts(TextView title) {
+            this.title = title;
+        }
+    }
+
+    /** 卡片长成它的标题栏的页面（专题页）：由 Activity 实现。 */
+    interface Hero {
+        /** 标题栏：展开和收回时藏起来，由动画代画。 */
+        View header();
+
+        /** 标题栏里的标题。 */
+        TextView title();
+
+        /** 新建一块和标题栏一样的流动金属（同一张图、同一个时钟、同样慢），动画里从卡片长成标题栏的就是它。 */
+        Flow flow();
+
+        /** 页面自己的部分跟着 q 变（0 是卡片，1 是整页）：雾从首页的颜色换成专题色，列表依次从下面浮上来。 */
+        void morph(float q);
     }
 
     private static final int SCRIM = 0x33;
@@ -52,12 +83,20 @@ final class Card implements Nav {
         int color;
     }
 
+    /** 长成标题栏的卡片此刻的样子：不带金属和标题的字（截图）、卡片和标题在屏幕上的位置、标题的字号（像素）、圆角。 */
+    private static final class Face {
+        Bitmap text;
+        RectF rect;
+        float titleX, titleY, titleSize, radius;
+    }
+
     private static final class Handoff {
         Class<?> target;
         long time;
         Anchor anchor;
         View source;
         Shot shot;
+        Face face;
     }
 
     private final Activity a;
@@ -72,6 +111,16 @@ final class Card implements Nav {
     private ValueAnimator grow, shrink; // grow 动 q（展开、收拢），shrink 动 d（右滑没过线时弹回）
     private float q, d, from; // q：0 是卡片，1 是整页；d：右滑缩小了多少，0 到 1
     private boolean dragging, leaving, gone, fade;
+    // 长成标题栏（见 Hero）：hero 为 null 时是普通的展开
+    private Hero hero;
+    private Face face;
+    private FrameLayout stage; // 那块从卡片长成标题栏的金属，上面是卡片的字和标题栏的返回、小字
+    private GradientDrawable stageShape;
+    private ImageView faceText;
+    private Mirror mirror;
+    private TextView flier; // 飞过去的标题
+    private Drawable pageBg;
+    private final int[] at = new int[2];
 
     /** 打开 i 指向的页面，从 card 展开；card 是不会被列表复用的普通控件。 */
     static void open(Activity from, View card, Intent i) {
@@ -96,6 +145,7 @@ final class Card implements Nav {
             h.anchor = anchor;
             h.source = card;
             h.shot = s;
+            h.face = face(card);
             pending = h;
         }
         if (request >= 0) from.startActivityForResult(i, request);
@@ -130,6 +180,8 @@ final class Card implements Nav {
         anchor = h.anchor;
         source = h.source;
         shot = h.shot;
+        face = h.face;
+        hero = face != null && a instanceof Hero ? (Hero) a : null;
         minFling = ViewConfiguration.get(a).getScaledMinimumFlingVelocity() * 8;
         q = 1;
     }
@@ -256,6 +308,27 @@ final class Card implements Nav {
         if (shrink != null) shrink.cancel();
         restore(); // 原来藏起来的那个控件可能已经被列表拿去显示别的了
         source = anchor.find();
+        if (hero != null) {
+            Face f = source != null && source.isShown() ? face(source) : null; // 滚出屏幕的也收回去，从屏幕边上进去
+            if (f != null) {
+                face = f;
+                moving();
+                faceText.setImageBitmap(f.text);
+                faceText.setLayoutParams(new FrameLayout.LayoutParams(Math.round(f.rect.width()), Math.round(f.rect.height())));
+                hide(source);
+                grow = Spring.CARD.fling(q * FULL, 0, -velocity / width() * FULL, x -> {
+                    q = x / FULL;
+                    place();
+                }, () -> {
+                    source.setAlpha(1f);
+                    hidden = null;
+                    gone = true;
+                    then.run();
+                });
+                return;
+            }
+            leaveHero(); // 卡片找不到了：照普通的办法原地缩小淡出
+        }
         Shot s = onScreen(source) ? capture(source) : null;
         fade = s == null;
         if (s != null) {
@@ -284,6 +357,24 @@ final class Card implements Nav {
      */
     private void attach() {
         ViewGroup parent = (ViewGroup) page.getParent();
+        if (hero != null) {
+            attachHero(parent);
+        } else {
+            attachShot(parent);
+        }
+        if (shield != null) parent.removeView(shield); // 从长成标题栏换回普通的：挡板要在最上面
+        else {
+            shield = new View(a);
+            shield.setClickable(true);
+        }
+        parent.addView(shield, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        page.setPivotX(0);
+        page.setPivotY(0);
+        page.setOutlineProvider(pageClip);
+    }
+
+    private void attachShot(ViewGroup parent) {
         box = new View(a);
         box.setBackground(new ColorDrawable(shot.color));
         parent.addView(box, parent.indexOfChild(page), new FrameLayout.LayoutParams(
@@ -292,28 +383,76 @@ final class Card implements Nav {
         image.setScaleType(ImageView.ScaleType.FIT_XY);
         image.setImageBitmap(shot.bitmap);
         parent.addView(image, new FrameLayout.LayoutParams(Math.round(shot.rect.width()), Math.round(shot.rect.height())));
-        shield = new View(a);
-        shield.setClickable(true);
-        parent.addView(shield, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        for (View v : new View[]{box, page, image}) {
+        for (View v : new View[]{box, image}) {
             v.setPivotX(0);
             v.setPivotY(0);
         }
         box.setOutlineProvider(boxClip);
-        page.setOutlineProvider(pageClip);
         image.setOutlineProvider(shotClip);
     }
 
-    /** 要动了：容器、截图和挡板出来，页面按轮廓裁剪。 */
+    /**
+     * 长成标题栏用的几层，都在页面上面：一块流动的金属（圆角跟着 stageShape）、上面是卡片的字（截图）和标题栏的
+     * 返回、小字（照着真的画），最上面是飞过去的标题（和标题栏里的标题同样的字，按比例缩放）。
+     */
+    private void attachHero(ViewGroup parent) {
+        stage = new FrameLayout(a);
+        stageShape = new GradientDrawable();
+        stage.setBackground(stageShape);
+        Flow flow = hero.flow();
+        flow.corners(stage);
+        stage.addView(flow, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        faceText = new ImageView(a);
+        faceText.setScaleType(ImageView.ScaleType.FIT_XY);
+        faceText.setImageBitmap(face.text);
+        stage.addView(faceText, new FrameLayout.LayoutParams(Math.round(face.rect.width()), Math.round(face.rect.height())));
+        mirror = new Mirror(a, hero.header(), hero.title());
+        stage.addView(mirror, new FrameLayout.LayoutParams(1, 1));
+        parent.addView(stage, new FrameLayout.LayoutParams(1, 1));
+        TextView title = hero.title();
+        flier = new TextView(a);
+        flier.setText(title.getText());
+        flier.setTextSize(TypedValue.COMPLEX_UNIT_PX, title.getTextSize());
+        flier.setTypeface(title.getTypeface());
+        flier.setTextColor(title.getCurrentTextColor());
+        flier.setLetterSpacing(title.getLetterSpacing());
+        flier.setLineSpacing(title.getLineSpacingExtra(), title.getLineSpacingMultiplier());
+        flier.setIncludeFontPadding(title.getIncludeFontPadding());
+        parent.addView(flier, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
+        for (View v : new View[]{stage, mirror, flier}) {
+            v.setPivotX(0);
+            v.setPivotY(0);
+        }
+    }
+
+    /** 卡片找不到了（收回时）：拿掉长成标题栏的几层，换回普通的展开，页面原样摆好。 */
+    private void leaveHero() {
+        hero.morph(1);
+        hero.header().setAlpha(1f);
+        ViewGroup parent = (ViewGroup) page.getParent();
+        parent.removeView(stage);
+        parent.removeView(flier);
+        if (pageBg != null) page.setBackground(pageBg);
+        hero = null;
+        attach();
+    }
+
+    /** 要动了：容器、截图（或长成标题栏的几层）和挡板出来，页面按轮廓裁剪。 */
     private void moving() {
-        if (box == null) attach();
-        box.setVisibility(View.VISIBLE);
-        image.setVisibility(View.VISIBLE);
+        if (shield == null) attach();
+        if (hero == null) {
+            box.setVisibility(View.VISIBLE);
+            image.setVisibility(View.VISIBLE);
+            box.setClipToOutline(true);
+            image.setClipToOutline(true);
+        } else if (page.getBackground() != null) { // 页面底色先拿掉：卡片在长的时候，下面的首页透过来，见 Hero.morph
+            pageBg = page.getBackground();
+            page.setBackground(null);
+        }
         shield.setVisibility(View.VISIBLE);
-        box.setClipToOutline(true);
         page.setClipToOutline(true);
-        image.setClipToOutline(true);
     }
 
     /** 一个动画停了：展开和弹回都停了、手也没按着，才算停在整页。 */
@@ -327,8 +466,12 @@ final class Card implements Nav {
         q = 1;
         d = 0;
         place();
-        box.setVisibility(View.GONE);
-        image.setVisibility(View.GONE);
+        if (hero == null) {
+            box.setVisibility(View.GONE);
+            image.setVisibility(View.GONE);
+        } else if (pageBg != null) {
+            page.setBackground(pageBg);
+        }
         shield.setVisibility(View.GONE);
         page.setClipToOutline(false);
         a.getWindow().getDecorView().setBackgroundColor(bg);
@@ -336,6 +479,10 @@ final class Card implements Nav {
 
     /** 按 q 和 d 摆好容器、页面和截图。 */
     private void place() {
+        if (hero != null) {
+            placeHero();
+            return;
+        }
         float w = width(), h = height();
         // 展开后的样子：整屏；右滑时往中间缩一点、往右跟一点、变圆角
         float sigma = 1 - 0.16f * d, ow = w * sigma, oh = h * sigma;
@@ -360,6 +507,88 @@ final class Card implements Nav {
         // 页面完全显出来以前容器一直是卡片色：页面头部接着卡片的颜色，下面的部分直接从卡片色淡成页面底色，中途不发白
         ((ColorDrawable) box.getBackground()).setColor((int) argb.evaluate(clamp((k - 0.35f) / 0.4f), shot.color, bg));
         a.getWindow().getDecorView().setBackgroundColor(Color.argb(Math.round(SCRIM * k * (1 - 0.6f * d)), 0, 0, 0));
+    }
+
+    /**
+     * 长成标题栏：页面本身只跟着右滑缩小；那块金属从卡片的位置、大小、圆角（四角一样）长成标题栏（上面两个角是直角、
+     * 下面是大圆角）；卡片的字在前 35% 淡出，标题栏的返回和小字在 50%～90% 淡入；标题从卡片上的位置飞到标题栏上、
+     * 字号跟着变。停在整页（包括右滑缩小的时候）是真的标题栏，这几层收起来。
+     */
+    private void placeHero() {
+        float w = width(), h = height();
+        float sigma = 1 - 0.16f * d, ow = w * sigma, oh = h * sigma;
+        float ol = (w - ow) / 2 + d * w * 0.2f, ot = (h - oh) / 2;
+        float orad = dp(32) * Math.min(1, d * 4);
+        frame(page, pageClip, ol, ot, sigma, oh, orad);
+        float k = clamp(q);
+        // 没有压暗：首页的雾和列表由页面自己盖住（Hero.morph）；右滑缩小时才压暗一点，和普通的一样
+        a.getWindow().getDecorView().setBackgroundColor(Color.argb(
+                Math.round(SCRIM * k * Math.min(1, d * 4) * (1 - 0.6f * d)), 0, 0, 0));
+        hero.morph(q);
+        View header = hero.header();
+        boolean show = q < 1 || leaving;
+        header.setAlpha(show ? 0 : 1);
+        stage.setVisibility(show ? View.VISIBLE : View.GONE);
+        flier.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (!show) return;
+
+        ((View) page.getParent()).getLocationOnScreen(at);
+        float px = at[0], py = at[1], s = page.getScaleX();
+        RectF from = new RectF(face.rect);
+        from.offset(-px, -py);
+        RectF to = new RectF(from);
+        float[] hr = header.getBackground() instanceof GradientDrawable
+                ? Theme.radii((GradientDrawable) header.getBackground()) : new float[8];
+        if (header.getWidth() > 0) { // 标题栏此刻在屏幕上的样子（右滑缩小过的也算上）
+            header.getLocationOnScreen(at);
+            to.set(at[0] - px, at[1] - py, at[0] - px + header.getWidth() * s, at[1] - py + header.getHeight() * s);
+        }
+        float l = lerp(from.left, to.left, q), t = lerp(from.top, to.top, q);
+        int cw = Math.max(1, Math.round(lerp(from.width(), to.width(), q)));
+        int ch = Math.max(1, Math.round(lerp(from.height(), to.height(), q)));
+        ViewGroup.LayoutParams lp = stage.getLayoutParams();
+        if (lp.width != cw || lp.height != ch) {
+            lp.width = cw;
+            lp.height = ch;
+            stage.setLayoutParams(lp);
+        }
+        stage.setTranslationX(l);
+        stage.setTranslationY(t);
+        float top = Math.max(0, lerp(face.radius, Math.max(hr[0] * s, orad), q));
+        float bottom = Math.max(0, lerp(face.radius, hr[4] * s, q));
+        stageShape.setCornerRadii(new float[]{top, top, top, top, bottom, bottom, bottom, bottom});
+
+        faceText.setAlpha(1 - clamp(q / 0.35f));
+        ViewGroup.LayoutParams mp = mirror.getLayoutParams();
+        if (mp.width != header.getWidth() || mp.height != header.getHeight()) {
+            mp.width = Math.max(1, header.getWidth());
+            mp.height = Math.max(1, header.getHeight());
+            mirror.setLayoutParams(mp);
+        }
+        mirror.setScaleX(s);
+        mirror.setScaleY(s);
+        mirror.setAlpha(clamp((q - 0.5f) / 0.4f));
+        mirror.invalidate();
+
+        TextView title = hero.title();
+        int tw = Math.max(1, title.getWidth() - title.getPaddingLeft() - title.getPaddingRight());
+        ViewGroup.LayoutParams fp = flier.getLayoutParams();
+        if (title.getWidth() > 0 && fp.width != tw) { // 和标题栏里一样宽，折行也一样
+            fp.width = tw;
+            flier.setLayoutParams(fp);
+        }
+        float ex = face.titleX - px, ey = face.titleY - py, es = face.titleSize / title.getTextSize();
+        float fx = ex, fy = ey, fs = es;
+        if (title.getWidth() > 0) {
+            title.getLocationOnScreen(at);
+            fx = at[0] - px + title.getPaddingLeft() * s;
+            fy = at[1] - py + title.getPaddingTop() * s;
+            fs = s;
+        }
+        flier.setTranslationX(lerp(ex, fx, q));
+        flier.setTranslationY(lerp(ey, fy, q));
+        flier.setScaleX(lerp(es, fs, q));
+        flier.setScaleY(lerp(es, fs, q));
     }
 
     /** 控件左上角放在 (l, t)、等比缩放 scale、只露出高 ch（屏幕上的像素）、圆角 radius。 */
@@ -431,6 +660,73 @@ final class Card implements Nav {
         int c = s.bitmap.getPixel(s.bitmap.getWidth() / 2, Math.max(0, s.bitmap.getHeight() - 5)); // 底下取色：上面可能是封面
         s.color = Color.alpha(c) == 255 ? c : Color.TRANSPARENT;
         return s;
+    }
+
+    /** 能长成标题栏的卡片（挂着 Parts）此刻的样子；不是的返回 null。按下去还没弹回的卡片按屏幕上的大小算。 */
+    private static Face face(View v) {
+        if (!(v.getTag() instanceof Parts) || !v.isAttachedToWindow() || v.getWidth() == 0 || v.getHeight() == 0) return null;
+        TextView title = ((Parts) v.getTag()).title;
+        Face f = new Face();
+        int[] at = new int[2];
+        v.getLocationOnScreen(at);
+        float s = v.getScaleX();
+        f.rect = new RectF(at[0], at[1], at[0] + v.getWidth() * s, at[1] + v.getHeight() * s);
+        f.text = Bitmap.createBitmap(v.getWidth(), v.getHeight(), Bitmap.Config.ARGB_8888);
+        drawExcept(new Canvas(f.text), v, false, title);
+        title.getLocationOnScreen(at);
+        f.titleX = at[0] + title.getPaddingLeft() * s;
+        f.titleY = at[1] + title.getPaddingTop() * s;
+        f.titleSize = title.getTextSize() * s;
+        f.radius = radius(v) * s;
+        return f;
+    }
+
+    /**
+     * 把 v 画到 c 上（c 的原点在 v 的左上角），跳过 skip 和流动的金属（Flow）；background 为 false 时不画 v 自己的背景。
+     * 拍卡片上的字、照着标题栏画返回和小字都用它。
+     */
+    private static void drawExcept(Canvas c, View v, boolean background, View skip) {
+        if (v instanceof Flow) return;
+        if (!(v instanceof ViewGroup) || !holds(v, skip)) {
+            v.draw(c);
+            return;
+        }
+        Drawable bg = v.getBackground();
+        if (background && bg != null) bg.draw(c);
+        ViewGroup g = (ViewGroup) v;
+        for (int i = 0; i < g.getChildCount(); i++) {
+            View child = g.getChildAt(i);
+            if (child == skip || child.getVisibility() != View.VISIBLE) continue;
+            int save = c.save();
+            c.translate(child.getLeft() + child.getTranslationX(), child.getTop() + child.getTranslationY());
+            if (child.getAlpha() < 1) c.saveLayerAlpha(0, 0, child.getWidth(), child.getHeight(), Math.round(255 * child.getAlpha()));
+            drawExcept(c, child, true, skip);
+            c.restoreToCount(save);
+        }
+    }
+
+    /** x 是不是 v 自己或者 v 里面的控件。 */
+    private static boolean holds(View v, View x) {
+        for (View p = x; p != null; p = p.getParent() instanceof View ? (View) p.getParent() : null) {
+            if (p == v) return true;
+        }
+        return false;
+    }
+
+    /** 标题栏上除了金属和标题以外的东西（返回、小字）：每帧照着真的画，数据回来后小字也跟着出现。 */
+    private static final class Mirror extends View {
+        private final View src, skip;
+
+        Mirror(Context c, View src, View skip) {
+            super(c);
+            this.src = src;
+            this.skip = skip;
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            drawExcept(c, src, false, skip);
+        }
     }
 
     /** 卡片背景的圆角（四个角取平均），不是圆角背景就当 16dp。 */
