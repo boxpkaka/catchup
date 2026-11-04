@@ -105,6 +105,7 @@ final class Spring implements TimeInterpolator {
         private ValueAnimator shape, tint;
         private Theme.Finish finish, sheenFinish;
         private float sheen; // 金属的程度：0 平涂，1 金属（见 Theme.shine）
+        private final Theme.Glow glow = new Theme.Glow();
         private android.graphics.RectF layer;
 
         Shape(int color, float radiusPx, float pressedRadiusPx) {
@@ -115,7 +116,7 @@ final class Spring implements TimeInterpolator {
             setCornerRadius(radiusPx);
         }
 
-        /** 磨砂或金属的质感（颗粒和倒角），见 Theme.Finish。 */
+        /** 磨砂或金属的质感（倒角），见 Theme.Finish。 */
         Shape finish(Theme.Finish f) {
             finish = f;
             return this;
@@ -131,13 +132,14 @@ final class Spring implements TimeInterpolator {
         Shape metal(int base) {
             color = base;
             sheen = 1;
-            Theme.shine(this, base);
+            Theme.shine(this, glow, base, 1);
             return this;
         }
 
         @Override
         public void draw(android.graphics.Canvas c) {
             super.draw(c);
+            if (sheen > 0) glow.draw(c, getBounds(), Theme.radii(this));
             if (finish != null) finish.draw(c, getBounds(), Theme.radii(this));
             if (sheenFinish == null || sheen <= 0) return;
             if (sheen >= 1) {
@@ -177,7 +179,7 @@ final class Spring implements TimeInterpolator {
                 float f = (float) a.getAnimatedValue();
                 int c = (int) argb.evaluate(f, fromColor, toColor);
                 sheen = fromSheen + (toSheen - fromSheen) * f;
-                if (sheen > 0) Theme.shine(this, c, sheen);
+                if (sheen > 0) Theme.shine(this, glow, c, sheen);
                 else setColor(c);
                 invalidateSelf();
             });

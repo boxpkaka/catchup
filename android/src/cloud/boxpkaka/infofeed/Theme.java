@@ -12,8 +12,10 @@ import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -48,7 +50,7 @@ import java.util.Map;
 /**
  * 视觉规范（雾面金属，见 docs/design.md）：整个 App 只有一种材质，按浓淡分三级——金属是门面（最值得看、专题卡片和标题栏、
  * 详情页头部、报告的要点，见 Flow）和选中的状态（标签、“新”“要闻”，静止的金属小块，见 metal）；雾是每一页的底（Flow.mist，
- * 同一页颜色的亮色版本）；磨砂是雾上面的行、标签栏、按钮（frost：半透明，带颗粒和一圈细倒角）。
+ * 同一页颜色的亮色版本）；磨砂是雾上面的行、标签栏、按钮（frost：半透明，带一圈细倒角）。
  * 钴蓝是主色，表示新的、有变化的；墨色给“要闻”和选中的标签；问一问和发送是这一页颜色的一小块金属（见 ask），
  * 整页只有一个色相。
  * 话题有自己的颜色（zone），首页、专题、专题页、详情页是同一种颜色。颜色一律按用途取，深浅色各一套。
@@ -70,7 +72,7 @@ final class Theme {
     /** 磨砂：行和标签栏的底、按钮的底（更不透明一些，浮在内容上面也看得清）。 */
     final int frost, frostButton;
     private final float density;
-    private final Finish frostFinish, metalFinish;
+    private final Finish frostFinish, metalFinish, markFinish;
 
     Theme(Context c) {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
@@ -94,10 +96,10 @@ final class Theme {
         frost = night ? 0x85282936 : 0x99FFFFFF;
         frostButton = night ? 0xA82C2D3A : 0xBDFFFFFF;
         density = c.getResources().getDisplayMetrics().density;
-        // 颗粒：磨砂是浅底（深色模式是深底），金属小块深浅都有，按中间算
-        frostFinish = new Finish(c, new Flow.Grain(c).set(night ? .13f : .11f, night ? .16f : .93f),
-                night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
-        metalFinish = new Finish(c, new Flow.Grain(c).set(.07f, .5f), 0x4DFFFFFF, 0x33000000);
+        frostFinish = new Finish(c, night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
+        // 金属小块的倒角：浅色模式下小块已经压深，下沿的暗边淡一点；首页标记照旧
+        metalFinish = new Finish(c, 0x4DFFFFFF, night ? 0x33000000 : 0x2E000000);
+        markFinish = new Finish(c, 0x4DFFFFFF, 0x33000000);
     }
 
     /**
@@ -327,7 +329,7 @@ final class Theme {
 
     /**
      * 分段列表里的一项：一组的第一项上面两个角是大圆角，最后一项下面两个角是大圆角，中间都是小圆角。卡片色的是磨砂，
-     * 别的颜色（“有了答案”的浅钴蓝）是带同样颗粒和倒角的半透明底。
+     * 别的颜色（“有了答案”的浅钴蓝）是带同样倒角的半透明底。
      */
     Drawable segment(int color, boolean first, boolean last) {
         float top = first ? R_XL : R_XS, bottom = last ? R_XL : R_XS;
@@ -336,7 +338,7 @@ final class Theme {
                 frost(fill, top, top, bottom, bottom), round(Color.WHITE, top, top, bottom, bottom));
     }
 
-    /** 磨砂：半透明的底（fill，一般是 frost），带雾面颗粒和一圈细倒角（上沿亮、下沿暗）。四个角各自的圆角同 round。 */
+    /** 磨砂：半透明的底（fill，一般是 frost），带一圈细倒角（上沿亮、下沿暗）。四个角各自的圆角同 round。 */
     GradientDrawable frost(int fill, float tl, float tr, float br, float bl) {
         Surface d = new Surface(frostFinish);
         d.setColor(fill);
@@ -354,29 +356,65 @@ final class Theme {
                 frost(fill, radiusDp, radiusDp, radiusDp, radiusDp), round(Color.WHITE, radiusDp));
     }
 
-    /** 静止的金属小块（选中的标签、“新”“要闻”、浮动工具栏）：以 base 为中间色的斜向明暗渐变，带颗粒和倒角。 */
+    /** 静止的金属小块（选中的标签、“新”“要闻”、浮动工具栏）：以 base 为中间色的缎面（见 shine），带倒角。 */
     GradientDrawable metal(int base, float radiusDp) {
         Surface d = new Surface(metalFinish);
-        shine(d, base);
+        shine(d, d.glow, base, 1);
         d.setCornerRadius(dp(radiusDp));
         return d;
     }
 
-    /** 在 b 里画金属的颗粒和倒角（圆角 radiusPx），给自己画底的金属用（首页的标记，见 Wordmark）。 */
+    /** 在 b 里画金属的倒角（圆角 radiusPx），给自己画底的金属用（首页的标记，见 Wordmark）。 */
     void metalFinish(Canvas c, Rect b, float radiusPx) {
-        metalFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
+        markFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
     }
 
-    /** 把 d 涂成以 base 为中间色的金属：亮—暗—次亮—更暗，从左上斜到右下，像斜着看一块拉丝金属。 */
-    static void shine(GradientDrawable d, int base) {
-        shine(d, base, 1);
+    /**
+     * 把 d 涂成以 base 为中间色的哑光金属：从上往下由亮到深，左上一团很柔的受光（g，画在 d 上面），没有条纹。
+     * 深色的底（浅色模式的墨色、话题色、问一问）整体压深、光更暗更小，像深色缎面；浅色的底（深色模式）
+     * 压深会发灰，照旧。以前是“亮—暗—次亮—更暗”的斜条纹，像拉丝不锈钢。amount 是金属的程度：0 是平涂的 base，
+     * 1 是金属；平涂和金属之间变化时用（发送按钮从灰变成能按）。
+     */
+    static void shine(GradientDrawable d, Glow g, int base, float amount) {
+        float k = clamp((.3f - Color.luminance(base)) / .12f, 0, 1); // 多深：亮度 0.3 以上是 0，0.18 以下是 1，中间平滑过渡（颜色渐变时不跳）
+        k = k * k * (3 - 2 * k);
+        d.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
+        d.setColors(new int[]{mix(base, Color.WHITE, (.1f - .04f * k) * amount), mix(base, Color.BLACK, .12f * k * amount),
+                mix(base, Color.BLACK, (.38f + .08f * k) * amount)}, new float[]{0, .42f, 1});
+        g.set(base, (.42f - .14f * k) * amount, .45f - .15f * k);
     }
 
-    /** amount 是金属的程度：0 是平涂的 base，1 是 shine；平涂和金属之间变化时用（发送按钮从灰变成能按）。 */
-    static void shine(GradientDrawable d, int base, float amount) {
-        d.setOrientation(GradientDrawable.Orientation.TL_BR);
-        d.setColors(new int[]{mix(base, Color.WHITE, .2f * amount), mix(base, Color.BLACK, .22f * amount),
-                mix(base, Color.WHITE, .1f * amount), mix(base, Color.BLACK, .34f * amount)}, new float[]{0, .4f, .58f, 1});
+    /** 金属小块左上的一团柔光（见 shine）：椭圆，按高斯衰减，颜色是底色的浅色。画在底色上面、倒角下面。 */
+    static final class Glow {
+        private static final float[] FALL = {1, .8825f, .6065f, .3247f, .1353f, .0439f, 0}; // exp(-2r²)，r 每档 0.25
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Matrix matrix = new Matrix();
+        private final RectF rect = new RectF();
+        private final Path path = new Path();
+        private float amount;
+
+        /** alpha：最亮处的透明度；lift：光的颜色比底色亮多少（HSV 的明度）。 */
+        void set(int base, float alpha, float lift) {
+            this.amount = alpha;
+            float[] h = new float[3];
+            Color.colorToHSV(base, h);
+            int c = hsv(h[0], Math.min(h[1], .35f), Math.min(1, h[2] + lift)) & 0xFFFFFF;
+            int[] colors = new int[FALL.length];
+            for (int i = 0; i < FALL.length; i++) colors[i] = c | Math.round(255 * alpha * FALL[i]) << 24;
+            paint.setShader(new RadialGradient(0, 0, 1.5f, colors, new float[]{0, 1 / 6f, 2 / 6f, .5f, 4 / 6f, 5 / 6f, 1},
+                    Shader.TileMode.CLAMP));
+        }
+
+        void draw(Canvas c, Rect b, float[] radii) {
+            if (amount <= 0 || b.isEmpty()) return;
+            matrix.setScale(.62f * b.width(), .95f * b.height());
+            matrix.postTranslate(b.left + .3f * b.width(), b.top - .15f * b.height());
+            paint.getShader().setLocalMatrix(matrix);
+            rect.set(b);
+            path.reset();
+            path.addRoundRect(rect, radii, Path.Direction.CW);
+            c.drawPath(path, paint);
+        }
     }
 
     /** 一个圆角背景此刻的四个角（像素）：分开给的直接用，统一给的（胶囊写成 99dp）收到高度的一半。 */
@@ -394,19 +432,17 @@ final class Theme {
         return new float[]{v, v, v, v, v, v, v, v};
     }
 
-    /** 磨砂和金属表面的质感：雾面颗粒和一圈细倒角（上沿一道细亮线、下沿一道细暗线），画在圆角形状里面。 */
+    /** 磨砂和金属表面的质感：一圈细倒角（上沿一道细亮线、下沿一道细暗线），画在圆角形状里面。表面是干净的，不加颗粒。 */
     static final class Finish {
         private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Flow.Grain grain;
         private final Path path = new Path();
         private final RectF rect = new RectF();
         private final float density;
         private final int hi, lo;
         private int rimTop = Integer.MIN_VALUE, rimBottom;
 
-        Finish(Context c, Flow.Grain grain, int hi, int lo) {
+        Finish(Context c, int hi, int lo) {
             this.density = c.getResources().getDisplayMetrics().density;
-            this.grain = grain;
             this.hi = hi;
             this.lo = lo;
             rim.setStyle(Paint.Style.STROKE);
@@ -420,7 +456,6 @@ final class Theme {
             path.addRoundRect(rect, radii, Path.Direction.CW);
             int save = c.save();
             c.clipPath(path);
-            grain.draw(c, b.left, b.top, b.right, b.bottom);
             if (b.top != rimTop || b.bottom != rimBottom) {
                 rimTop = b.top;
                 rimBottom = b.bottom;
@@ -436,6 +471,7 @@ final class Theme {
     /** 带质感的圆角背景：底色或渐变照 GradientDrawable 画，上面加 Finish。 */
     static final class Surface extends GradientDrawable {
         private final Finish finish;
+        final Glow glow = new Glow(); // 金属的柔光（见 shine），磨砂没有
 
         Surface(Finish finish) {
             this.finish = finish;
@@ -444,7 +480,9 @@ final class Theme {
         @Override
         public void draw(Canvas c) {
             super.draw(c);
-            finish.draw(c, getBounds(), radii(this));
+            float[] r = radii(this);
+            glow.draw(c, getBounds(), r);
+            finish.draw(c, getBounds(), r);
         }
     }
 
@@ -501,7 +539,7 @@ final class Theme {
     void press(View v, int color, float radiusDp, boolean metal) {
         Spring.Shape shape = new Spring.Shape(color, dp(radiusDp), dp(R_S));
         if (color == frostButton || color == frost) shape.finish(frostFinish);
-        else shape.sheenFinish(metalFinish); // 金属的颗粒和倒角，平涂的按钮变成金属时（发送）一起显出来
+        else shape.sheenFinish(metalFinish); // 金属的倒角，平涂的按钮变成金属时（发送）一起显出来
         if (metal) shape.metal(color);
         v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), shape, null));
         StateListAnimator scale = new StateListAnimator();
