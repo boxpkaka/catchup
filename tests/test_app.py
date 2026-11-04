@@ -377,12 +377,13 @@ class ImagesTest(unittest.TestCase):
         self.store.record_push(event_id, NOW)
         self.assertFalse(self.feed()[0]["cover"])  # 首页不去原网站取
         with mock.patch("catchup.images.http.get", side_effect=lambda url, *a: pages[url]) as get, \
-                mock.patch("catchup.images._webp", side_effect=[(b"x", 1200, 600), (b"RIFF", 720, 360)]) as webp:
+                mock.patch("catchup.images._webp", side_effect=[(b"x", 2000, 1000), (b"RIFF", 1440, 720)]) as webp:
             self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))
             self.assertEqual(self.call(f"/v1/events/{event_id}/cover"), (200, b"RIFF"))  # 第二次直接读存好的
         self.assertEqual(get.call_count, 2)
         self.assertTrue(self.feed()[0]["cover"])  # 取到了，首页卡片带小图
-        self.assertEqual(webp.call_args.args[1:], ("-resize", "720", "0"))
+        self.assertEqual(webp.call_args.args[1:], ("-resize", "1440", "0"))  # 高清：手机上铺满屏幕宽也不放大
+        self.assertEqual(webp.call_args.kwargs, {"quality": 88})
         self.assertEqual(images.mime(b"RIFF"), "image/webp")
         self.assertEqual(self.call("/v1/events/999/cover")[0], 404)
 
@@ -399,6 +400,23 @@ class ImagesTest(unittest.TestCase):
         with mock.patch("catchup.images.http.get", side_effect=TimeoutError()):
             self.assertIsNone(images.cover(self.config, 8, [first]))
         self.assertFalse((Path(self.dir.name) / "data/images/covers/8.none").exists())  # 超时不算没有，下次再试
+
+    def test_old_low_res_covers_are_replaced_but_kept_as_fallback(self):
+        covers = Path(self.dir.name) / "data/images/covers"
+        covers.mkdir(parents=True)
+        (covers / "5.webp").write_bytes(b"RIFF-old")  # 早先存的 720px
+        (covers / "5.palette").write_text("#111111 #222222")
+        first = sig("https://a/1", "x", 1)
+        self.assertTrue(images.has_cover(self.config, 5))
+        with mock.patch("catchup.images.http.get", side_effect=TimeoutError()):
+            self.assertEqual(images.cover(self.config, 5, [first]), b"RIFF-old")  # 高清的这次没取到，先给旧的
+        pages = {"https://a/1": b'<meta property="og:image" content="https://a/i.jpg">', "https://a/i.jpg": b"jpg"}
+        with mock.patch("catchup.images.http.get", side_effect=lambda url, *a: pages[url]), \
+                mock.patch("catchup.images._webp", side_effect=[(b"x", 2000, 1000), (b"RIFF-hd", 1440, 720)]), \
+                mock.patch("catchup.images.flat", return_value=False):
+            self.assertEqual(images.cover(self.config, 5, [first]), b"RIFF-hd")
+        self.assertEqual(images.cover(self.config, 5, [first]), b"RIFF-hd")  # 存好了，不再去取
+        self.assertEqual(images.palette(self.config, 5), ["#111111", "#222222"])  # 卡片颜色接着用原来的
 
     def test_plain_covers_are_dropped(self):
         github, plain = sig("https://g/1", "x", 3), sig("https://p/1", "x", 2)

@@ -17,7 +17,6 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
-import android.graphics.BlendMode;
 import android.graphics.Typeface;
 import android.graphics.fonts.Font;
 import android.graphics.fonts.FontFamily;
@@ -96,8 +95,10 @@ final class Theme {
         frost = night ? 0x85282936 : 0x99FFFFFF;
         frostButton = night ? 0xA82C2D3A : 0xBDFFFFFF;
         density = c.getResources().getDisplayMetrics().density;
-        frostFinish = new Finish(density, 36, night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
-        metalFinish = new Finish(density, 36, 0x4DFFFFFF, 0x33000000);
+        // 颗粒：磨砂是浅底（深色模式是深底），金属小块深浅都有，按中间算
+        frostFinish = new Finish(c, new Flow.Grain(c).set(night ? .13f : .11f, night ? .16f : .93f),
+                night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
+        metalFinish = new Finish(c, new Flow.Grain(c).set(.07f, .5f), 0x4DFFFFFF, 0x33000000);
     }
 
     /**
@@ -365,20 +366,19 @@ final class Theme {
 
     /** 磨砂和金属表面的质感：雾面颗粒和一圈细倒角（上沿一道细亮线、下沿一道细暗线），画在圆角形状里面。 */
     static final class Finish {
-        private final Paint grain = new Paint(), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Flow.Grain grain;
         private final Path path = new Path();
         private final RectF rect = new RectF();
         private final float density;
         private final int hi, lo;
         private int rimTop = Integer.MIN_VALUE, rimBottom;
 
-        Finish(float density, int grainAlpha, int hi, int lo) {
-            this.density = density;
+        Finish(Context c, Flow.Grain grain, int hi, int lo) {
+            this.density = c.getResources().getDisplayMetrics().density;
+            this.grain = grain;
             this.hi = hi;
             this.lo = lo;
-            grain.setShader(Flow.grainShader(density));
-            grain.setBlendMode(BlendMode.OVERLAY);
-            grain.setAlpha(grainAlpha);
             rim.setStyle(Paint.Style.STROKE);
             rim.setStrokeWidth(2 * density); // 一半在形状外面被裁掉，露出 1dp
         }
@@ -390,7 +390,7 @@ final class Theme {
             path.addRoundRect(rect, radii, Path.Direction.CW);
             int save = c.save();
             c.clipPath(path);
-            c.drawRect(b, grain);
+            grain.draw(c, b.left, b.top, b.right, b.bottom);
             if (b.top != rimTop || b.bottom != rimBottom) {
                 rimTop = b.top;
                 rimBottom = b.bottom;
