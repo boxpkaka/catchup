@@ -3,15 +3,12 @@ package cloud.boxpkaka.infofeed;
 import android.Manifest;
 import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.Dialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -22,8 +19,6 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
@@ -47,11 +42,9 @@ import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -82,24 +75,14 @@ public class MainActivity extends Activity {
     static final String EXTRA_REPORT = "report"; // 如 weekly/2026-10-19，见 FeedService
     private static final long REFETCH_MS = 30_000;
     private static final long OLDER_RETRY_MS = 10_000;
-    private static final long UNDO_MS = 10_000;
     private static final double TOP_RATIO = 0.7; // 最值得看：前 TOP_MIN 件之后，分数不低于第 TOP_MIN 名的七成才接着放
     private static final int TOP_MIN = 3, TOP_MAX = 5;
     private static final String[] TABS = {"信息流", "专题", "报告"};
     private static final int FEED = 0, TOPICS = 1, REPORT = 2;
-    /**
-     * “不需要”的固定原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。
-     * 上面一行“不想看这类”的几个候选从服务器取（/reasons），选中哪类就记哪类；“其他”先存档，攒几条再一起判断。
-     */
-    private static final String[][] REASONS = {
-            {"source", "不想看这个来源", "正在记下…"},
-            {"known", "已经知道了", "已记下"},
-            {"other", "其他", "已存档，攒几条再一起判断"}};
-    private static final int REQ_EVENT = 2;
+    static final int REQ_EVENT = 2;
     private static final String ANSWER = "answer"; // 追踪中的行里，“你问过的问题有答案了”用这个 label 区分
 
     private Theme t;
-    private final Handler main = new Handler(Looper.getMainLooper());
 
     private FrameLayout root;
     private Flow mist, reportMist; // 整页的雾：珍珠银；翻到报告时渐渐换成钴蓝
@@ -110,20 +93,12 @@ public class MainActivity extends Activity {
     private LinearLayout header;
     private TextView statusChip;
     static volatile boolean visible; // 首页在前台：补到的旧推送不再弹通知，见 FeedService.notifyIfRecent
-    private LinearLayout updateNotice, batteryNotice, notifyNotice, askNotice;
+    private LinearLayout batteryNotice, notifyNotice, askNotice;
     private TextView askText, askKeep, askDrop;
     private JSONObject ask; // 正在问的那个记忆问题（feed 的 ask），答了就清掉
-    private TextView updateText, updateAction;
     private View skeleton;
     private ValueAnimator skeletonGlow;
     private LinearLayout stateView;
-    private LinearLayout undoBar;
-    private TextView undoLabel, undoButton;
-    private Shapes.Wave undoCountdown;
-    private final List<TextView> reasonChips = new ArrayList<>(); // 固定原因
-    private final List<TextView> topicChips = new ArrayList<>(); // “不想看这类”的候选，每次移走时重新取
-    private HorizontalScrollView topicScroll;
-    private LinearLayout topicRow;
 
     private final List<Row> rows = new ArrayList<>();
     private final FeedAdapter adapter = new FeedAdapter();
@@ -132,14 +107,12 @@ public class MainActivity extends Activity {
     private boolean loading, receiving;
     private final Set<Long> hidden = new HashSet<>();
     private final Map<Long, JSONObject> firstSeen = new HashMap<>(); // 见 first
-    private long pendingDismiss = -1;
     private final Set<Long> collapsing = new HashSet<>(); // 正在收起的行，列表重绑时别打断它的动画
     private final Set<String> leaving = new HashSet<>(); // 追踪中正在收起的行（按 rowKey）
     private long expanding = -1; // 撤销后要展开的那一行
-    private long answeredFor = -1; // 撤销条正在等哪件事的“记住了”回应
-    private final Runnable commitDismiss = () -> commitDismiss(null);
-    private final Runnable hideUndoLater = this::hideUndo;
-    private Updater.Release release;
+    private Undo undo; // 底部的撤销条：移走一件事以后可以撤销、选原因
+    private Sheets sheets; // 菜单和从首页弹出的几个面板
+    private Updater.Prompt update; // 顶上的更新提示条
     private Swipe.Tabs tabBar;
     private TopicsView topics;
     private ReportView reports;
@@ -189,14 +162,14 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
         FeedService.start(this);
-        onInstallResult(getIntent());
+        update.onInstallResult(getIntent());
         openReport(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        onInstallResult(intent);
+        update.onInstallResult(intent);
         openReport(intent);
     }
 
@@ -234,7 +207,7 @@ public class MainActivity extends Activity {
         notifyNotice.setVisibility(notificationsBlocked() ? View.VISIBLE : View.GONE);
         render();
         if (System.currentTimeMillis() - lastFetch > REFETCH_MS) load();
-        checkUpdate(false);
+        update.check(false);
     }
 
     @Override
@@ -247,7 +220,7 @@ public class MainActivity extends Activity {
             unregisterReceiver(receiver);
             receiving = false;
         }
-        commitDismiss(null);
+        undo.commit();
     }
 
     /** 真的离开了（不是上面盖了一张详情页）：看过的事件下次不再算“新的”。放在这里，看完详情回来“新”不会一下子都没了。 */
@@ -260,6 +233,7 @@ public class MainActivity extends Activity {
     // ---------- 布局 ----------
 
     private View build() {
+        sheets = new Sheets(this, t, panels);
         root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
         mist = new Flow(this);
@@ -291,7 +265,7 @@ public class MainActivity extends Activity {
         menu.setGravity(Gravity.CENTER);
         menu.setContentDescription("菜单");
         menu.setBackground(t.ripple(Color.TRANSPARENT, 99));
-        menu.setOnClickListener(v -> showMenu());
+        menu.setOnClickListener(v -> sheets.showMenu());
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(44), t.dp(44));
         ml.leftMargin = t.dp(4);
         topBar.addView(menu, ml);
@@ -325,7 +299,7 @@ public class MainActivity extends Activity {
         pull = new PullLayout(this, t, list);
         pull.setOnRefresh(() -> {
             load();
-            checkUpdate(false);
+            update.check(false);
         });
         homePager = new Swipe.Pager(this, home, true);
         Swipe content = homePager.frame;
@@ -349,56 +323,11 @@ public class MainActivity extends Activity {
         stateView.setVisibility(View.GONE);
         root.addView(stateView, match());
 
-        undoBar = new LinearLayout(this);
-        undoBar.setOrientation(LinearLayout.VERTICAL);
-        undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
-        undoBar.setBackground(t.metal(t.inv, Theme.R_XL));
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        undoLabel = t.text(this, "", 14, t.onInv, 600);
-        head.addView(undoLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        undoButton = t.text(this, "撤销", 14, t.invPri, 800);
-        undoButton.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-        undoButton.setBackground(t.ripple(Color.TRANSPARENT, 99));
-        undoButton.setOnClickListener(v -> undoDismiss());
-        head.addView(undoButton);
-        undoBar.addView(head);
-        LinearLayout chips = new LinearLayout(this);
-        for (String[] reason : REASONS) {
-            TextView chip = t.text(this, reason[1], 13, t.onInv, 700);
-            chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-            chip.setOnClickListener(v -> pickReason(chip, reason));
-            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            cl.rightMargin = t.dp(3);
-            chips.addView(chip, cl);
-            reasonChips.add(chip);
-        }
-        topicRow = new LinearLayout(this);
-        topicRow.setGravity(Gravity.CENTER_VERTICAL);
-        topicScroll = new HorizontalScrollView(this);
-        topicScroll.setHorizontalScrollBarEnabled(false);
-        topicScroll.addView(topicRow);
-        LinearLayout.LayoutParams tsl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        tsl.topMargin = t.dp(6);
-        undoBar.addView(topicScroll, tsl);
-        HorizontalScrollView chipScroll = new HorizontalScrollView(this);
-        chipScroll.setHorizontalScrollBarEnabled(false);
-        chipScroll.addView(chips);
-        LinearLayout.LayoutParams csl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        csl.topMargin = t.dp(6);
-        undoBar.addView(chipScroll, csl);
-        undoCountdown = new Shapes.Wave(this, t.invPri);
-        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(10));
-        wl.setMargins(0, t.dp(12), t.dp(10), 0);
-        undoBar.addView(undoCountdown, wl);
-        undoBar.setVisibility(View.GONE);
+        undo = new Undo(this, t, this::undone);
         FrameLayout.LayoutParams ub = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
         ub.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
-        root.addView(undoBar, ub);
+        root.addView(undo.view(), ub);
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -409,7 +338,7 @@ public class MainActivity extends Activity {
                 topics.setBottomInset(bars.bottom + t.dp(96));
                 reports.setBottomInset(bars.bottom + t.dp(96));
                 ub.bottomMargin = bars.bottom + t.dp(16);
-                undoBar.setLayoutParams(ub);
+                undo.view().setLayoutParams(ub);
                 return WindowInsets.CONSUMED;
             });
         }
@@ -464,6 +393,26 @@ public class MainActivity extends Activity {
         }
     };
 
+    /** 菜单和面板里的操作改了首页该显示什么：马上重新取。 */
+    private final Sheets.Host panels = new Sheets.Host() {
+        @Override
+        public void reload() {
+            lastFetch = 0;
+            load();
+        }
+
+        @Override
+        public void restored(long id) {
+            hidden.remove(id);
+            reload();
+        }
+
+        @Override
+        public void checkUpdate() {
+            update.check(true);
+        }
+    };
+
     /** 信息流往上滚过了：顶栏下面显示分隔线。 */
     private boolean listScrolled() {
         return list.getFirstVisiblePosition() > 0 || (list.getChildCount() > 0 && list.getChildAt(0).getTop() < 0);
@@ -515,16 +464,16 @@ public class MainActivity extends Activity {
         header.setPadding(t.dp(12), t.dp(4), t.dp(12), 0);
 
         // 提醒条：更新用反色，最显眼；其余用卡片色，右边是主色容器的按钮
-        updateNotice = notice(t.inv);
-        updateText = t.text(this, "", 14.5f, t.onInv, 700);
+        LinearLayout updateNotice = notice(t.inv);
+        TextView updateText = t.text(this, "", 14.5f, t.onInv, 700);
         updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         int[] ask = t.ask(Theme.PEARL);
-        updateAction = noticeAction("更新", ask[0], ask[1]);
+        TextView updateAction = noticeAction("更新", ask[0], ask[1]);
         updateAction.setBackground(t.metal(ask[0], 99));
         updateNotice.addView(updateAction);
-        updateNotice.setOnClickListener(v -> installUpdate());
         updateNotice.setVisibility(View.GONE);
         header.addView(updateNotice, noticeLp());
+        update = new Updater.Prompt(this, updateNotice, updateText, updateAction);
 
         batteryNotice = notice(t.sheet);
         batteryNotice.addView(noticeText("允许后台运行", "关闭电池优化后，推送才不会延迟"),
@@ -651,7 +600,7 @@ public class MainActivity extends Activity {
                     olderEvents.clear(); // 刷新后从第一页重新开始
                     olderCursor = cursor(got);
                     hidden.clear();
-                    if (pendingDismiss >= 0) hidden.add(pendingDismiss);
+                    if (undo.pending() >= 0) hidden.add(undo.pending());
                     updateStatusChip(); // 清掉“刷新失败”，换回推送断开或服务端疑似故障的提示
                     showAsk(got.optJSONObject("ask"));
                     render();
@@ -1441,7 +1390,7 @@ public class MainActivity extends Activity {
         v.setCompoundDrawablesRelative(clover, null, null, null);
         v.setCompoundDrawablePadding(t.dp(8));
         v.setBackground(t.frostRipple(t.frost, 99));
-        v.setOnClickListener(x -> showSkipped());
+        v.setOnClickListener(x -> sheets.showSkipped(feed == null ? null : feed.optJSONArray("skipped")));
         FrameLayout frame = new FrameLayout(this);
         frame.setPadding(t.dp(12), t.dp(10), t.dp(12), t.dp(2));
         frame.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1592,34 +1541,20 @@ public class MainActivity extends Activity {
         }, "follow").start();
     }
 
+    /** 从列表里移走，底部升起撤销条（见 Undo），倒数走完才提交给服务器。 */
     private void dismiss(long id) {
         if (id < 0) return;
         JSONObject e = findEvent(id); // 先取，render() 之后列表里就没有它了
-        commitDismiss(null); // 上一条还在撤销期内的，先提交
-        pendingDismiss = id;
-        hidden.add(pendingDismiss);
+        undo.commit(); // 上一条还在撤销期内的，先提交
+        hidden.add(id);
         render();
-        Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
-        main.removeCallbacks(hideUndoLater);
-        resetUndo(e == null ? "" : e.optString("source"));
-        loadTopics(pendingDismiss);
-        // 撤销条从底下用弹簧升起，波浪线开始倒数，走完就提交
-        undoBar.animate().cancel();
-        undoBar.setTranslationY(t.dp(160));
-        undoBar.setAlpha(1f);
-        undoBar.setVisibility(View.VISIBLE);
-        undoBar.animate().translationY(0).setInterpolator(Spring.STD).setDuration(Spring.STD.duration).start();
-        undoCountdown.countdown(UNDO_MS);
-        main.removeCallbacks(commitDismiss);
-        main.postDelayed(commitDismiss, UNDO_MS);
+        undo.show(id, e == null ? "" : e.optString("source"));
     }
 
-    private void undoDismiss() {
-        main.removeCallbacks(commitDismiss);
-        if (pendingDismiss >= 0) hidden.remove(pendingDismiss);
-        expanding = pendingDismiss;
-        pendingDismiss = -1;
-        hideUndo();
+    /** 撤销条上点了撤销：这一行放回来，从无到有展开。 */
+    private void undone(long id) {
+        if (id >= 0) hidden.remove(id);
+        expanding = id;
         render();
         list.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
             @Override
@@ -1635,509 +1570,6 @@ public class MainActivity extends Activity {
             if (r.e != null && r.e.optLong("id") == id) return r.e;
         }
         return null;
-    }
-
-    /** source 是这件事的主要来源名，“不想看这个来源”按钮直接写出来，免得不知道屏蔽的是谁。 */
-    private void resetUndo(String source) {
-        undoLabel.setText("已移走，为什么不需要？");
-        undoButton.setVisibility(View.VISIBLE);
-        undoCountdown.setVisibility(View.VISIBLE);
-        answeredFor = -1;
-        for (int i = 0; i < REASONS.length; i++) {
-            reasonChips.get(i).setText("source".equals(REASONS[i][0]) && !source.isEmpty()
-                    ? "不想看「" + source + "」" : REASONS[i][1]);
-        }
-        styleChips(reasonChips);
-        topicChips.clear();
-        topicRow.removeAllViews();
-        topicRow.addView(t.text(this, "不想看这类  正在想…", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600));
-        topicScroll.setVisibility(View.VISIBLE);
-    }
-
-    /** 一行原因按钮排成分段胶囊：头尾大圆角，中间小圆角。 */
-    private void styleChips(List<TextView> row) {
-        for (int i = 0; i < row.size(); i++) {
-            TextView chip = row.get(i);
-            float l = i == 0 ? 99 : Theme.R_XS, r = i == row.size() - 1 ? 99 : Theme.R_XS;
-            chip.setEnabled(true);
-            chip.setAlpha(1f);
-            chip.setTextColor(t.onInv);
-            chip.setBackground(t.ripple((t.onInv & 0x00FFFFFF) | 0x1F000000, l, r, r, l));
-        }
-    }
-
-    /** 取这件事可能不想看的几类内容，放在撤销条上面一行；取不到就只留固定原因。 */
-    private void loadTopics(long id) {
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            JSONArray options = null;
-            try {
-                options = Api.get(app, "/v1/events/" + id + "/reasons").optJSONArray("options");
-            } catch (Exception err) {
-                Trace.log(app, "reasons.fail", "id=" + id + " " + err);
-            }
-            JSONArray got = options;
-            runOnUiThread(() -> {
-                if (isDestroyed() || pendingDismiss != id || answeredFor >= 0) return; // 已经选了或者换了一条
-                topicRow.removeAllViews();
-                topicChips.clear();
-                if (got == null || got.length() == 0) {
-                    topicScroll.setVisibility(View.GONE);
-                    return;
-                }
-                TextView label = t.text(this, "不想看这类", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600);
-                label.setPadding(0, 0, t.dp(8), 0);
-                topicRow.addView(label);
-                for (int i = 0; i < got.length(); i++) {
-                    JSONObject option = got.optJSONObject(i);
-                    TextView chip = t.text(this, option.optString("text"), 13, t.onInv, 700);
-                    chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-                    chip.setOnClickListener(v -> pickTopic(chip, option));
-                    topicRow.addView(chip, gapLp(3));
-                    topicChips.add(chip);
-                }
-                styleChips(topicChips);
-            });
-        }, "reasons").start();
-    }
-
-    /** 选了固定原因就立即提交，撤销条留一下显示回应再收起。 */
-    private void pickReason(TextView picked, String[] reason) {
-        if (pendingDismiss < 0) return;
-        boolean remembers = "source".equals(reason[0]); // 已经知道了、其他：不当场记
-        picked(picked, reason[2], reason[0], remembers);
-        commitDismiss(reason[0], null);
-    }
-
-    /** 选了“不想看这类”的某一类：原样记下这一类。 */
-    private void pickTopic(TextView picked, JSONObject option) {
-        if (pendingDismiss < 0) return;
-        picked(picked, "正在记下…", "topic " + option.optString("text"), true);
-        commitDismiss("topic", option);
-    }
-
-    private void picked(TextView picked, String response, String trace, boolean remembers) {
-        List<TextView> all = new ArrayList<>(reasonChips);
-        all.addAll(topicChips);
-        for (TextView chip : all) {
-            chip.setEnabled(false);
-            if (chip != picked) chip.setAlpha(0.35f);
-        }
-        picked.setTextColor(t.inv);
-        picked.setBackground(t.round(t.onInv, 99));
-        picked.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
-        undoLabel.setText(response);
-        undoButton.setVisibility(View.INVISIBLE);
-        undoCountdown.stop();
-        undoCountdown.setVisibility(View.GONE);
-        Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + trace);
-        answeredFor = remembers ? pendingDismiss : -1;
-        main.postDelayed(hideUndoLater, remembers ? 6000 : 1800); // 等不到服务器回应也会收起
-    }
-
-    /** 服务器按原因记下了记忆：在撤销条上说出记住了什么，和对话里的“记住了”一致。 */
-    private void showRemembered(long id, JSONObject response) {
-        if (isDestroyed() || id != answeredFor || undoBar.getVisibility() != View.VISIBLE) return;
-        JSONObject memory = response == null ? null : response.optJSONObject("memory");
-        JSONArray added = memory == null ? null : memory.optJSONArray("added");
-        undoLabel.setText(added != null && added.length() > 0
-                ? "记住了：" + added.optJSONObject(0).optString("text") : "已记下");
-        main.removeCallbacks(hideUndoLater);
-        main.postDelayed(hideUndoLater, 2400);
-    }
-
-    private void commitDismiss(String reason) {
-        commitDismiss(reason, null);
-    }
-
-    /**
-     * 把撤销期内的“不需要”提交给服务器；reason 为空表示没选原因（超时或离开页面），此时直接收起撤销条。
-     * topic 是选中的那一类 {text, keywords}，原样传回服务器记下。
-     */
-    private void commitDismiss(String reason, JSONObject topic) {
-        main.removeCallbacks(commitDismiss);
-        long id = pendingDismiss;
-        if (id < 0) return;
-        pendingDismiss = -1;
-        if (reason == null) hideUndo();
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            try {
-                JSONObject r = Api.post(app, "/v1/events/" + id + "/feedback",
-                        new JSONObject().put("value", "not_needed").putOpt("reason", reason).putOpt("topic", topic));
-                if (reason != null) runOnUiThread(() -> showRemembered(id, r));
-            } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + id + " " + err);
-            }
-        }, "feedback").start();
-    }
-
-    private void hideUndo() {
-        if (undoBar.getVisibility() != View.VISIBLE) return;
-        undoCountdown.stop();
-        undoBar.animate().translationY(t.dp(24)).alpha(0f).setInterpolator(Spring.FX).setDuration(Spring.FX.duration)
-                .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
-    }
-
-    // ---------- 菜单 ----------
-
-    private void showMenu() {
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(t.dp(12), 0, t.dp(12), 0);
-        Dialog d = t.sheet(this, sheet);
-        Drawable memory = new Shapes.Blob(Shapes.SOFT, t.onPc);
-        Drawable battery = getDrawable(R.drawable.ic_battery);
-        battery.setTint(t.onPc);
-        sheet.addView(menuRow(memory, "记忆", "Catchup 记得的关于你的事", () -> {
-            d.dismiss();
-            Push.open(this, new Intent(this, MemoryActivity.class));
-        }));
-        sheet.addView(menuRow("+", "添加链接", "从剪贴板", () -> {
-            d.dismiss();
-            addLinkFromClipboard();
-        }));
-        sheet.addView(menuRow("↺", "不需要的内容", "可以恢复", () -> {
-            d.dismiss();
-            showDismissed();
-        }));
-        sheet.addView(menuRow("↓", "检查更新", "当前 " + Updater.currentVersion(this), () -> {
-            d.dismiss();
-            checkUpdate(true);
-        }));
-        sheet.addView(menuRow("i", "诊断信息", "", () -> {
-            d.dismiss();
-            showDiagnostics();
-        }));
-        sheet.addView(menuRow(battery, "后台运行设置", "", () -> {
-            d.dismiss();
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        }));
-        t.segments(sheet);
-        d.show();
-    }
-
-    /** 标记过不需要的事件，点“恢复”后重新出现在首页。 */
-    private void showDismissed() {
-        new Thread(() -> {
-            JSONArray list = null;
-            try {
-                list = Api.get(this, "/v1/dismissed").optJSONArray("events");
-            } catch (Exception e) {
-                Trace.log(this, "dismissed.fail", e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-            JSONArray got = list;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (got == null) {
-                    toast("没有连上服务器，稍后再试");
-                    return;
-                }
-                LinearLayout items = new LinearLayout(this);
-                items.setOrientation(LinearLayout.VERTICAL);
-                for (int i = 0; i < got.length(); i++) items.addView(dismissedRow(got.optJSONObject(i)));
-                t.segments(items);
-                listSheet("不需要的内容", got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
-                        : "恢复后会重新出现在首页", items).show();
-            });
-        }, "dismissed").start();
-    }
-
-    /** 底部面板：标题、说明和一个长列表，列表最高占屏幕 3/5，其余滚动。 */
-    private Dialog listSheet(String heading, String note, View items) {
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        TextView title = t.text(this, heading, 22, t.ink, 800);
-        title.setPadding(t.dp(24), t.dp(6), t.dp(24), t.dp(4));
-        content.addView(title);
-        TextView sub = t.text(this, note, 13, t.sub, 400);
-        sub.setLineSpacing(t.dp(4), 1f);
-        sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(14));
-        content.addView(sub);
-        int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
-        ScrollView scroll = new ScrollView(this) {
-            @Override
-            protected void onMeasure(int w, int h) {
-                super.onMeasure(w, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST));
-            }
-        };
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.setPadding(t.dp(12), 0, t.dp(12), 0);
-        scroll.addView(items);
-        content.addView(scroll);
-        return t.sheet(this, content);
-    }
-
-    /** 未追踪信息：热度高但和你无关的事。点开看详情；点“想看这类”当场记成一条长期关注，以后同类的会排到前面。 */
-    private void showSkipped() {
-        JSONArray list = feed == null ? null : feed.optJSONArray("skipped");
-        if (list == null || list.length() == 0) return;
-        LinearLayout items = new LinearLayout(this);
-        items.setOrientation(LinearLayout.VERTICAL);
-        for (int i = 0; i < list.length(); i++) items.addView(skippedRow(list.optJSONObject(i)));
-        t.segments(items);
-        listSheet("未追踪信息", "这些不会推送。觉得该看的，点“想看这类”。", items).show();
-        Trace.log(this, "ui.skipped", "n=" + list.length());
-    }
-
-    private View skippedRow(JSONObject s) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, s.optString("headline"), 14.5f, t.ink, 600);
-        headline.setLineSpacing(t.dp(3), 1f);
-        headline.setMaxLines(2);
-        headline.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(headline);
-        TextView meta = t.text(this, s.optInt("outlets") + " 家媒体报道 · " + s.optString("why"), 12, t.sub, 400);
-        meta.setPadding(0, t.dp(4), 0, 0);
-        text.addView(meta);
-        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView want = t.pill(this, "想看这类", false);
-        want.setTextSize(13);
-        want.setTypeface(Theme.weight(800));
-        want.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
-        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        wl.leftMargin = t.dp(12);
-        row.addView(want, wl);
-        long id = s.optLong("id");
-        row.setOnClickListener(v -> Card.open(this, v, new Intent(this, EventActivity.class)
-                .putExtra(EventActivity.EXTRA_ID, id).putExtra(EventActivity.EXTRA_FROM, "skipped"), REQ_EVENT));
-        want.setOnClickListener(v -> {
-            want.setEnabled(false);
-            want.setText("记下中…");
-            Context app = getApplicationContext();
-            new Thread(() -> {
-                JSONObject r = null;
-                try {
-                    r = Api.post(app, "/v1/events/" + id + "/feedback",
-                            new JSONObject().put("value", "useful").put("reason", "topic"));
-                } catch (Exception err) {
-                    Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
-                }
-                JSONObject got = r;
-                runOnUiThread(() -> {
-                    if (isDestroyed()) return;
-                    if (got == null) {
-                        want.setEnabled(true);
-                        want.setText("想看这类");
-                        toast("没有记下，请重试");
-                        return;
-                    }
-                    done(want, "✓ 已记下");
-                    JSONObject memory = got.optJSONObject("memory");
-                    JSONArray added = memory == null ? null : memory.optJSONArray("added");
-                    if (added != null && added.length() > 0) {
-                        meta.setText("记住了：" + added.optJSONObject(0).optString("text"));
-                        meta.setTextColor(t.ink);
-                    }
-                    lastFetch = 0;
-                    load(); // 记忆变了，首页按新记忆重新排
-                });
-            }, "want").start();
-            Trace.log(this, "ui.want", "id=" + id);
-        });
-        return row;
-    }
-
-    /** 微信等不支持系统分享的 App：复制链接后从菜单添加。 */
-    private void addLinkFromClipboard() {
-        android.content.ClipData clip = getSystemService(android.content.ClipboardManager.class).getPrimaryClip();
-        CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
-        if (text == null || !text.toString().contains("http")) {
-            toast("先在别的 App 里复制一条链接");
-            return;
-        }
-        Push.open(this, new Intent(this, ShareActivity.class).putExtra(Intent.EXTRA_TEXT, text.toString()));
-    }
-
-    private View dismissedRow(JSONObject e) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, e.optString("headline"), 14.5f, t.ink, 600);
-        headline.setLineSpacing(t.dp(3), 1f);
-        headline.setMaxLines(2);
-        headline.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(headline);
-        String reason = e.optString("reason");
-        TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at")))
-                + (reason.isEmpty() ? "" : " · " + reason), 12, t.sub, 400);
-        when.setPadding(0, t.dp(4), 0, 0);
-        text.addView(when);
-        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView restore = t.pill(this, "恢复", false);
-        restore.setTextSize(13);
-        restore.setTypeface(Theme.weight(800));
-        restore.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
-        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        rl.leftMargin = t.dp(12);
-        row.addView(restore, rl);
-        long id = e.optLong("id");
-        restore.setOnClickListener(v -> {
-            restore.setEnabled(false);
-            restore.setText("恢复中");
-            Context app = getApplicationContext();
-            new Thread(() -> {
-                boolean ok = true;
-                try {
-                    Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", JSONObject.NULL));
-                } catch (Exception err) {
-                    ok = false;
-                    Trace.log(app, "feedback.fail", "id=" + id + " restore " + err);
-                }
-                boolean done = ok;
-                runOnUiThread(() -> {
-                    if (isDestroyed()) return;
-                    if (!done) {
-                        restore.setEnabled(true);
-                        restore.setText("恢复");
-                        toast("恢复失败，请重试");
-                        return;
-                    }
-                    done(restore, "✓ 已恢复");
-                    hidden.remove(id);
-                    lastFetch = 0;
-                    load();
-                });
-            }, "restore").start();
-            Trace.log(this, "ui.restore", "id=" + id);
-        });
-        return row;
-    }
-
-    /** 菜单的一行：主色容器的小方块里放图标（一个字符或一个图形），右边是名称和说明。 */
-    private View menuRow(Object icon, String label, String detail, Runnable action) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
-        TextView ic = t.text(this, icon instanceof String ? (String) icon : "", 18, t.onPc, 800);
-        ic.setGravity(Gravity.CENTER);
-        ic.setBackground(t.round(t.pc, 14));
-        if (icon instanceof Drawable) {
-            Drawable d = (Drawable) icon;
-            d.setBounds(0, 0, t.dp(20), t.dp(20));
-            ic.setCompoundDrawablesRelative(d, null, null, null);
-            ic.setPadding(t.dp(10), 0, 0, 0);
-        }
-        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(40), t.dp(40));
-        il.rightMargin = t.dp(14);
-        row.addView(ic, il);
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.addView(t.text(this, label, 15, t.ink, 700));
-        if (!detail.isEmpty()) {
-            TextView d = t.text(this, detail, 12.5f, t.sub, 400);
-            d.setPadding(0, t.dp(2), 0, 0);
-            col.addView(d);
-        }
-        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.setOnClickListener(v -> action.run());
-        return row;
-    }
-
-    /** 操作完成的按钮：从胶囊变成方一点的墨色块。 */
-    private void done(TextView button, String label) {
-        button.setText(label);
-        button.setTextColor(t.bg);
-        button.setBackground(t.round(t.ink, Theme.R_S));
-    }
-
-    /** 显示本机最近的埋点日志，可复制；不依赖网络。 */
-    private void showDiagnostics() {
-        String text = "v" + Updater.currentVersion(this) + " Android " + Build.VERSION.RELEASE + " " + Build.MODEL
-                + "\n设备 " + Trace.device(this) + "  网络 " + Trace.network(this)
-                + "\n状态 " + FeedService.status + "\n\n" + Trace.tail(this, 6000);
-        TextView body = t.text(this, text, 11, t.ink, 400);
-        body.setTypeface(Typeface.MONOSPACE);
-        body.setTextIsSelectable(true);
-        body.setPadding(t.dp(20), t.dp(12), t.dp(20), t.dp(12));
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(body);
-        new AlertDialog.Builder(this)
-                .setTitle("诊断信息")
-                .setView(scroll)
-                .setPositiveButton("复制", (dlg, w) -> {
-                    getSystemService(android.content.ClipboardManager.class)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("Catchup 诊断信息", text));
-                    toast("已复制");
-                })
-                .setNegativeButton("关闭", null)
-                .show();
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
-    }
-
-    // ---------- 应用内更新 ----------
-
-    /**
-     * 后台检查新版本，打开 App 和下拉刷新时自动查；manual 为 true 时把“已是最新”或失败原因也提示出来。
-     * 已经找到新版本就不再自动查，免得下载、安装确认时回到首页又把提示条重置成“已就绪”。
-     */
-    private void checkUpdate(boolean manual) {
-        if (!manual && release != null) return;
-        new Thread(() -> {
-            String msg;
-            Updater.Release r = null;
-            try {
-                r = Updater.check(this);
-                msg = r == null ? "已是最新版本" : null;
-            } catch (Exception e) {
-                msg = "检查更新失败：" + e.getMessage();
-            }
-            Updater.Release found = r;
-            String toastText = msg;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (found != null) {
-                    release = found;
-                    showUpdate("新版本 " + found.version + " 已就绪", true);
-                } else if (manual) {
-                    toast(toastText);
-                }
-            });
-        }, "update-check").start();
-    }
-
-    private void installUpdate() {
-        Updater.Release r = release;
-        if (r == null || updateAction.getVisibility() != View.VISIBLE) return;
-        showUpdate("正在下载 " + r.version + "…", false);
-        new Thread(() -> {
-            try {
-                Updater.install(this, r);
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    toast("下载更新失败：" + e.getMessage());
-                    showUpdate("新版本 " + r.version + " 下载失败", true);
-                });
-            }
-        }, "update-install").start();
-    }
-
-    private void showUpdate(String s, boolean actionable) {
-        updateText.setText(s);
-        updateAction.setText(actionable && s.contains("失败") ? "重试" : "更新");
-        updateAction.setVisibility(actionable ? View.VISIBLE : View.GONE);
-        updateNotice.setVisibility(View.VISIBLE);
-    }
-
-    /** PackageInstaller 的回调：需要用户确认时弹出系统安装界面，失败时提示原因。 */
-    private void onInstallResult(Intent intent) {
-        if (intent == null || !Updater.ACTION_INSTALLED.equals(intent.getAction())) return;
-        int code = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
-        if (code == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
-            if (confirm != null) startActivity(confirm);
-        } else if (code != PackageInstaller.STATUS_SUCCESS) {
-            toast("安装失败：" + intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
-            if (release != null) showUpdate("新版本 " + release.version + " 安装失败", true);
-        }
     }
 
     // ---------- 小工具 ----------
