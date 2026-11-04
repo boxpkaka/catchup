@@ -1,5 +1,6 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Intent;
@@ -20,6 +21,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.animation.DecelerateInterpolator;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -68,6 +70,8 @@ public class TopicActivity extends Activity implements Card.Hero {
     private Flow mist, pearl; // 专题色的雾；首页的珍珠银雾（卡片展开时先盖住首页的列表，见 morph）
     private TextView title;
     private float morphed = 1; // 上一次 morph 到的位置：停在整页以后（右滑缩小时也一直是 1）不再动列表
+    private boolean waiting; // 数据在卡片长的途中到了：落定以后再建列表，见 morph
+    private ValueAnimator rising; // 落定以后建好的列表一行一行浮上来
     private FrameLayout bar; // 标题栏：和专题卡片同一张流动的雾面金属
     private int barTop, barHeight; // 标题栏里内容的上边距、最小高度（随状态栏高度定）
     private int pulled; // 到顶往下拉了多少，标题栏就高出多少
@@ -236,7 +240,8 @@ public class TopicActivity extends Activity implements Card.Hero {
 
     /**
      * 卡片展开到 q 时页面自己的部分：先铺一层和首页一模一样的珍珠银雾（同一张图、同一个时钟），首页的列表在前 35% 里
-     * 消失；专题色的雾在前 55% 里盖上来；列表一行一行从下面浮上来（每行晚一点，最晚的也在 q 到 1 时到位）。收回时倒着走。
+     * 消失；专题色的雾在前 55% 里盖上来（盖满以后珍珠银不再画）；列表一行一行从下面浮上来（每行晚一点，最晚的也在 q 到 1
+     * 时到位）。收回时倒着走。数据在长的途中到了的，等落定（q 正好是 1）再建列表、再浮上来：长的途中建几十行会卡一下。
      */
     @Override
     public void morph(float q) {
@@ -248,17 +253,40 @@ public class TopicActivity extends Activity implements Card.Hero {
         }
         if (pearl != null) {
             pearl.setAlpha(clamp(q / 0.35f));
-            pearl.setVisibility(q < 1 ? View.VISIBLE : View.INVISIBLE);
+            pearl.setVisibility(q < 0.55f ? View.VISIBLE : View.INVISIBLE);
         }
         mist.setAlpha(clamp(q / 0.55f));
+        if (q < 1 && rising != null) rising.cancel(); // 又往回收了
+        if (q == 1 && waiting) {
+            waiting = false;
+            morphed = 1;
+            render();
+            rise();
+            return;
+        }
         if (q == morphed && q >= 1) return;
         morphed = q;
+        rise(q);
+    }
+
+    /** 列表停在卡片展开到 q 时的位置（见 morph）。 */
+    private void rise(float q) {
         int i = 0;
         for (View row : rows()) {
             float start = 0.36f + 0.03f * Math.min(i++, 8), p = clamp((q - start) / 0.4f);
             row.setAlpha(p);
             row.setTranslationY((1 - p) * t.dp(40));
         }
+    }
+
+    /** 落定以后建好的列表：照展开后半段的样子一行一行浮上来。 */
+    private void rise() {
+        rise(0.36f);
+        rising = ValueAnimator.ofFloat(0.36f, 1f);
+        rising.setDuration(460);
+        rising.setInterpolator(new DecelerateInterpolator(1.6f));
+        rising.addUpdateListener(a -> rise((float) a.getAnimatedValue()));
+        rising.start();
     }
 
     /** 标题栏下面依次浮上来的：榜单的标签、每个小标题和每一行（分段列表拆开成行）。 */
@@ -352,12 +380,20 @@ public class TopicActivity extends Activity implements Card.Hero {
                     return;
                 }
                 data = got;
+                if (morphed < 1) { // 卡片还在长：落定以后再建，见 morph
+                    waiting = true;
+                    return;
+                }
                 body.setAlpha(0f); // 内容整块淡入，不突然冒出来
-                if (paged()) renderBoard();
-                else renderTopic();
+                render();
                 body.animate().alpha(1f).setDuration(220).start();
             });
         }, "topic-load").start();
+    }
+
+    private void render() {
+        if (paged()) renderBoard();
+        else renderTopic();
     }
 
     /** 榜单和论文专题：几个列表横向排开，左右滑切换。 */

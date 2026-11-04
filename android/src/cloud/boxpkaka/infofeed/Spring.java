@@ -116,7 +116,7 @@ final class Spring implements TimeInterpolator {
             setCornerRadius(radiusPx);
         }
 
-        /** 磨砂或金属的质感（倒角），见 Theme.Finish。 */
+        /** 磨砂的质感（倒角），见 Theme.Finish；变成金属时淡掉。 */
         Shape finish(Theme.Finish f) {
             finish = f;
             return this;
@@ -140,7 +140,17 @@ final class Spring implements TimeInterpolator {
         public void draw(android.graphics.Canvas c) {
             super.draw(c);
             if (sheen > 0) glow.draw(c, getBounds(), Theme.radii(this));
-            if (finish != null) finish.draw(c, getBounds(), Theme.radii(this));
+            if (finish != null && sheen < 1) { // 磨砂的倒角：变成金属时跟着淡掉
+                if (sheen <= 0) {
+                    finish.draw(c, getBounds(), Theme.radii(this));
+                } else {
+                    if (layer == null) layer = new android.graphics.RectF();
+                    layer.set(getBounds());
+                    int save = c.saveLayerAlpha(layer, Math.round(255 * (1 - sheen)));
+                    finish.draw(c, getBounds(), Theme.radii(this));
+                    c.restoreToCount(save);
+                }
+            }
             if (sheenFinish == null || sheen <= 0) return;
             if (sheen >= 1) {
                 sheenFinish.draw(c, getBounds(), Theme.radii(this));

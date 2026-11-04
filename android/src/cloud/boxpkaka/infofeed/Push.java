@@ -33,6 +33,7 @@ final class Push implements Nav {
     private ValueAnimator motion;
     private float from;
     private boolean leaving, gone;
+    private boolean resting, touching; // 停稳在原位、手指按着：停着又没按着时，下面那页的流动停下（见 Card.cover）
 
     Push(Activity a, View page, int bg) {
         this.a = a;
@@ -75,6 +76,11 @@ final class Push implements Nav {
             public void release(float vx) {
                 Push.this.release(vx);
             }
+
+            @Override
+            public void touch(boolean down) {
+                Push.this.touch(down);
+            }
         });
         s.addView(page, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -110,8 +116,16 @@ final class Push implements Nav {
     // 拖着的时候页面被别处关掉（返回键之类）就不再跟手，让滑出走完
 
     @Override
+    public void touch(boolean down) {
+        touching = down;
+        Flow.hold(Stack.below(a), !down && resting);
+    }
+
+    @Override
     public void grab() {
         if (leaving) return;
+        resting = false;
+        Flow.hold(Stack.below(a), false);
         if (motion != null) motion.cancel();
         from = page.getTranslationX();
     }
@@ -146,6 +160,8 @@ final class Push implements Nav {
     }
 
     private void out(float velocity, Runnable then) {
+        resting = false;
+        Flow.hold(Stack.below(a), false); // 先叫醒下面那页：弹簧第一帧还在原地，它这一帧就画好了
         leaving = true;
         settle(width(), velocity, () -> {
             gone = true;
@@ -158,9 +174,11 @@ final class Push implements Nav {
         motion = Spring.PAGE.fling(page.getTranslationX(), to, velocity, this::place, end);
     }
 
-    /** 停稳在原位：窗口底色换回页面底色。 */
+    /** 停稳在原位：窗口底色换回页面底色；下面那页整个被盖住，它的流动停下（手指按着时先不停）。 */
     private void rest() {
         a.getWindow().getDecorView().setBackgroundColor(bg);
+        resting = true;
+        Flow.hold(Stack.below(a), !touching);
     }
 
     /** 页面放在 x：下面那页按比例从左边三成处回来，遮罩按比例变淡。 */
@@ -206,12 +224,16 @@ final class Push implements Nav {
             }
         }
 
-        /** 保险：回到前台的页面一定在原位、藏起来的卡片放回来，万一上面那页没动完就没了，也不会一直歪着、缺一块。 */
+        /**
+         * 保险：回到前台的页面一定在原位、藏起来的卡片放回来、流动没有停着，万一上面那页没动完就没了，也不会一直歪着、
+         * 缺一块、不动。
+         */
         @Override
         public void onActivityResumed(Activity a) {
             View content = a.findViewById(android.R.id.content);
             if (content != null) content.setTranslationX(0);
             Card.restore();
+            Flow.hold(a, false);
         }
 
         @Override

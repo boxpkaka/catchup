@@ -50,6 +50,10 @@ final class Swipe extends FrameLayout {
 
         /** 松手：vx 是横向速度（像素/秒，右为正），被打断时为 0。 */
         void release(float vx);
+
+        /** 手指按下（down 为 true）或抬起：不管最后谁接手这次手势都会告诉，见 Nav.touch。 */
+        default void touch(boolean down) {
+        }
     }
 
     private final Pages pages;
@@ -79,6 +83,15 @@ final class Swipe extends FrameLayout {
     public void requestDisallowInterceptTouchEvent(boolean disallow) {
         if (disallow && pressed) held = true;
         else super.requestDisallowInterceptTouchEvent(disallow);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent e) {
+        int a = e.getActionMasked();
+        if (a == MotionEvent.ACTION_DOWN) pages.touch(true);
+        boolean handled = super.dispatchTouchEvent(e);
+        if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) pages.touch(false);
+        return handled;
     }
 
     @Override
@@ -288,6 +301,11 @@ final class Swipe extends FrameLayout {
             if (p < 0) p = rubbery() ? -band(-p) : 0;
             else if (p > last) p = rubbery() ? last + band(p - last) : last;
             move(p);
+        }
+
+        @Override
+        public void touch(boolean down) {
+            if (back != null) back.touch(down);
         }
 
         @Override

@@ -539,7 +539,7 @@ final class Theme {
     void press(View v, int color, float radiusDp, boolean metal) {
         Spring.Shape shape = new Spring.Shape(color, dp(radiusDp), dp(R_S));
         if (color == frostButton || color == frost) shape.finish(frostFinish);
-        else shape.sheenFinish(metalFinish); // 金属的倒角，平涂的按钮变成金属时（发送）一起显出来
+        shape.sheenFinish(metalFinish); // 金属的倒角，平涂或磨砂的按钮变成金属时（发送）一起显出来
         if (metal) shape.metal(color);
         v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), shape, null));
         StateListAnimator scale = new StateListAnimator();

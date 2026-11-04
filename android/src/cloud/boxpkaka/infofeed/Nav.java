@@ -37,4 +37,11 @@ interface Nav {
 
     /** 下一页已经盖上来了，这一页直接关，不用动画。 */
     void replaced();
+
+    /**
+     * 手指按下或抬起（见 Swipe.Pages.touch）。停稳的页面整个盖住下面那页，下面的流动可以停下（Flow.hold）；手指一按下
+     * 就叫醒它，等右滑把它露出来时已经画好了此刻的样子。
+     */
+    default void touch(boolean down) {
+    }
 }
