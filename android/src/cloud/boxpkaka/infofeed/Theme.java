@@ -72,7 +72,7 @@ final class Theme {
     /** 磨砂：行和标签栏的底、按钮的底（更不透明一些，浮在内容上面也看得清）。 */
     final int frost, frostButton;
     private final float density;
-    private final Finish frostFinish, metalFinish;
+    private final Finish frostFinish, metalFinish, markFinish;
 
     Theme(Context c) {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
@@ -97,7 +97,9 @@ final class Theme {
         frostButton = night ? 0xA82C2D3A : 0xBDFFFFFF;
         density = c.getResources().getDisplayMetrics().density;
         frostFinish = new Finish(c, night ? 0x17FFFFFF : 0xF2FFFFFF, night ? 0x66000000 : 0x121E1E46);
-        metalFinish = new Finish(c, 0x4DFFFFFF, 0x33000000);
+        // 金属小块的倒角：浅色模式下是深色的哑光小块，上沿一道细亮线、下沿一道很淡的反光，显出圆柱的厚度；首页标记照旧
+        metalFinish = night ? new Finish(c, 0x4DFFFFFF, 0x33000000) : new Finish(c, 0x59FFFFFF, 0x1FFFFFFF);
+        markFinish = new Finish(c, 0x4DFFFFFF, 0x33000000);
     }
 
     /**
@@ -364,22 +366,25 @@ final class Theme {
 
     /** 在 b 里画金属的倒角（圆角 radiusPx），给自己画底的金属用（首页的标记，见 Wordmark）。 */
     void metalFinish(Canvas c, Rect b, float radiusPx) {
-        metalFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
+        markFinish.draw(c, b, new float[]{radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx, radiusPx});
     }
 
     /**
-     * 把 d 涂成以 base 为中间色的缎面金属：从上往下由亮到深，左上一团很柔的受光（g，画在 d 上面），没有条纹。
-     * 以前是“亮—暗—次亮—更暗”的斜条纹，像拉丝不锈钢。amount 是金属的程度：0 是平涂的 base，1 是缎面；
-     * 平涂和金属之间变化时用（发送按钮从灰变成能按）。
+     * 把 d 涂成以 base 为中间色的哑光金属：从上往下由亮到深，左上一团很柔的受光（g，画在 d 上面），没有条纹。
+     * 深色的底（浅色模式的墨色、话题色、问一问）压得更深、光收小收暗，像黑色阳极氧化铝；浅色的底（深色模式）
+     * 压深会发灰，照旧。以前是“亮—暗—次亮—更暗”的斜条纹，像拉丝不锈钢。amount 是金属的程度：0 是平涂的 base，
+     * 1 是金属；平涂和金属之间变化时用（发送按钮从灰变成能按）。
      */
     static void shine(GradientDrawable d, Glow g, int base, float amount) {
+        float k = clamp((.3f - Color.luminance(base)) / .12f, 0, 1); // 多深：亮度 0.3 以上是 0，0.18 以下是 1，中间平滑过渡（颜色渐变时不跳）
+        k = k * k * (3 - 2 * k);
         d.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
-        d.setColors(new int[]{mix(base, Color.WHITE, .1f * amount), base, mix(base, Color.BLACK, .38f * amount)},
-                new float[]{0, .42f, 1});
-        g.set(base, amount);
+        d.setColors(new int[]{mix(base, Color.WHITE, (.1f - .06f * k) * amount), mix(base, Color.BLACK, .18f * k * amount),
+                mix(base, Color.BLACK, (.38f + .12f * k) * amount)}, new float[]{0, .42f - .02f * k, 1});
+        g.set(base, (.42f - .22f * k) * amount, .45f - .15f * k);
     }
 
-    /** 缎面金属左上的一团柔光（见 shine）：椭圆，按高斯衰减，颜色是底色的浅色。画在底色上面、倒角下面。 */
+    /** 金属小块左上的一团柔光（见 shine）：椭圆，按高斯衰减，颜色是底色的浅色。画在底色上面、倒角下面。 */
     static final class Glow {
         private static final float[] FALL = {1, .8825f, .6065f, .3247f, .1353f, .0439f, 0}; // exp(-2r²)，r 每档 0.25
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -388,13 +393,14 @@ final class Theme {
         private final Path path = new Path();
         private float amount;
 
-        void set(int base, float amount) {
-            this.amount = amount;
+        /** alpha：最亮处的透明度；lift：光的颜色比底色亮多少（HSV 的明度）。 */
+        void set(int base, float alpha, float lift) {
+            this.amount = alpha;
             float[] h = new float[3];
             Color.colorToHSV(base, h);
-            int c = hsv(h[0], Math.min(h[1], .35f), Math.min(1, h[2] + .45f)) & 0xFFFFFF;
+            int c = hsv(h[0], Math.min(h[1], .35f), Math.min(1, h[2] + lift)) & 0xFFFFFF;
             int[] colors = new int[FALL.length];
-            for (int i = 0; i < FALL.length; i++) colors[i] = c | Math.round(255 * .42f * amount * FALL[i]) << 24;
+            for (int i = 0; i < FALL.length; i++) colors[i] = c | Math.round(255 * alpha * FALL[i]) << 24;
             paint.setShader(new RadialGradient(0, 0, 1.5f, colors, new float[]{0, 1 / 6f, 2 / 6f, .5f, 4 / 6f, 5 / 6f, 1},
                     Shader.TileMode.CLAMP));
         }
