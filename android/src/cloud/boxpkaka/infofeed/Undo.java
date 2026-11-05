@@ -248,11 +248,9 @@ final class Undo {
 
     /** 服务器按原因记下了记忆：在撤销条上说出记住了什么，和对话里的“记住了”一致。 */
     private void showRemembered(long id, JSONObject response) {
-        if (a.isDestroyed() || id != answeredFor || undoBar.getVisibility() != View.VISIBLE) return;
-        JSONObject memory = response == null ? null : response.optJSONObject("memory");
-        JSONArray added = memory == null ? null : memory.optJSONArray("added");
-        undoLabel.setText(added != null && added.length() > 0
-                ? "记住了：" + added.optJSONObject(0).optString("text") : "已记下");
+        if (id != answeredFor || undoBar.getVisibility() != View.VISIBLE) return;
+        String said = Feedback.remembered(response);
+        undoLabel.setText(said != null ? said : "已记下");
         main.removeCallbacks(hideUndoLater);
         main.postDelayed(hideUndoLater, 2400);
     }
@@ -271,16 +269,9 @@ final class Undo {
         if (id < 0) return;
         pendingDismiss = -1;
         if (reason == null) hideUndo();
-        Context app = a.getApplicationContext();
-        new Thread(() -> {
-            try {
-                JSONObject r = Api.post(app, "/v1/events/" + id + "/feedback",
-                        new JSONObject().put("value", "not_needed").putOpt("reason", reason).putOpt("topic", topic));
-                if (reason != null) a.runOnUiThread(() -> showRemembered(id, r));
-            } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + id + " " + err);
-            }
-        }, "feedback").start();
+        Feedback.notNeeded(a, id, reason, topic, reason == null ? null : r -> {
+            if (r != null) showRemembered(id, r);
+        });
     }
 
     private void hideUndo() {
