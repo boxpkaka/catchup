@@ -404,7 +404,7 @@ def _retrieve(config: Config, store, question: str, now: datetime, limit: int = 
     """在最近两周有简报的事件里按词重合找相关事件；一个都不相关时退回最重要的几件。
     论文的标题前写上“论文：”、概要前写上和你的关系，还没写简报、但和你有关的论文也算（标题、摘要开头用译文，
     重要性按和你的关系算），问“这周有哪些和我有关的论文”时用得上。"""
-    signals = store.recent(now - timedelta(days=ASK_DAYS), now + timedelta(hours=1))
+    signals = store.recent(now - timedelta(days=ASK_DAYS), now + timedelta(hours=1), include_stale=False)
     events = personal.build_ranker(config, store, now).rank(group_events(signals), now)
     briefs = store.briefs(e.id for e in events)
     marks = store.paper_marks(e.id for e in events if papers.is_paper(e))

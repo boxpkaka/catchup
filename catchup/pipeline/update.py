@@ -1,4 +1,5 @@
-"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报 → 追踪进展
+"""采集之后的处理：信号归入持久化事件 → 结合记忆打分 → 模型合并重复、初筛排名靠后的新报道、给新事件写简报
+→ 查旧（以前见过的并进原来的事或记为旧闻，见 novelty.py） → 追踪进展
 → 从反馈学习（行为记到记忆强度上、归纳新记忆、每天整理一次、需要时问一句） → 推送 → 判断新论文和你的关系
 → 按新记忆重写旧简报（每轮一部分），给值得读的论文写简报 → 写到期的日报、周报、月报 → 给只有名字的 HF 模型写简介
 → 翻译英文原文。
@@ -16,7 +17,7 @@ from ..llm import from_config
 from ..models import Event
 from ..sources import build_sources
 from ..store import Store
-from . import answers, brief, follow, intros, papers, push, reports, translate
+from . import answers, brief, follow, intros, novelty, papers, push, reports, translate
 from .events import assign_events, group_events
 
 log = logging.getLogger(__name__)
@@ -26,9 +27,14 @@ REWRITES = 30
 
 
 def ranked(config: Config, store: Store, now: datetime) -> tuple[list, list[Event]]:
-    """时间窗内的信号，以及按个人记忆排好序的事件。"""
-    signals = store.recent(now - timedelta(hours=config.ranking.get("window_hours", 72)), now + timedelta(hours=1))
+    """时间窗内的信号，以及按个人记忆排好序的事件；查旧判为旧闻的事件不算。"""
+    signals = store.recent(since(config, now), now + timedelta(hours=1), include_stale=False)
     return signals, personal.build_ranker(config, store, now).rank(group_events(signals), now)
+
+
+def since(config: Config, now: datetime) -> datetime:
+    """时间窗的开始。"""
+    return now - timedelta(hours=config.ranking.get("window_hours", 72))
 
 
 def refresh_briefs(config: Config, store: Store, llm, now: datetime | None = None, top: int | None = None,
@@ -52,12 +58,13 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
     arrived = {s.url for s in signals if s.event_id is None}
     # 论文另有一周的时间窗（见 pipeline/papers.py），时间窗外才采到的论文也归入事件
     stats = {"new_events": assign_events(store, signals, now) + papers.assign(config, store, now), "merged": 0,
-             "screened": 0, "briefs": 0, "learned": 0, "follow_updates": 0, "answered": 0, "pushed": 0, "papers": 0,
+             "screened": 0, "briefs": 0, "checked": 0, "stale": 0, "deduped": 0, "learned": 0, "follow_updates": 0,
+             "answered": 0, "pushed": 0, "papers": 0,
              "topics": 0, "reports": 0, "intros": 0, "translated": 0,
              "tidied": 0, "reinforced": personal.reinforce(store, now)}  # 先把新行为记到记忆强度上，这一轮排序就用上
     _, events = ranked(config, store, now)
     boards = {name for name, s in sources.items() if s.board}
-    updates = []
+    updates, rebrief = [], set()
     if llm:
         if stats["new_events"]:  # 每 10 分钟一轮，没有新事件时前排事件上一轮已经查过重复
             pool = brief.candidates(events, config.llm.get("merge_top", 40), sources)
@@ -75,6 +82,9 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         stats["learned"] = len(learned["added"]) + len(learned["updated"])
         stats["tidied"] = len(tidied["updated"]) + len(tidied["removed"])
         stats["briefs"] = refresh_briefs(config, store, llm, now, rewrites=0, also=screened)  # 新事件先写，赶上这一轮推送
+        _, events = ranked(config, store, now)
+        checked, rebrief = novelty.run(store, events, llm, sources, now)  # 查过旧的才推
+        stats.update(checked)
         updates = follow.run(store, llm, now)
         stats["follow_updates"] = len(updates)
         stats["answered"] = len(answers.run(store, llm, now))
@@ -89,7 +99,7 @@ def update(config: Config, store: Store, now: datetime | None = None, llm=None, 
         push.deliver_answers(config.push, store, now)
         reports.deliver(config.push, store, now)
     if llm:  # 放在推送之后，慢了不耽误推送；写好的周报月报、值得读又够重要的论文下一轮推送
-        stats["briefs"] += refresh_briefs(config, store, llm, now, rewrites=REWRITES)
+        stats["briefs"] += refresh_briefs(config, store, llm, now, rewrites=REWRITES, also=rebrief)  # 含并进新报道的
         stats["papers"] = papers.judge(config, store, llm, now)
         picked = papers.to_brief(config, store, now)
         stats["briefs"] += brief.write_briefs(store, picked, personal.focus(config, store, now), llm, sources, now,

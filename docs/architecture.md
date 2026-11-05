@@ -6,7 +6,17 @@
 
 ## 数据流
 
-数据流：`sources → store(signals) → events(持久化) → ranking(+记忆) → brief(LLM) → push / App`；App 里的对话、反馈、漏报 → 记忆 → 反过来影响 ranking 和 brief。
+数据流：`sources → store(signals) → events(持久化) → ranking(+记忆) → brief(LLM) → novelty(查旧) → push / App`；App 里的对话、反馈、漏报 → 记忆 → 反过来影响 ranking 和 brief。
+
+## 查旧与检索库
+
+发布时间不可靠（联网搜索的结果没有发布时间，记的是采到的时间；搜索会翻出旧文和汇总），所以新旧不看时间，看“以前见过没有”：
+
+1. **检索库**：`signals_fts`、`briefs_fts` 是 SQLite FTS5 全文索引（trigram 分词，按子串匹配，中文不靠空格分词），收所有采到过的信号（标题、摘要）和简报（标题、概要、名字），不限时间。索引由触发器和原表同步，文字先去掉空白、连字符和下划线（`store.squash`），“Opus 4.8”“Opus-4.8”“Opus4.8”互相查得到。
+2. **结构化事实**：写简报时模型另给这件事主角的标准名字（`subject`，如 Claude Opus 4.8、FlashProve；行业观点、市场分析这类没有明确主角的留空）和它的其他写法（`aliases`：中文名、简称），存成 `entities`；再给材料写明的发生日期（`happened`），讲旧产品新情况的写新情况的日期。提示词里带上今天的日期。只要主角：顺带提到的工具、评测用的模型会拉进来一堆只沾边的内容。
+3. **对照判断**：`pipeline/novelty.py` 用名字到检索库里找更早的内容（编号更小的事件、没归入事件的信号）。找到了，或材料写明的发生日期在 `STALE_DAYS` 天以前，交给模型判断 same / update / old / new（先写理由再下结论，打开思考）；两样都没有就是 new，不用问模型。日期只当证据：讲旧产品新情况的报道（“5 月发布的 Opus 4.8 被曝出问题”）日期可能被写成发布日，由模型判断是不是新情况。
+4. **代码执行**：旧闻按读者的角度算：已经推送过的，或 `STALE_DAYS` 天以前的事。same 对上的事还在时间窗里的，并进那件事（两边是不同的论文、仓库或模型时不并）；对上的在时间窗外的，那件推送过、判过旧闻或在 `STALE_DAYS` 天以前才记为旧闻（stale），否则当 new。old 要材料写明的日期确实早于 `STALE_DAYS` 天前才算旧闻，否则当 new。结论和对上的内容记在 `novelty` 表，每件事只查一次。
+5. **把关**：没查过的不推送（查不成的下一轮再查）；旧闻的信号被 `Store.recent(include_stale=False)` 去掉，不进信息流、专题、报告和对话，时间窗里也不再吸收新报道。
 
 ## 设计取舍
 
@@ -20,7 +30,7 @@
 catchup/
   models.py          Signal（一条原始内容）、Event（合并后的一件事）
   sources/           来源插件：base.py 定义基类和注册表，每种来源一个类
-  store.py           SQLite 存储与顺序迁移（PRAGMA user_version）
+  store.py           SQLite 存储与顺序迁移（PRAGMA user_version），检索库（FTS5 全文索引）
   collector.py       依次运行来源，单个来源失败不影响其他来源；按采集记录判断是否疑似故障
   llm.py             DeepSeek 对话接口（deepseek-flash，关闭思考；JSON 输出和流式输出）
   personal.py        个人记忆：提取、反馈学习、漏报、构建带记忆的排序器和“读者是谁”
@@ -31,7 +41,8 @@ catchup/
   pipeline/
     events.py        信号 → 事件：规则聚类，并持久化为有固定 id 的事件
     ranking.py       事件打分，每项加分都附带可解释的理由
-    brief.py         模型合并同一件事、读原文写简报（标题 / 概要 / 要点 / AI 解读 / 重要性），排名靠后的新报道先按标题初筛
+    brief.py         模型合并同一件事、读原文写简报（标题 / 概要 / 要点 / AI 解读 / 重要性 / 主角的名字 / 发生日期），排名靠后的新报道先按标题初筛
+    novelty.py       查旧：用简报里主角的名字到检索库找更早的内容，判断是旧闻、同一件事还是新进展
     push.py          选择要推送的事件并经 hub 送达；早上合成早报；追踪进展推送
     follow.py        追踪：主动搜后续报道，判断是否有实质进展
     answers.py       替你留意的问题：在新报道里找答案，写回原对话

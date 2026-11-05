@@ -10,6 +10,29 @@ from typing import Iterable
 from .models import Signal
 from .util import parse_time, to_iso
 
+# 检索库（信号和简报的全文索引）的写法归一：去掉空白、连字符和下划线，“Opus 4.8”“Opus-4.8”“Opus4.8”互相查得到。
+# 查询用 squash，索引由迁移里的触发器写入（_squashed 生成同样的 SQL）。SQUASH、SIGNAL_TEXT、BRIEF_TEXT 用在了迁移里，
+# 要改就追加迁移，重建触发器和索引
+SQUASH = (" ", "\t", "\n", "\r", "\u00a0", "\u3000", "-", "_", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014")
+SEARCH_MIN = 3  # trigram 分词按三个字符一组索引，归一后不到三个字符的名字查不了
+
+
+def squash(text: str) -> str:
+    for c in SQUASH:
+        text = text.replace(c, "")
+    return text
+
+
+def _squashed(expr: str) -> str:
+    """squash 的 SQL 版。"""
+    for c in SQUASH:
+        expr = f"replace({expr}, char({ord(c)}), '')"
+    return expr
+
+
+SIGNAL_TEXT = "coalesce({0}.title, '') || '|' || coalesce({0}.summary, '')"
+BRIEF_TEXT = "coalesce({0}.headline, '') || '|' || coalesce({0}.summary, '') || '|' || coalesce({0}.entities, '')"
+
 MIGRATIONS = [
     """
     create table signals (
@@ -116,10 +139,61 @@ MIGRATIONS = [
     """,
     # 论文和你的关系（见 pipeline/papers.py）：0～5 分和一句理由，0 是判过、无关
     "create table papers (event_id integer primary key, relevance integer not null, why text, judged text not null);",
+    # 查旧（pipeline/novelty.py）。简报记下这件事主角的几种写法（entities，JSON 数组，第一个是标准名字）和材料写明的
+    # 发生日期（happened，YYYY-MM-DD）；
+    # 检索库是信号和简报的全文索引，trigram 分词按子串匹配，中文不靠空格分词，由触发器和原表同步。
+    # signals 的 rowid 没有声明成主键，VACUUM 会重排，所以 signals_fts 按 url 对应；briefs 的 event_id 就是 rowid。
+    # briefs 用 insert or replace 写，默认不触发删除触发器，插入时先删掉旧的索引。
+    # novelty 是每件事查旧的结论：new / update（已有的事有了新进展）/ stale（旧闻），ref_event、ref_url 是对上的更早内容
+    f"""
+    alter table briefs add column entities text;
+    alter table briefs add column happened text;
+    create virtual table signals_fts using fts5(url unindexed, text, tokenize = 'trigram');
+    create virtual table briefs_fts using fts5(text, tokenize = 'trigram');
+    insert into signals_fts (url, text) select url, {_squashed(SIGNAL_TEXT.format("signals"))} from signals;
+    insert into briefs_fts (rowid, text) select event_id, {_squashed(BRIEF_TEXT.format("briefs"))} from briefs;
+    create trigger signals_fts_insert after insert on signals begin
+        insert into signals_fts (url, text) values (new.url, {_squashed(SIGNAL_TEXT.format("new"))});
+    end;
+    create trigger signals_fts_update after update of title, summary on signals begin
+        delete from signals_fts where url = old.url;
+        insert into signals_fts (url, text) values (new.url, {_squashed(SIGNAL_TEXT.format("new"))});
+    end;
+    create trigger signals_fts_delete after delete on signals begin
+        delete from signals_fts where url = old.url;
+    end;
+    create trigger briefs_fts_insert after insert on briefs begin
+        delete from briefs_fts where rowid = new.event_id;
+        insert into briefs_fts (rowid, text) values (new.event_id, {_squashed(BRIEF_TEXT.format("new"))});
+    end;
+    create trigger briefs_fts_update after update of headline, summary, entities on briefs begin
+        delete from briefs_fts where rowid = old.event_id;
+        insert into briefs_fts (rowid, text) values (new.event_id, {_squashed(BRIEF_TEXT.format("new"))});
+    end;
+    create trigger briefs_fts_delete after delete on briefs begin
+        delete from briefs_fts where rowid = old.event_id;
+    end;
+    create table novelty (event_id integer primary key, verdict text not null, ref_event integer, ref_url text,
+        reason text, checked text not null);
+    """,
 ]
 BOARD_GAP = timedelta(days=2)  # 下榜超过这么久再上榜，算新的一轮
 
 COLUMNS = "url, source, channel, title, summary, author, published, fetched, tier, kind, heat, extra"
+
+
+def _statements(sql: str) -> list[str]:
+    """把一个迁移拆成单条语句。触发器的 begin ... end 里也有分号，攒到 sqlite3.complete_statement 认为完整才算一条。"""
+    out, buf = [], ""
+    for part in sql.split(";"):
+        buf += part + ";"
+        if sqlite3.complete_statement(buf):
+            if buf.strip(" \n;"):
+                out.append(buf.strip())
+            buf = ""
+    if buf.strip(" \n;"):
+        raise ValueError(f"incomplete statement in migration: {buf.strip()[:80]}")
+    return out
 
 
 def _signal(r) -> Signal:
@@ -147,9 +221,8 @@ class Store:
             self.con.execute("begin immediate")
             version = self.con.execute("pragma user_version").fetchone()[0]
             for i, sql in enumerate(MIGRATIONS[version:], start=version + 1):
-                for statement in (part.strip() for part in sql.split(";")):
-                    if statement:
-                        self.con.execute(statement)
+                for statement in _statements(sql):
+                    self.con.execute(statement)
                 self.con.execute(f"pragma user_version = {i}")
             self.con.execute("commit")
         except Exception:
@@ -185,10 +258,29 @@ class Store:
                              [(text, url) for url, text in summaries.items()])
         self.con.commit()
 
-    def recent(self, since: datetime, until: datetime) -> list[Signal]:
-        rows = self.con.execute(f"select {COLUMNS}, event_id from signals where published >= ? and published <= ?",
-                                (to_iso(since), to_iso(until))).fetchall()
+    def recent(self, since: datetime, until: datetime, include_stale: bool = True) -> list[Signal]:
+        """发布时间在这段时间里的信号。include_stale 为 False 时去掉查旧判为旧闻的事件的信号（见 pipeline/novelty.py）：
+        它们的发布时间多半是采到的时间，并不新，信息流、报告、对话都不该把它们当成最近的事，新报道也不再并进去。"""
+        stale = "" if include_stale else \
+            " and (event_id is null or event_id not in (select event_id from novelty where verdict = 'stale'))"
+        rows = self.con.execute(f"select {COLUMNS}, event_id from signals where published >= ? and published <= ?"
+                                + stale, (to_iso(since), to_iso(until))).fetchall()
         return [_signal(r) for r in rows]
+
+    def search(self, names: Iterable[str], limit: int = 30) -> tuple[list[int], list[Signal]]:
+        """在检索库里找提到这些名字的简报和信号，各取最相关的 limit 条：(简报的事件 id, 信号)。
+        名字按 squash 归一后整体匹配（子串，不分大小写），归一后不到 SEARCH_MIN 个字符的跳过；几个名字之间是“或”。"""
+        terms = [t for t in dict.fromkeys(squash(str(n)) for n in names) if len(t) >= SEARCH_MIN]
+        if not terms:
+            return [], []
+        query = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        events = [r[0] for r in self.con.execute(
+            "select rowid from briefs_fts where briefs_fts match ? order by rank limit ?", (query, limit))]
+        urls = [r[0] for r in self.con.execute(
+            "select url from signals_fts where signals_fts match ? order by rank limit ?", (query, limit))]
+        rows = {r[0]: _signal(r) for r in self.con.execute(
+            f"select {COLUMNS}, event_id from signals where url in ({','.join('?' * len(urls))})", urls)}
+        return events, [rows[u] for u in urls if u in rows]
 
     # ---------- 事件 ----------
 
@@ -206,6 +298,7 @@ class Store:
             self.con.execute("update or ignore pushes set event_id = ? where event_id = ?", (target, o))
             self.con.execute("update or ignore feedback set event_id = ? where event_id = ?", (target, o))
             self.con.execute("update or ignore papers set event_id = ? where event_id = ?", (target, o))
+            self.con.execute("delete from novelty where event_id = ?", (o,))  # target 保留自己的查旧结论
 
     def event_created(self, ids: Iterable[int]) -> dict[int, datetime]:
         ids = list(ids)
@@ -234,10 +327,11 @@ class Store:
     # ---------- 简报、反馈、推送 ----------
 
     def briefs(self, ids: Iterable[int]) -> dict[int, dict]:
+        """entities 为 None 是加查旧之前写的简报。"""
         ids = list(ids)
         rows = self.con.execute("select event_id, created, model, signal_count, headline, summary, why, importance, "
-                                f"memory_rev, questions, points, topic, insight from briefs where event_id in ({','.join('?' * len(ids))})",
-                                ids)
+                                "memory_rev, questions, points, topic, insight, entities, happened from briefs "
+                                f"where event_id in ({','.join('?' * len(ids))})", ids)
         keys = ("created", "model", "signal_count", "headline", "summary", "why", "importance", "memory_rev")
         out = {}
         for r in rows:
@@ -246,7 +340,22 @@ class Store:
             out[r[0]]["points"] = None if r[10] is None else json.loads(r[10])
             out[r[0]]["topic"] = r[11]
             out[r[0]]["insight"] = r[12]
+            out[r[0]]["entities"] = None if r[13] is None else json.loads(r[13])
+            out[r[0]]["happened"] = r[14]
         return out
+
+    def novelty(self, ids: Iterable[int]) -> dict[int, dict]:
+        """查旧的结论：{事件 id: {verdict, ref_event, ref_url, reason, checked}}，还没查过的不在里面。"""
+        ids = list(ids)
+        rows = self.con.execute("select event_id, verdict, ref_event, ref_url, reason, checked from novelty "
+                                f"where event_id in ({','.join('?' * len(ids))})", ids)
+        return {r[0]: dict(zip(("verdict", "ref_event", "ref_url", "reason", "checked"), r[1:])) for r in rows}
+
+    def save_novelty(self, event_id: int, verdict: str, now: datetime, reason: str = "", ref_event: int | None = None,
+                     ref_url: str | None = None) -> None:
+        self.con.execute("insert or replace into novelty values (?, ?, ?, ?, ?, ?)",
+                         (event_id, verdict, ref_event, ref_url, reason, to_iso(now)))
+        self.con.commit()
 
     def paper_marks(self, ids: Iterable[int]) -> dict[int, dict]:
         """论文和你的关系：{事件 id: {relevance, why}}，没判过的不在里面。"""
@@ -267,12 +376,14 @@ class Store:
     def save_brief(self, event_id: int, now: datetime, model: str, signal_count: int, brief: dict,
                    memory_rev: int = 0) -> None:
         self.con.execute("insert or replace into briefs (event_id, created, model, signal_count, headline, summary, "
-                         "why, importance, memory_rev, questions, points, insight) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         "why, importance, memory_rev, questions, points, insight, entities, happened) "
+                         "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (event_id, to_iso(now), model, signal_count, brief["headline"], brief["summary"],
                           brief["why"], brief["importance"], memory_rev,
                           json.dumps(brief.get("questions", []), ensure_ascii=False),
                           None if brief.get("points") is None else json.dumps(brief["points"], ensure_ascii=False),
-                          brief.get("insight")))
+                          brief.get("insight"), json.dumps(brief.get("entities") or [], ensure_ascii=False),
+                          brief.get("happened")))
         self.con.commit()
 
     def feedback(self) -> dict[int, str]:

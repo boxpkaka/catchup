@@ -53,7 +53,7 @@ def _add(config: Config, store, llm, url: str, note: str, now: datetime) -> int:
     store.add([Signal(url=url, title=clean_text(title or note or url, 300), summary=_excerpt(content) or note,
                       source=SHARED, tier="primary", kind="分享", published=now)], now=now)
     window = timedelta(hours=config.ranking.get("window_hours", 72))
-    assign_events(store, store.recent(now - window, now + timedelta(hours=1)), now)
+    assign_events(store, store.recent(now - window, now + timedelta(hours=1), include_stale=False), now)
     event_id = store.signal_event(url)
     if llm:
         brief.write_briefs(store, group_events(store.event_signals(event_id)), personal.focus(config, store, now), llm,

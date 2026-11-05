@@ -87,6 +87,12 @@ class FakeLLM:
         yield from (self.reply[:4], self.reply[4:])
 
 
+def checked(store, events, now=NOW):
+    """推送前要查过旧：用假模型跑一遍查旧，判为 new。"""
+    from catchup.pipeline import novelty
+    novelty.run(store, events, FakeLLM(), {}, now)
+
+
 def config():
     return Config(root=Path("."), sources=SOURCES, interests=INTERESTS, ranking={"window_hours": 72})
 
@@ -192,6 +198,7 @@ class PushTest(unittest.TestCase):
         ranker = Ranker.from_config(INTERESTS, {})
         self.events = ranker.rank(group_events(self.store.recent(NOW - timedelta(days=3), NOW)), NOW)
         brief.write_briefs(self.store, self.events, "关注语音", FakeLLM(), {}, NOW)
+        checked(self.store, self.events)
 
     def test_quiet_hours_pushed_and_feedback(self):
         opts = {}
@@ -832,6 +839,7 @@ class MorningDigestTest(unittest.TestCase):
         assign_events(store, store.recent(NOW - timedelta(days=3), NOW), NOW)
         events = Ranker.from_config(INTERESTS, {}).rank(group_events(store.recent(NOW - timedelta(days=3), NOW)), NOW)
         brief.write_briefs(store, events, "", FakeLLM(), {}, NOW)
+        checked(store, events)
         at8 = NOW.replace(hour=0, minute=37)  # 北京时间 8:37
         picked = push.select({}, store, events, at8)
         self.assertEqual(len(picked), 3)
@@ -925,7 +933,9 @@ class AppApiMoreTest(unittest.TestCase):
         self.assertIn(r["event_id"], self.store.briefs([r["event_id"]]))
         self.assertEqual(self.call("POST", "/v1/shares", {"text": s.url})[1]["event_id"], r["event_id"])  # 再分享一次
         self.assertEqual([a[2] for a in self.store.actions(NOW - timedelta(days=1))], ["share", "share"])
-        picked = push.select({"min_importance": 0}, self.store, ranked(config(), self.store, NOW)[1], NOW)
+        events = ranked(config(), self.store, NOW)[1]
+        checked(self.store, events)
+        picked = push.select({"min_importance": 0}, self.store, events, NOW)
         self.assertEqual([e.id for e in picked], [dessa])  # 自己分享的不会再推给自己
         self.assertEqual(self.call("POST", "/v1/shares", {"text": "没有链接"})[0], 400)
 
@@ -1013,6 +1023,7 @@ class AppApiMoreTest(unittest.TestCase):
         ids = lambda: [e["id"] for e in app_api.feed(cfg, self.store, NOW)["events"]]
         self.assertNotIn(deal.id, ids())  # 还没判断的不先进信息流
         brief.write_briefs(self.store, [deal], "", FakeLLM(importance=3), {}, NOW)
+        checked(self.store, [deal])
         self.store.save_topics({deal.id: "AI 创投"})
         pushed = lambda: [e.id for e in push.select({}, self.store, events, NOW, push.strict_sources(sources))]
         self.assertNotIn(deal.id, ids())  # 一般的不进信息流、不推送，留在专题里
