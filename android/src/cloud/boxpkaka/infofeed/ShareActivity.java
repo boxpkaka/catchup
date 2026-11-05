@@ -60,15 +60,15 @@ public class ShareActivity extends Activity {
         TextView close = t.backButton(this);
         root.addView(close, new LinearLayout.LayoutParams(t.dp(44), t.dp(44)));
 
-        // 中间一个大的加载指示器、正在读的链接和一句说明
+        // 中间一团呼吸的光、正在读的链接和一句说明
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setGravity(Gravity.CENTER_VERTICAL);
         body.setPadding(t.dp(14), 0, 0, t.dp(80));
         FrameLayout box = new FrameLayout(this);
-        box.setBackground(t.round(t.pc, 99));
         loader = new Shapes.Loader(this, t.pri);
-        box.addView(loader, new FrameLayout.LayoutParams(t.dp(58), t.dp(58), Gravity.CENTER));
+        box.addView(loader, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
         loaderBox = box;
         LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(t.dp(96), t.dp(96));
         bl.bottomMargin = t.dp(28);

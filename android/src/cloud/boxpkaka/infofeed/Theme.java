@@ -212,7 +212,11 @@ final class Theme {
             float chroma = m[1] < 0.06f ? 0 : m[1] * m[2];
             return night ? hsv(m[0], Math.min(0.45f, chroma * 1.8f), 1) : hsv(m[0], Math.min(0.62f, chroma * 2.4f), 0.56f);
         }
-        String topic = topicOf(e);
+        return accent(topicOf(e));
+    }
+
+    /** 话题或专题的点缀色：它的形状色；没登记的用主色。 */
+    int accent(String topic) {
         int[] z = topic.isEmpty() ? null : zone(topic);
         return z == null || z[0] == sheet ? pri : z[2];
     }
@@ -227,7 +231,7 @@ final class Theme {
         return new int[]{Color.luminance(page[0]) < Color.luminance(page[2]) ? page[0] : page[2], Color.WHITE};
     }
 
-    /** 不属于某件事的页面（首页、对话、记忆、模型页）用珍珠银，专题页用专题色，见 field。 */
+    /** 不属于某件事的页面（首页、对话、记忆）用珍珠银，专题页和从它点开的模型页用专题色，见 field。 */
     int[] ask(String key) {
         return ask(field(key));
     }
@@ -318,13 +322,12 @@ final class Theme {
                 round(color, tl, tr, br, bl), round(Color.WHITE, tl, tr, br, bl));
     }
 
-    /** 从上往下渐变的圆角背景 + 点按水波纹；深底上的水波纹是浅色的。 */
-    Drawable ripple(int top, int bottom, float radiusDp) {
+    /** 从上往下渐变的圆角背景（最值得看的卡片，点按不泛白光）。 */
+    Drawable gradient(int top, int bottom, float radiusDp) {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
         float r = dp(radiusDp);
         g.setCornerRadii(new float[]{r, r, r, r, r, r, r, r}); // 四个角分开给，右滑时 SwipeDismiss 才能改圆角
-        return new RippleDrawable(ColorStateList.valueOf(Color.luminance(top) < 0.3f ? 0x22FFFFFF : 0x14000000),
-                g, round(Color.WHITE, radiusDp));
+        return g;
     }
 
     /**

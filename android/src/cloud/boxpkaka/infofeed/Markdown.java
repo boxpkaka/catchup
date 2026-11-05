@@ -28,6 +28,7 @@ import android.widget.TextView;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -67,10 +68,63 @@ final class Markdown {
     private static final Pattern QUOTE = Pattern.compile("\\s*>+\\s?(.*)");
     private static final Pattern LIST = Pattern.compile("(\\s*)(?:([-*+•])\\s+|(\\d+)(?:[.)]\\s+|、\\s*))(.*)");
     private static final Pattern TASK = Pattern.compile("\\[([ xX])\\]\\s+(.*)");
+    private static final Pattern MARKER = Pattern.compile("\\s*(#{1,6}|>|[+•]|\\d+[.)、]?|[-*_=~`]+)\\s*");
     private static final String[] BULLETS = {"•", "◦", "▪"};
     private static final int EXCL = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
 
     private Markdown() {}
+
+    /**
+     * 还在流式输出的回答：末尾没写完的标记先不显示，免得 **、[1、| 这些符号先冒出来再变成格式，前面的字也跟着跳。
+     * 最后一行只有列表符号、标题的 #、引用的 >、分隔线或代码块开头的，先藏着；表格等整张写完（后面接着别的内容）才出来，
+     * 排成几列还是一组一组要看全部的行，不然写到一半会换一种排法；行内没收尾的粗体、删除线、`代码`先按收好了显示；
+     * 没写完的 [ 引用、事件、链接从 [ 起先藏着。末尾的空行也先不显示。回答写完以后按全文再显示一次（不经过这里）。
+     */
+    static String partial(String md) {
+        String s = trimEnd(md.replace("\r", ""));
+        String[] lines = s.split("\n", -1);
+        boolean fence = false;
+        for (int i = 0; i < lines.length - 1; i++) if (FENCE.matcher(lines[i]).matches()) fence = !fence;
+        if (fence) return s; // 代码块里原样显示
+        int n = lines.length;
+        String last = lines[n - 1];
+        if (FENCE.matcher(last).matches() || MARKER.matcher(last).matches() || last.trim().startsWith("|")) n--;
+        while (n > 0 && lines[n - 1].trim().startsWith("|")) n--;
+        if (n < lines.length) return trimEnd(String.join("\n", Arrays.asList(lines).subList(0, n)));
+        return trimEnd(s.substring(0, s.length() - last.length()) + closed(last));
+    }
+
+    /**
+     * 最后一行行内的半截标记：藏起没写完的 [（停在 ] 上的也算，后面可能还有链接的网址；引用、事件的编号除外），
+     * 去掉末尾半个 *、~、`，再把没收尾的按打开的倒序收上。
+     */
+    private static String closed(String line) {
+        int open = line.lastIndexOf('[');
+        if (open >= 0) {
+            int close = line.indexOf(']', open);
+            if (close < 0 || close + 1 < line.length() && line.charAt(close + 1) == '(' && line.indexOf(')', close) < 0
+                    || close == line.length() - 1 && !line.substring(open).matches("\\[(E\\d+|\\d+([,，]\\s*\\d+)*)\\]")) {
+                line = line.substring(0, open);
+            }
+        }
+        int e = line.length();
+        while (e > 0 && "*~`_\\".indexOf(line.charAt(e - 1)) >= 0) e--;
+        line = trimEnd(line.substring(0, e));
+        if ((line.length() - line.replace("`", "").length()) % 2 == 1) return line + "`";
+        String plain = line.replaceAll("`[^`]*`", "");
+        int bold = plain.split("\\*\\*", -1).length % 2 == 0 ? plain.lastIndexOf("**") : -1;
+        int strike = plain.split("~~", -1).length % 2 == 0 ? plain.lastIndexOf("~~") : -1;
+        if (bold < 0 && strike < 0) return line;
+        if (bold < 0) return line + "~~";
+        if (strike < 0) return line + "**";
+        return line + (bold > strike ? "**~~" : "~~**");
+    }
+
+    private static String trimEnd(String s) {
+        int e = s.length();
+        while (e > 0 && Character.isWhitespace(s.charAt(e - 1))) e--;
+        return s.substring(0, e);
+    }
 
     /** view 是要显示它的 TextView：表格按它的字体和宽度判断排不排得下。 */
     static CharSequence render(String md, Theme t, TextView view, OnEvent onEvent) {

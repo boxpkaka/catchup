@@ -1,5 +1,8 @@
 package cloud.boxpkaka.infofeed;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -11,6 +14,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
@@ -68,6 +72,10 @@ public class ChatActivity extends Activity {
     private String pendingAsk; // 从详情页带过来的问题，等历史加载完再发，避免顺序错乱
     private boolean follow = true; // 回答输出时跟着滚到底；手指往上拖就停下，滑回底部再继续
     private boolean touching;
+    private boolean chasing; // 正在一帧一帧地往底部追（见 followEnd）
+    private long chased;
+    private String topic; // 从哪个专题点进来的（EventActivity.EXTRA_ART），不是从专题来的为 null
+    private String art; // 这一页的颜色：专题色，或者珍珠银
 
     @Override
     protected void onCreate(Bundle state) {
@@ -76,6 +84,8 @@ public class ChatActivity extends Activity {
         t = new Theme(this);
         t.applyWindow(this);
         eventId = getIntent().getLongExtra(EXTRA_EVENT, -1);
+        topic = getIntent().getStringExtra(EventActivity.EXTRA_ART);
+        art = topic != null ? topic : Theme.PEARL;
         threadId = getIntent().getLongExtra(EXTRA_THREAD, -1);
         nav = Nav.of(this, build(), t.bg);
         setContentView(nav.wrap(state == null)); // 从点开的卡片展开或从右边推进来，右滑返回
@@ -103,13 +113,14 @@ public class ChatActivity extends Activity {
 
     /**
      * 和详情页、记忆页一样：没有标题栏，标题是页面内容的开头，返回按钮浮在左上角；输入框和发送按钮浮在底部，下面垫一层渐隐，
-     * 内容从按钮下面滚过去。整页的底是珍珠银的雾，读的地方是磨砂，发送和你问的话是这一页颜色（珍珠银）的金属。
+     * 内容从按钮下面滚过去。整页的底是这一页颜色的雾（珍珠银，从专题进来的是专题色），读的地方是磨砂，发送和你问的话是
+     * 这一页颜色的金属。
      */
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        Flow mist = new Flow(this); // 整页的底：珍珠银的雾
-        mist.mist(t, Theme.PEARL, 7);
+        Flow mist = new Flow(this); // 整页的底：这一页颜色的雾
+        mist.mist(t, art, topic != null ? Flow.seedOf(topic) : 7);
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -151,7 +162,7 @@ public class ChatActivity extends Activity {
         bl.setMargins(t.dp(12), t.dp(10), 0, 0);
         root.addView(back, bl);
 
-        // 输入框和发送按钮分开：输入框是磨砂；空着时发送是磨砂的圆，有字时变成这一页颜色（珍珠银）的金属圆角方块
+        // 输入框和发送按钮分开：输入框是磨砂；空着时发送是磨砂的圆，有字时变成这一页颜色的金属圆角方块
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.BOTTOM);
         bar.setBaselineAligned(false); // 按底边对齐：按文字基线对齐时发送按钮会被顶出内边距，上沿被裁掉一条
@@ -274,7 +285,7 @@ public class ChatActivity extends Activity {
                         View v = addUser(m.optString("content"));
                         if (ask != null && same(ask, m.optString("content"))) asked = v;
                     } else {
-                        showAnswer(addAssistant(), m.optString("content"), null);
+                        showAnswer(addAssistant(), m.optString("content"), null, false);
                     }
                 }
                 if (asked != null) { // 这个问题问过了：直接看上次的回答，不再重新生成
@@ -346,7 +357,10 @@ public class ChatActivity extends Activity {
         }
         addUser(msg);
         LinearLayout status = statusLine("正在思考");
-        TextView answer = addAssistant();
+        Reveal.Text answer = addAssistant();
+        answer.addOnLayoutChangeListener((v, l, top, r, b, ol, oldTop, or, oldB) -> {
+            if (b - top != oldB - oldTop) followEnd(); // 回答长了一行：跟着往下
+        });
         Reveal reveal = new Reveal(answer);
         StringBuilder full = new StringBuilder();
         scrollToEnd();
@@ -374,6 +388,7 @@ public class ChatActivity extends Activity {
                 busy = false;
                 styleSend();
                 removeStatus(status);
+                if (full.length() > 0) showAnswer(answer, full.toString(), reveal, false); // 写完了：末尾藏着的（比如最后一张表格）也出来
                 if (err != null && full.length() == 0) answer.setText("没有拿到回答：" + err + "。再发一次试试。");
             });
         }, "chat-send").start();
@@ -392,7 +407,7 @@ public class ChatActivity extends Activity {
             case "delta":
                 removeStatus(status);
                 full.append(e.optString("text"));
-                showAnswer(answer, full.toString(), reveal);
+                showAnswer(answer, full.toString(), reveal, true);
                 followEnd();
                 break;
             case "cached":
@@ -417,9 +432,9 @@ public class ChatActivity extends Activity {
 
     // ---------- 消息气泡 ----------
 
-    /** 你问的话：和发送按钮一样，是这一页颜色（珍珠银）的金属，右下角收小。 */
+    /** 你问的话：和发送按钮一样，是这一页颜色的金属，右下角收小。 */
     private View addUser(String text) {
-        int[] ask = t.ask(Theme.PEARL);
+        int[] ask = t.ask(art);
         TextView v = t.text(this, text, 15, ask[1], 500);
         v.setLineSpacing(t.dp(4), 1f);
         v.setPadding(t.dp(16), t.dp(11), t.dp(16), t.dp(11));
@@ -456,8 +471,12 @@ public class ChatActivity extends Activity {
         messages.addView(row, lp);
     }
 
-    private TextView addAssistant() {
-        TextView v = t.text(this, "", 15.5f, t.ink, 400);
+    private Reveal.Text addAssistant() {
+        Reveal.Text v = new Reveal.Text(this);
+        v.setTextSize(15.5f);
+        v.setTextColor(t.ink);
+        v.setTypeface(Theme.weight(400));
+        v.setIncludeFontPadding(false);
         v.setLineSpacing(t.dp(10), 1f);
         v.setMovementMethod(LinkMovementMethod.getInstance());
         v.setLinkTextColor(t.pri);
@@ -473,10 +492,14 @@ public class ChatActivity extends Activity {
         return v;
     }
 
-    /** 回答正文按 Markdown 显示，末尾的来源列表拆出来做成卡片放在回答下面。reveal 为空时直接显示（历史记录）。 */
-    private void showAnswer(TextView answer, String md, Reveal reveal) {
+    /**
+     * 回答正文按 Markdown 显示，末尾的来源列表拆出来做成卡片放在回答下面。reveal 为空时直接显示（历史记录）；
+     * streaming：还在输出，末尾没写完的标记先藏着（Markdown.partial）。
+     */
+    private void showAnswer(TextView answer, String md, Reveal reveal, boolean streaming) {
         int cut = sourcesAt(md);
-        CharSequence body = Markdown.render(cut < 0 ? md : md.substring(0, cut), t, answer, this::openEvent);
+        String text = cut < 0 ? md : md.substring(0, cut);
+        CharSequence body = Markdown.render(streaming ? Markdown.partial(text) : text, t, answer, this::openEvent);
         if (reveal != null) reveal.set(body);
         else answer.setText(body);
         if (cut < 0 || answer.getTag() != null) return;
@@ -637,8 +660,8 @@ public class ChatActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, t.dp(16), 0, 0);
         Shapes.Loader loader = new Shapes.Loader(this, t.pri);
-        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(t.dp(20), t.dp(20));
-        ll.rightMargin = t.dp(8);
+        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(t.dp(24), t.dp(24));
+        ll.rightMargin = t.dp(4);
         row.addView(loader, ll);
         row.addView(t.text(this, text, 13, t.sub, 600));
         messages.addView(row);
@@ -646,14 +669,36 @@ public class ChatActivity extends Activity {
         return row;
     }
 
+    /** 回答开始出来了：“正在思考”这一行淡出、收起高度，回答从它的位置平平地升上来，不是一下子跳上去。 */
     private void removeStatus(LinearLayout status) {
-        if (status.getParent() == null) return;
-        messages.removeView(status); // 指示器离开窗口时自己停
+        if (status.getParent() == null || status.getTag() != null) return;
+        int h = status.getHeight();
+        if (h == 0 || !ValueAnimator.areAnimatorsEnabled()) {
+            messages.removeView(status); // 指示器离开窗口时自己停
+            return;
+        }
+        status.setTag(true); // 已经在收起
+        ValueAnimator fold = ValueAnimator.ofFloat(1f, 0f);
+        fold.setDuration(Spring.FX.duration);
+        fold.setInterpolator(Spring.FX);
+        fold.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            status.setAlpha(f * f);
+            status.getLayoutParams().height = Math.round(h * f);
+            status.requestLayout();
+        });
+        fold.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator a) {
+                messages.removeView(status);
+            }
+        });
+        fold.start();
     }
 
     private void styleSend() {
         boolean ready = !busy && input.getText().toString().trim().length() > 0;
-        int[] ask = t.ask(Theme.PEARL); // 能发的时候和问一问一样，是这一页颜色的金属
+        int[] ask = t.ask(art); // 能发的时候和问一问一样，是这一页颜色的金属
         send.setTextColor(ready ? ask[1] : t.sub);
         ((Spring.Shape) ((android.graphics.drawable.RippleDrawable) send.getBackground()).getDrawable(0))
                 .morph(t.dp(ready ? 18 : 99), ready ? ask[0] : t.frostButton, ready);
@@ -769,14 +814,20 @@ public class ChatActivity extends Activity {
     }
 
     private void openEvent(View from, long id) {
-        Card.open(this, from, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
-                .putExtra(EventActivity.EXTRA_FROM, "chat"));
+        Card.open(this, from, event(id));
     }
 
     /** 回答正文里的事件链接：不是卡片，从右边推进来。 */
     private void openEvent(long id) {
-        Push.open(this, new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
-                .putExtra(EventActivity.EXTRA_FROM, "chat"));
+        Push.open(this, event(id));
+    }
+
+    /** 从专题进来的对话里点开的事件，也接着跟专题的颜色。 */
+    private Intent event(long id) {
+        Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
+                .putExtra(EventActivity.EXTRA_FROM, "chat");
+        if (topic != null) i.putExtra(EventActivity.EXTRA_ART, topic);
+        return i;
     }
 
     private void postAsync(String path, String json) {
@@ -793,11 +844,32 @@ public class ChatActivity extends Activity {
     /** 滚到最底下并继续跟随；不用 fullScroll，它会把焦点移进列表，正在打字时键盘会被收起。 */
     private void scrollToEnd() {
         follow = true;
-        scroll.post(() -> scroll.smoothScrollTo(0, messages.getHeight()));
+        followEnd();
     }
 
-    /** 新内容出来时跟着滚到底；用户往上翻着看的时候不动。 */
+    /**
+     * 新内容出来时跟着滚到底；用户往上翻着看的时候不动。不用 smoothScrollTo：两次间隔不到 250ms 时它直接跳过去，
+     * 回答一边长一边跟就会一顿一顿的。这里每帧往底部追剩下距离的一部分，接连长出来也是连着滑。
+     */
     private void followEnd() {
-        if (follow) scroll.post(() -> scroll.smoothScrollTo(0, messages.getHeight()));
+        if (!follow || chasing) return;
+        chasing = true;
+        chased = 0;
+        scroll.postOnAnimation(this::chase);
+    }
+
+    private void chase() {
+        long now = SystemClock.uptimeMillis();
+        float dt = chased == 0 ? 0.016f : Math.min(0.05f, (now - chased) / 1000f);
+        chased = now;
+        int end = Math.max(0, messages.getHeight() - (scroll.getHeight() - scroll.getPaddingTop() - scroll.getPaddingBottom()));
+        int y = scroll.getScrollY(), left = end - y;
+        if (!follow || touching || left <= 0 || isDestroyed()) {
+            chasing = false;
+            return;
+        }
+        int step = Math.round(left * (1 - (float) Math.exp(-dt / 0.12f)));
+        scroll.scrollTo(0, y + Math.max(1, step));
+        scroll.postOnAnimation(this::chase);
     }
 }

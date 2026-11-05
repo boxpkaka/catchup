@@ -11,8 +11,8 @@ import android.widget.AbsListView;
 import android.widget.FrameLayout;
 
 /**
- * 下拉刷新：列表在顶部时向下拉，像 iOS 的橡皮筋一样越拉越紧，露出加载指示器，随拉动距离放大、转动；拉过阈值时震一下，
- * 松手后带着手指的速度弹到刷新位置（或弹回），指示器边变形边转，直到刷新结束；弹的途中按住可以接着拉。
+ * 下拉刷新：列表在顶部时向下拉，像 iOS 的橡皮筋一样越拉越紧，露出一团光，随拉动距离化开、变亮；拉过阈值时震一下，
+ * 松手后带着手指的速度弹到刷新位置（或弹回），光慢慢地呼吸，直到刷新结束；弹的途中按住可以接着拉。
  * 框架里没有 SwipeRefreshLayout，这里自己实现。
  */
 final class PullLayout extends FrameLayout {
@@ -37,10 +37,9 @@ final class PullLayout extends FrameLayout {
         threshold = theme.dp(96);
         rest = theme.dp(78);
         indicator = new FrameLayout(c);
-        indicator.setBackground(theme.round(theme.pc, 99));
         indicator.setAlpha(0);
         loader = new Shapes.Loader(c, theme.pri);
-        indicator.addView(loader, new LayoutParams(theme.dp(34), theme.dp(34), Gravity.CENTER));
+        indicator.addView(loader, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         LayoutParams lp = new LayoutParams(theme.dp(56), theme.dp(56), Gravity.CENTER_HORIZONTAL | Gravity.TOP);
         lp.topMargin = theme.dp(12);
         addView(indicator, lp);
@@ -140,7 +139,6 @@ final class PullLayout extends FrameLayout {
         indicator.setAlpha(Math.min(1f, v / (threshold * 0.4f)));
         indicator.setScaleX(0.6f + 0.4f * progress);
         indicator.setScaleY(0.6f + 0.4f * progress);
-        if (!refreshing) loader.setRotation(progress * 180);
     }
 
     private void animateTo(float target, float velocity) {

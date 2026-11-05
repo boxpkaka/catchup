@@ -71,13 +71,7 @@ final class TopicsView extends FrameLayout {
         if (loading || System.currentTimeMillis() - loadedAt < STALE_MS) return;
         loading = true;
         if (shown == null) {
-            body.removeAllViews();
-            Shapes.Loader loader = new Shapes.Loader(a, t.pri);
-            LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(t.dp(48), t.dp(48));
-            ll.gravity = Gravity.CENTER_HORIZONTAL;
-            ll.topMargin = t.dp(120);
-            body.addView(loader, ll);
-            loader.start();
+            placeholder();
         }
         Trace.log(a, "ui.topics", shown == null ? "first" : "refresh");
         new Thread(() -> {
@@ -102,6 +96,31 @@ final class TopicsView extends FrameLayout {
                 }
             });
         }, "topics-load").start();
+    }
+
+    /** 第一次取的时候：几张空的磨砂卡片，排得和专题卡片一样（一张整行、两张并排、一张整行），慢慢明暗起伏。 */
+    private void placeholder() {
+        body.removeAllViews();
+        LinearLayout cards = new LinearLayout(a);
+        cards.setOrientation(LinearLayout.VERTICAL);
+        cards.setPadding(0, t.dp(38), 0, 0);
+        int[][] rows = {{1, 250}, {2, 210}, {1, 230}}; // 每行几张、多高
+        for (int[] r : rows) {
+            LinearLayout row = new LinearLayout(a);
+            for (int i = 0; i < r[0]; i++) {
+                View v = new View(a);
+                v.setBackground(t.frost(Theme.R_XL));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, t.dp(r[1]), 1);
+                if (i > 0) lp.leftMargin = t.dp(8);
+                row.addView(v, lp);
+            }
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = t.dp(8);
+            cards.addView(row, lp);
+        }
+        body.addView(cards);
+        Shapes.breathe(cards);
     }
 
     private void render(JSONObject r) {
