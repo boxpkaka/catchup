@@ -137,6 +137,15 @@ class NoveltyTest(unittest.TestCase):
         self.assertEqual(self.store.briefs([first]), {})  # 多了一篇报道，简报这一轮重写
         self.assertEqual(self.verdict(first), "new")
 
+    def test_common_names_are_not_searched(self):
+        self.store.add([sig(f"https://o/{i}", f"OpenAI news {i}", hours_ago=200) for i in range(3)],
+                       now=NOW - timedelta(days=9))
+        llm = Judge({"verdict": "same", "match": 1}, entities=["OpenAI"])
+        with mock.patch.object(novelty, "COMMON", (0.0, 2)):  # 三条就算常见
+            eid = self.event(sig("https://a/1", "OpenAI ships something"), llm=llm)
+            self.check(llm)
+        self.assertEqual((self.verdict(eid), llm.judged), ("new", []))
+
     def test_only_the_subject_is_searched(self):
         self.old_launch()
         llm = Judge({"verdict": "same", "match": 1}, entities=["CloudOpsBench", "云运维基准"])

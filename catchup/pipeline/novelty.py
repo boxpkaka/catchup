@@ -4,7 +4,8 @@
 只看时间分不出新旧，所以给每件写好简报的事查一次：
 1. 用简报里主角的名字（entities：标准名字和其他写法；加这一项之前写的简报用标题里的名字）到检索库（Store.search：信号和
    简报的全文索引，不限时间）里找更早的内容。只用主角的名字：顺带提到的工具、评测用的模型会拉进来一堆只沾边的内容，
-   回测里模型因此把不相干的事判成了同一件。没有明确主角的（行业观点、市场分析）不检索。
+   回测里模型因此把不相干的事判成了同一件。没有明确主角的（行业观点、市场分析）不检索；太常见的名字也不拿来检索
+   （COMMON：在信号里出现超过 1%、至少 100 次，像“OpenAI”“GPT”，和三个字母的短名字匹配到别的词里的子串，“Fal”对上 false）。
 2. 找到了更早的内容，或材料写明的发生日期（简报的 happened）早于 STALE_DAYS 天前，让模型对照判断：same（同一件事、
    没有新内容）/ update（同一个产品或同一件事有了新的实质内容，比如被曝出问题、降价）/ old（检索库里对不上，但材料讲的
    就是很早以前的事）/ new。日期只是证据，不单独定案：“5 月发布的 Opus 4.8 被曝出问题”这类报道，日期可能被写成发布日。
@@ -41,6 +42,7 @@ SEARCH = 30       # 检索库的简报和信号各取最相关的几条
 CANDIDATES = 8    # 给模型对照的更早内容最多几条，一半留给简报
 LIMIT = 20        # 每轮最多让模型判断几件（开着思考，一件几秒）；上线时积压的分几轮查，新事件先查
 SNIPPET = 160
+COMMON = (0.01, 100)  # 在信号里出现超过这个比例（至少这么多次）的名字太常见，不拿来检索
 PUSHABLE = {"new", "update"}
 # 标题里像名字的部分：带版本号的（“Opus 4.8”“GPT-5”“Qwen3-TTS”）和大小写混写的（“OpenAI”“vLLM”）。
 # 英文标题每个词都大写开头，按大写连词会把整个标题当成一个名字
@@ -115,7 +117,7 @@ def run(store, events: list[Event], llm, sources: dict[str, Source], now: dateti
 def candidates(store, event: Event, brief: dict, sources: dict[str, Source]) -> list[dict]:
     """检索库里比这件事更早、提到同样名字的内容：编号更小的事件，和没归入事件的信号（时间窗外采到的），按相关度最多
     CANDIDATES 条。每条：{event, url, time（最早的发布时间）, label, title, summary, stale（已判为旧闻）}。"""
-    brief_hits, signal_hits = store.search(_names(event, brief), SEARCH)
+    brief_hits, signal_hits = store.search(_distinctive(store, _names(event, brief)), SEARCH)
     half = CANDIDATES // 2
     keys: list[int | object] = brief_hits[:half] + [s if s.event_id is None else s.event_id for s in signal_hits]
     keys += brief_hits[half:]
@@ -150,6 +152,17 @@ def candidates(store, event: Event, brief: dict, sources: dict[str, Source]) -> 
 def _names(event: Event, brief: dict) -> list[str]:
     """检索用的名字：简报里主角的几种写法（为空是没有明确主角），加这一项之前写的简报（None）用标题里的名字。"""
     return brief["entities"] if brief.get("entities") is not None else names_in(brief["headline"], event.lead.title)
+
+
+def _distinctive(store, names: list[str]) -> list[str]:
+    """去掉太常见的名字（见 COMMON），它们拉进来的多是不相干的内容。"""
+    ratio, floor = COMMON
+    kept = []
+    for name in names:
+        hit, total = store.mentions(name)
+        if hit <= max(floor, ratio * total):
+            kept.append(name)
+    return kept
 
 
 def names_in(*texts: str) -> list[str]:
