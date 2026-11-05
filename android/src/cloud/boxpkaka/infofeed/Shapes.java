@@ -7,15 +7,18 @@ import android.graphics.ColorFilter;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
+import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.animation.LinearInterpolator;
-import android.view.animation.PathInterpolator;
 
 /**
  * 形状：都由 r(θ) = r0·(1 + amp·cos kθ) 取同样多的点生成，所以任意两个之间可以逐点插值变形。
  * 每种形状只表达一件事：波浪是图标，太阳是重要性 5，四叶是重要性 4 和“未追踪信息”，软六边形是字标和要点。
+ * 加载时不用形状：有占位的让磨砂占位明暗起伏（breathe），没有的是一团呼吸的光（Loader）。
  */
 final class Shapes {
     static final float[] COOKIE = {12, 0.075f}, SUNNY = {8, 0.1f}, CLOVER = {4, 0.2f}, SOFT = {6, 0.09f};
@@ -84,33 +87,64 @@ final class Shapes {
     }
 
     /**
-     * 加载指示器：在软六边形、波浪、太阳、四叶之间循环变形，同时转动。下拉刷新、首次加载、分享、对话里的“正在思考”都用它。
-     * 系统关闭了动画时停在波浪形上不动。
+     * 加载时的磨砂占位：rows 里每一块的底慢慢明暗起伏，一块比一块晚一点，像一道很宽的光从磨砂后面缓缓往下移过，
+     * 不转圈、不抢眼。进窗口时开始、离开时停（也可以拿返回的动画提前停），系统关闭了动画时不动。
+     * 每一块要有自己的背景（t.frost、t.segments 给的都是）；没有背景的一行（并排的几块）里面几块一起起伏。
+     */
+    static ValueAnimator breathe(ViewGroup rows) {
+        ValueAnimator glow = ValueAnimator.ofFloat(0, 1);
+        glow.setDuration(2600);
+        glow.setRepeatCount(ValueAnimator.INFINITE);
+        glow.setInterpolator(new LinearInterpolator());
+        glow.addUpdateListener(a -> {
+            float p = (float) a.getAnimatedValue();
+            for (int i = 0; i < rows.getChildCount(); i++) {
+                shade(rows.getChildAt(i), Math.round(255 * (0.6f + 0.22f * (float) Math.sin(2 * Math.PI * (p - i * 0.08f)))));
+            }
+        });
+        rows.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                if (ValueAnimator.areAnimatorsEnabled()) glow.start();
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                glow.cancel();
+            }
+        });
+        if (rows.isAttachedToWindow() && ValueAnimator.areAnimatorsEnabled()) glow.start(); // 已经在屏幕上（比如重试）
+        return glow;
+    }
+
+    private static void shade(View v, int alpha) {
+        if (v.getBackground() != null) v.getBackground().setAlpha(alpha);
+        else if (v instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) shade(((ViewGroup) v).getChildAt(i), alpha);
+    }
+
+    /**
+     * 加载指示器：一团柔和的光，中间亮、往外化开，慢慢亮起来又暗下去，像待机时的呼吸灯，不转、不变形。
+     * 没有占位可以起伏的地方用它：下拉刷新、分享、对话里的“正在思考”。系统关闭了动画时一直亮着。
      */
     static final class Loader extends View {
-        private static final float[][] CYCLE = {points(SOFT), points(COOKIE), points(SUNNY), points(CLOVER)};
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path path = new Path();
-        private final Rect box = new Rect();
-        private final PathInterpolator ease = new PathInterpolator(0.5f, 0, 0.2f, 1);
+        private final int color;
         private ValueAnimator anim;
-        private float phase = 1; // 0～4：整数是某个形状，小数是两个形状之间
-        private float spin;
+        private float breath = 1; // 0 暗、1 亮
 
         Loader(Context c, int color) {
             super(c);
-            paint.setColor(color);
+            this.color = color;
         }
 
         void start() {
             if (anim != null || !ValueAnimator.areAnimatorsEnabled()) return;
-            anim = ValueAnimator.ofFloat(0, 4);
-            anim.setDuration(3200);
+            anim = ValueAnimator.ofFloat(0, 1);
+            anim.setDuration(2400);
             anim.setRepeatCount(ValueAnimator.INFINITE);
             anim.setInterpolator(new LinearInterpolator());
             anim.addUpdateListener(a -> {
-                phase = (float) a.getAnimatedValue();
-                spin = a.getCurrentPlayTime() % 2000 * 0.18f; // 两秒一圈
+                breath = 0.5f + 0.5f * (float) Math.cos(2 * Math.PI * (float) a.getAnimatedValue()); // 从亮开始
                 invalidate();
             });
             anim.start();
@@ -119,8 +153,7 @@ final class Shapes {
         void stop() {
             if (anim != null) anim.cancel();
             anim = null;
-            phase = 1;
-            spin = 0;
+            breath = 1;
             invalidate();
         }
 
@@ -131,14 +164,23 @@ final class Shapes {
         }
 
         @Override
+        protected void onSizeChanged(int w, int h, int ow, int oh) {
+            float cx = (getPaddingLeft() + w - getPaddingRight()) / 2f, cy = (getPaddingTop() + h - getPaddingBottom()) / 2f;
+            float r = Math.max(1, Math.min(w - getPaddingLeft() - getPaddingRight(), h - getPaddingTop() - getPaddingBottom()) / 2f);
+            paint.setShader(new RadialGradient(cx, cy, r, new int[]{color, color & 0xFFFFFF | 0x8C000000,
+                    color & 0xFFFFFF | 0x26000000, color & 0xFFFFFF}, new float[]{0, 0.28f, 0.62f, 1}, Shader.TileMode.CLAMP));
+        }
+
+        @Override
         protected void onDraw(Canvas c) {
-            int from = (int) phase % 4;
-            float t = ease.getInterpolation(phase - (int) phase);
-            box.set(getPaddingLeft(), getPaddingTop(), getWidth() - getPaddingRight(), getHeight() - getPaddingBottom());
-            trace(path, CYCLE[from], CYCLE[(from + 1) % 4], t, box);
+            float cx = (getPaddingLeft() + getWidth() - getPaddingRight()) / 2f;
+            float cy = (getPaddingTop() + getHeight() - getPaddingBottom()) / 2f;
+            float r = Math.min(getWidth() - getPaddingLeft() - getPaddingRight(), getHeight() - getPaddingTop() - getPaddingBottom()) / 2f;
+            float s = 0.72f + 0.28f * breath; // 亮的时候光也化得开一点
+            paint.setAlpha(Math.round(255 * (0.4f + 0.6f * breath)));
             c.save();
-            c.rotate(spin, box.exactCenterX(), box.exactCenterY());
-            c.drawPath(path, paint);
+            c.scale(s, s, cx, cy);
+            c.drawCircle(cx, cy, r, paint);
             c.restore();
         }
     }

@@ -25,6 +25,7 @@ import java.util.Locale;
 /**
  * HF 热榜上的一个模型：头部是任务分类、名字、热度和打开 HF 页面，下面是中文简介、参数量等模型信息，
  * 有对应事件的列出那件事，最后是问一问。榜上的模型不管有没有事件都进这里，数据就是榜单条目本身（见 TopicActivity）。
+ * 整页的雾和问一问跟着点进来的专题的颜色，点开相关报道时接着带下去。
  */
 public class ModelActivity extends Activity {
     static final String EXTRA_JSON = "json";
@@ -33,6 +34,7 @@ public class ModelActivity extends Activity {
     private Theme t;
     private Nav nav;
     private JSONObject x;
+    private String art; // 从哪个专题点进来的（EventActivity.EXTRA_ART），没有就是珍珠银
     private LinearLayout page, head, body;
 
     @Override
@@ -46,6 +48,8 @@ public class ModelActivity extends Activity {
         } catch (Exception e) {
             x = new JSONObject();
         }
+        art = getIntent().getStringExtra(EventActivity.EXTRA_ART);
+        if (art == null) art = Theme.PEARL;
         nav = Nav.of(this, build(), t.bg);
         setContentView(nav.wrap(state == null)); // 从点开的那一行展开，右滑返回
         Trace.log(this, "ui.model", x.optString("name"));
@@ -59,8 +63,8 @@ public class ModelActivity extends Activity {
     private View build() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        Flow mist = new Flow(this); // 整页的底：珍珠银的雾
-        mist.mist(t, Theme.PEARL, 7);
+        Flow mist = new Flow(this); // 整页的底：专题色的雾
+        mist.mist(t, art, Flow.seedOf(art));
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         ScrollView scroll = new Elastic(this);
@@ -189,7 +193,8 @@ public class ModelActivity extends Activity {
             more.setPadding(0, t.dp(6), 0, 0);
             row.addView(more);
             row.setOnClickListener(v -> Card.open(this, v, new Intent(this, EventActivity.class)
-                    .putExtra(EventActivity.EXTRA_ID, x.optLong("event_id")).putExtra(EventActivity.EXTRA_FROM, "model")));
+                    .putExtra(EventActivity.EXTRA_ID, x.optLong("event_id")).putExtra(EventActivity.EXTRA_FROM, "model")
+                    .putExtra(EventActivity.EXTRA_ART, art)));
             events.addView(row);
             body.addView(events);
             t.segments(events);
@@ -197,11 +202,12 @@ public class ModelActivity extends Activity {
 
         TextView ask = t.text(this, "问一问", 15, 0, 800);
         ask.setGravity(Gravity.CENTER);
-        t.askButton(ask, t.ask(Theme.PEARL), 99);
+        t.askButton(ask, t.ask(art), 99);
         String shortName = TopicsView.shortName(name());
-        ask.setOnClickListener(v -> Push.open(this, new Intent(this, ChatActivity.class).putExtra(
-                ChatActivity.EXTRA_QUESTIONS,
-                new String[]{shortName + " 是做什么的？有什么特别之处？", shortName + " 和同类相比怎么样？"})));
+        ask.setOnClickListener(v -> Push.open(this, new Intent(this, ChatActivity.class)
+                .putExtra(EventActivity.EXTRA_ART, art)
+                .putExtra(ChatActivity.EXTRA_QUESTIONS,
+                        new String[]{shortName + " 是做什么的？有什么特别之处？", shortName + " 和同类相比怎么样？"})));
         LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(52));
         al.topMargin = t.dp(28);
         body.addView(ask, al);

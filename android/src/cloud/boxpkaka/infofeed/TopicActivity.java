@@ -72,6 +72,7 @@ public class TopicActivity extends Activity implements Card.Hero {
     private float morphed = 1; // 上一次 morph 到的位置：停在整页以后（右滑缩小时也一直是 1）不再动列表
     private boolean waiting; // 数据在卡片长的途中到了：落定以后再建列表，见 morph
     private ValueAnimator rising; // 落定以后建好的列表一行一行浮上来
+    private LinearLayout placeholder; // 还在取数据时的几行空磨砂，见 loading
     private FrameLayout bar; // 标题栏：和专题卡片同一张流动的雾面金属
     private int barTop, barHeight; // 标题栏里内容的上边距、最小高度（随状态栏高度定）
     private int pulled; // 到顶往下拉了多少，标题栏就高出多少
@@ -100,6 +101,18 @@ public class TopicActivity extends Activity implements Card.Hero {
     @Override
     public void finish() {
         nav.finish(super::finish); // 先收回卡片或滑出去再关
+    }
+
+    /**
+     * 从专题页打开的 App 里的页面（事件详情、HF 模型、对话）都带上这个专题，按它的颜色画整页的雾、问一问和点缀色，
+     * 不换成那件事自己的话题色（见 EventActivity.EXTRA_ART）；它们再往下点开的页面接着带。startActivity 最后都走到这里。
+     */
+    @Override
+    public void startActivityForResult(Intent i, int request, Bundle options) {
+        if (i.getComponent() != null && getPackageName().equals(i.getComponent().getPackageName())) {
+            i.putExtra(EventActivity.EXTRA_ART, key);
+        }
+        super.startActivityForResult(i, request, options);
     }
 
     @Override
@@ -260,8 +273,7 @@ public class TopicActivity extends Activity implements Card.Hero {
         if (q == 1 && waiting) {
             waiting = false;
             morphed = 1;
-            render();
-            rise();
+            reveal();
             return;
         }
         if (q == morphed && q >= 1) return;
@@ -384,9 +396,7 @@ public class TopicActivity extends Activity implements Card.Hero {
                     waiting = true;
                     return;
                 }
-                body.setAlpha(0f); // 内容整块淡入，不突然冒出来
-                render();
-                body.animate().alpha(1f).setDuration(220).start();
+                reveal();
             });
         }, "topic-load").start();
     }
@@ -406,14 +416,35 @@ public class TopicActivity extends Activity implements Card.Hero {
         return data != null && "papers".equals(data.optString("kind"));
     }
 
+    /**
+     * 还在取数据：几行空的磨砂占位，样子和真的列表一样，一行接一行慢慢地明暗起伏，像光从磨砂玻璃后面缓缓移过；
+     * 不转圈，也不占住视线（参考 PS5 的加载）。数据到了，占位淡出，真的列表一行一行浮上来（见 reveal）。
+     */
     private void loading() {
         body.removeAllViews();
-        Shapes.Loader loader = new Shapes.Loader(this, z[2]);
-        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(t.dp(48), t.dp(48));
-        ll.gravity = Gravity.CENTER_HORIZONTAL;
-        ll.topMargin = t.dp(80);
-        body.addView(loader, ll);
-        loader.start();
+        LinearLayout list = placeholder = segmentList(body);
+        list.setPadding(0, t.dp(16), 0, 0);
+        for (int i = 0; i < 6; i++) {
+            list.addView(new View(this), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(84)));
+        }
+        t.segments(list);
+        Shapes.breathe(list);
+    }
+
+    /** 数据到了：占位淡出，换上真的列表，一行一行浮上来。 */
+    private void reveal() {
+        LinearLayout holder = placeholder;
+        placeholder = null;
+        if (holder == null || holder.getParent() != body) {
+            render();
+            rise();
+            return;
+        }
+        holder.animate().alpha(0f).setDuration(180).withEndAction(() -> {
+            if (isDestroyed()) return;
+            render();
+            rise();
+        }).start();
     }
 
     // ---------- 话题专题 ----------
@@ -798,7 +829,10 @@ public class TopicActivity extends Activity implements Card.Hero {
 
     // ---------- 公用 ----------
 
-    /** 这一行原地展开成事件详情；话题专题里的事件带上列表数据，详情页一开始就有内容。 */
+    /**
+     * 这一行原地展开成事件详情；话题专题里的事件带上列表数据，详情页一开始就有内容。详情页跟着这个专题的颜色
+     * （见 startActivityForResult）：从论文专题点开的还是纸张的暖灰。
+     */
     private void openEvent(View from, long id, JSONObject e) {
         Intent i = new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
                 .putExtra(EventActivity.EXTRA_FROM, papers() ? "papers" : "topic");

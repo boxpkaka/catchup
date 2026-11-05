@@ -19,8 +19,10 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.RadialGradient;
+import android.graphics.RecordingCanvas;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
@@ -50,14 +52,16 @@ import java.util.WeakHashMap;
  * 不冲白，暗部压深，亮部只有一层很宽很柔的光泽。抽象封面是几团圆形渐变，亮脊会在每团外面起一圈规则的亮环，像不锈钢。
  * 小图放大 8 倍左右，金属曲线又在亮脊附近把明暗差放大三四倍，所以底图用 16 位浮点（8 位的一档台阶会被放大成一圈色带），
  * GPU 上按三次 B 样条取样（双线性在每个像素格的边上会折一下，放大后看得出），最后加 ±0.5 档的抖动消掉剩下的色带，看不出来。
- * 安卓 13 起整个在 GPU 上按屏幕像素逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程；
+ * 安卓 13 起整个在 GPU 上逐点算（Gpu，RuntimeShader），没有格子、没有放大的痕迹，也不占主线程：卡片按屏幕像素算，
+ * 铺满整屏又很柔的页面的雾和详情页的颜色在缩小的图层上算、平滑放大（见 drawGpu）；
  * 老系统在 4dp 一格的小位图上算（compute），亮度用小数、和上一帧平滑，放大画上去；新系统上软件画布（卡片展开前拍的截图）
  * 也走这一路，算法相同，颜色接得上。
  * 三种用法：
  * - 卡片（首页“最值得看”、专题卡片、专题标题栏、报告的“要点”）：盖一层遮罩（字压在上面也看得清），边上一圈细倒角，
  *   圆角跟着卡片的背景（右滑时背景的圆角会变）；
- * - 详情页头部（bleed）：比头部长出一截，往下淌成一团雾。深的一层在标题下面化开，浅的一层（同一张图的亮色版本）淌进正文；
- *   雾的边由“淌到多深”的起伏和一张流动的噪声决定，一团团、一缕缕，没有固定的轮廓；
+ * - 详情页头部（bleed）：铺满整页、不跟着滚动，往下淌成一团雾。深的一层在标题下面化开，浅的一层（同一张图的亮色版本）
+ *   淌进正文，上面再飘一层水汽；雾的边由“淌到多深”的起伏和一张翻涌的噪声决定，一团团、一缕缕，没有固定的轮廓。
+ *   正文滚动、拉动时各层按不同的比例跟着走（parallax），字是浮在上面的；
  * - 页面的雾（mist）：每一页最底下，同一页颜色的亮色版本盖一层白（深色模式压暗），流得是卡片的三分之一快。
  * 动画按全局时钟加每件事的错开量算，同一件事的卡片和详情页走在同一个位置，展开时接得上；系统关了动画时静止。
  * 圆角靠 clipPath 而不是轮廓裁剪，Card 用 View.draw 截图时也是圆角。
@@ -99,16 +103,18 @@ final class Flow extends View {
     private float slow = 1;
     private Bitmap deep, light, fallback; // 颜色来源：深的一层；详情页往下淌的浅雾；来源下来前的两色渐变
     private View corners;
-    // 详情页的雾：颜色重的一侧（1 右、-1 左）、深浅差、两种起伏的相位、噪声的错开量；往下淌的长度（像素）
+    // 详情页的雾：颜色重的一侧（1 右、-1 左）、深浅差、两种起伏的相位、噪声的错开量
     private float side = 1, k, r0, r1, fogOff;
-    private int tail;
+    // 分层（见 parallax）：深色化开的边、浅雾、水汽的基准线（视图里的像素），流动的颜色整体往上走了多少
+    private float foot, fogFoot, vaporFoot, shift;
     // 小位图：sw × sh 格。work 上画三层，算好的结果平滑以后放进 out，放大画上去
     private int sw, sh;
     private Bitmap work, out, mask; // mask：详情页头部的雾有多浓（只用透明度），out 是不透明的颜色
     private Canvas workCanvas;
     private int[] px, px2, res, resMask;
-    private float[] acc, tmp, n1, n2;
+    private float[] acc, tmp, n1, n2, n3, n4;
     private Gpu shade, before; // GPU：现在的这一套；换了来源、正在淡入时，之前的那一套垫在下面
+    private RenderNode low; // 页面的雾和详情页的颜色先画在这块缩小的画布上，再放大（见 drawGpu）
     private final float[] values = new float[9];
     private long computedAt = -1, frameMs = FRAME_MS; // 多久重算一次：按上一次算了多久定，主线程最多花四分之一在这上面
     private int rimH = -1;
@@ -345,10 +351,11 @@ final class Flow extends View {
     }
 
     /**
-     * 详情页头部往下淌：比头部长出 tailPx；颜色重的一侧（封面下半张哪边更重，见 lean；接近 0 时按 id 随机选一侧）淌得更深。
-     * accent 是卡片的点缀色：浅色模式下往下淌的那段，深色盖的遮罩换成它，深色块化开时是透亮的同色而不是灰。
+     * 详情页头部往下淌（铺满整页、不跟着滚动，边在哪见 parallax）：颜色重的一侧（封面下半张哪边更重，见 lean；接近 0 时
+     * 按 id 随机选一侧）淌得更深。accent 是卡片的点缀色：浅色模式下往下淌的那段，深色盖的遮罩换成它，深色块化开时是
+     * 透亮的同色而不是灰；水汽也带一点它。
      */
-    void bleed(float lean, long id, int tailPx, int accent) {
+    void bleed(float lean, long id, int accent) {
         float[] r = seq(id, 2);
         if (Math.abs(lean) < .1f) lean = (r[0] < .5f ? -1 : 1) * (.25f + r[1] * .3f);
         side = lean > 0 ? 1 : -1;
@@ -357,10 +364,28 @@ final class Flow extends View {
         r0 = q[0];
         r1 = q[1];
         fogOff = id % 7;
-        tail = tailPx;
         this.accent = accent;
         mode = HEAD;
         refresh(false);
+    }
+
+    /**
+     * 分层（详情页，见 EventActivity.parallax）：正文滚动或拉动时，后面的各层按不同的比例跟着走。foot、fogFoot、vaporFoot
+     * 是深色化开的边、浅雾、水汽的基准线（视图里的像素），shift 是流动的颜色整体往上走了多少；页面的雾只用 shift。
+     */
+    void parallax(float foot, float fogFoot, float vaporFoot, float shift) {
+        if (foot == this.foot && fogFoot == this.fogFoot && vaporFoot == this.vaporFoot && shift == this.shift) return;
+        this.foot = foot;
+        this.fogFoot = fogFoot;
+        this.vaporFoot = vaporFoot;
+        this.shift = shift;
+        dirty = true;
+        invalidate();
+    }
+
+    /** 详情页头部的雾和水汽整个滚到屏幕上面去了：不画，也不排下一帧，滚回来时 parallax 叫醒。 */
+    private boolean gone() {
+        return mode == HEAD && Math.max(foot + 220 * density, Math.max(fogFoot + 640 * density, vaporFoot + 500 * density)) <= 0;
     }
 
     private void refresh(boolean fade) {
@@ -373,7 +398,7 @@ final class Flow extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         int w = getWidth(), h = getHeight();
-        if (w == 0 || h == 0) return;
+        if (w == 0 || h == 0 || gone()) return;
         boolean moving = ValueAnimator.areAnimatorsEnabled();
         long now = SystemClock.uptimeMillis();
         boolean fading = moving && fadeFrom > 0 && now - fadeFrom < FADE_MS;
@@ -493,8 +518,10 @@ final class Flow extends View {
     /**
      * GPU 上画一帧：t 是流动的时钟（毫秒），ts 是雾的噪声用的秒数，in 是新来源淡入到哪了（1 是淡完）。
      * 换了来源（图下来了、颜色定了）时新建一套；要淡入的，旧的那套先画在下面，新的按 in 盖上去。
+     * 页面的雾和详情页的颜色铺满整屏、又都很柔（没有比几十 dp 更细的东西），按屏幕像素逐点算太费（120Hz 下一帧
+     * 只有 8ms）：在三分之一（雾）、二分之一（详情页）大小的画布上算，再平滑放大，看不出差别。卡片小、有亮脊和细倒角，照旧按屏幕像素算。
      */
-    private void drawGpu(Canvas canvas, int w, int h, long t, float ts, float in) {
+    private void drawGpu(Canvas screen, int w, int h, long t, float ts, float in) {
         Bitmap src = deep != null ? deep : fallback, src2 = mode == HEAD && light != null ? light : src;
         if (src == null) return;
         if (shade == null || shade.deep != src || shade.light != src2) {
@@ -502,6 +529,19 @@ final class Flow extends View {
             shade = new Gpu(src, src2);
         }
         if (in >= 1) before = null;
+        float down = mode == MIST ? 3 : mode == HEAD ? 2 : 1;
+        Canvas canvas = screen;
+        if (down > 1) {
+            if (low == null) {
+                low = new RenderNode("flow");
+                low.setUseCompositingLayer(true, null); // 画到一块缩小的图层上，放大时按线性插值
+            }
+            int lw = (int) Math.ceil(w / down), lh = (int) Math.ceil(h / down);
+            low.setPosition(0, 0, lw, lh);
+            RecordingCanvas rc = low.beginRecording(lw, lh);
+            rc.scale(1 / down, 1 / down); // 着色器里的坐标照旧是视图里的像素
+            canvas = rc;
+        }
         int save = canvas.save();
         float[] radii = mode == CARD ? radii() : null;
         if (radii != null) {
@@ -520,6 +560,13 @@ final class Flow extends View {
         canvas.drawRect(0, 0, w, h, shade.paint);
         if (radii != null) drawRim(canvas, w, h);
         canvas.restoreToCount(save);
+        if (down > 1) {
+            low.endRecording();
+            int s = screen.save();
+            screen.scale(down, down);
+            screen.drawRenderNode(low);
+            screen.restoreToCount(s);
+        }
     }
 
     /** 这一帧的参数：三层各自从屏幕像素到图上像素的变换、两张图的金属曲线、遮罩，详情页头部再加雾。 */
@@ -537,6 +584,7 @@ final class Flow extends View {
             matrix.postTranslate(left + l[7] * side * e, top + l[8] * side * e);
             matrix.postScale(sc, sc, px, py);
             matrix.postRotate(l[6] * e, px, py);
+            matrix.postTranslate(0, -shift); // 分层：颜色整体往上走（见 parallax）
             matrix.invert(matrix); // 反过来：屏幕上的点在图上的哪
             matrix.getValues(v);
             s.setFloatUniform("ax" + i, v[0], v[1], v[2]);
@@ -546,12 +594,12 @@ final class Flow extends View {
         Look a = look(g.deep, mode == MIST ? (night ? 2 : 0) : dark ? (night ? 2 : 1) : 0, matte), b = look(g.light, night ? 2 : 0, false);
         s.setFloatUniform("look", a.lo, a.span, a.cap, a.matte ? 1 : 0);
         s.setFloatUniform("look2", b.lo, b.span, b.cap, 0);
-        if (mode == HEAD) {
-            float foot = h - tail; // 头部的底边：上面是标题底下的颜色，往下是雾
+        if (mode == HEAD) { // foot：头部的底边，上面是标题底下的颜色，往下是雾
             s.setFloatUniform("head", 1);
             s.setFloatUniform("fogA", density, foot / density, w, ts);
             s.setFloatUniform("fogB", side, k, r0, r1);
             s.setFloatUniform("fogC", fogOff, dark ? 1 : 0, night ? 1 : 0, 0);
+            s.setFloatUniform("fogD", fogFoot / density, vaporFoot / density, shift / density, 0);
             s.setFloatUniform("accent", Color.red(accent) / 255f, Color.green(accent) / 255f, Color.blue(accent) / 255f);
             s.setFloatUniform("veil", 0, 0, 0, 0);
         } else {
@@ -561,6 +609,7 @@ final class Flow extends View {
             s.setFloatUniform("fogA", density, 0, w, 0);
             s.setFloatUniform("fogB", 0, 0, 0, 0);
             s.setFloatUniform("fogC", 0, 0, 0, 0);
+            s.setFloatUniform("fogD", 0, 0, 0, 0);
             s.setFloatUniform("accent", 0, 0, 0);
         }
         g.paint.setShader(s);
@@ -602,6 +651,7 @@ final class Flow extends View {
             "uniform float4 fogA;",
             "uniform float4 fogB;",
             "uniform float4 fogC;",
+            "uniform float4 fogD;",
             "uniform float3 accent;",
             "const float3 LUMA = float3(0.3, 0.59, 0.11);",
             "float bell(float u, float m, float s) { return exp(-(u - m) * (u - m) / (2.0 * s * s)); }",
@@ -672,7 +722,10 @@ final class Flow extends View {
             "  }",
             "  float density = fogA.x; float footDp = fogA.y; float width = fogA.z; float t = fogA.w;",
             "  float2 q = p / density;",
-            "  float yy = q.y - footDp;",
+            "  float yy = q.y - footDp;", // 深色化开的边
+            "  float yl = q.y - fogD.x;", // 浅雾
+            "  float yv = q.y - fogD.y;", // 水汽
+            "  if (yy > 220.0 && yl > 640.0 && yv > 500.0) { return half4(0.0); }",
             "  float top = clamp(q.y / max(1.0, footDp - 40.0), 0.0, 1.0);",
             "  float3 ink = float3(8.0, 8.0, 12.0) / 255.0;",
             "  float3 vc = ink; float va = 0.0;",
@@ -686,21 +739,40 @@ final class Flow extends View {
             "    vc = float3(1.0);",
             "    va = yy < 0.0 ? 0.62 - 0.07 * clamp(q.y / footDp, 0.0, 1.0) : 0.55 - 0.43 * clamp(yy / 360.0, 0.0, 1.0);",
             "  }",
-            "  float fade = yy < 0.0 ? 1.0 : 1.0 - 0.45 * clamp(yy / 360.0, 0.0, 1.0);",
-            "  float2 nq = float2(q.x / 120.0 + fogC.x, yy / 70.0);",
-            "  float n = fbm(nq, t); float nn = fbm(nq * float2(1.7, 1.5) + float2(3.1, 7.0), t * 1.3);",
+            "  float fade = yl < 0.0 ? 1.0 : 1.0 - 0.45 * clamp(yl / 360.0, 0.0, 1.0);",
+            // 雾边的噪声：先用一层很平滑的慢噪声把坐标扭一扭，边是一团团往外翻涌的，不是一张花纹平移过去；扭得轻，不会挤出陡边
+            "  float tf = t * 2.6;",
+            "  float2 nq = float2(q.x / 120.0 + fogC.x, yl / 70.0);",
+            "  float2 warp = float2(vnoise(nq * 0.6 + float2(1.7 + tf * 0.03, 9.2)), vnoise(nq * 0.6 + float2(8.3, 2.8 - tf * 0.03)));",
+            "  float n = fbm(nq + 0.4 * warp, tf); float nn = fbm(nq * float2(1.7, 1.5) + float2(3.1, 7.0) + 0.3 * warp, tf * 1.3);",
             "  float u = p.x / width; float lean = max(fogB.x > 0.0 ? u : 1.0 - u, 0.0001);",
-            "  float reach = (60.0 + 50.0 * fogB.y) * pow(lean, 1.6) + 16.0 * sin(6.2832 * (0.8 * u + fogB.z) + t / 9.0)",
-            "      + 9.0 * sin(6.2832 * (2.2 * u + fogB.w) - t / 6.5);",
-            "  float am = (1.0 - smoothstep(-60.0, 70.0, yy - 150.0 - reach - 70.0 * n)) * fade;",
+            "  float reach = (60.0 + 50.0 * fogB.y) * pow(lean, 1.6) + 20.0 * sin(6.2832 * (0.8 * u + fogB.z) + t / 3.2)",
+            "      + 12.0 * sin(6.2832 * (2.2 * u + fogB.w) - t / 2.4);",
+            "  float am = (1.0 - smoothstep(-60.0, 70.0, yl - 150.0 - reach - 70.0 * n)) * fade;",
             "  float ad = 1.0 - smoothstep(-40.0, 45.0, yy - 20.0 - 0.55 * reach - 40.0 * (0.7 * n + 0.3 * nn));",
-            "  float3 d = metal(flowDeep(p), look) * (1.0 - va) + vc * va;",
+            // 深色上飘过的雾：大块、很软的明暗慢慢漂移，整片颜色在呼吸（跟着流动的颜色走，见 fogD.z）
+            "  if (yy < 60.0) {",
+            "    float cloud = fbm(float2(q.x / 220.0 + fogC.x * 0.7, (q.y + fogD.z) / 160.0), tf * 0.6);",
+            "    va = clamp(va - 0.1 * cloud * (1.0 - smoothstep(0.0, 60.0, yy)), 0.0, 1.0);",
+            "  }",
+            "  float3 d = ad > 0.001 ? metal(flowDeep(p), look) * (1.0 - va) + vc * va : float3(0.0);",
             "  float ma = fogC.z > 0.5 ? 0.7 : 0.36;",
             "  float3 mv = fogC.z > 0.5 ? float3(29.0, 30.0, 38.0) / 255.0 : float3(1.0);",
-            "  float3 m = metal(flowLight(p), look2) * (1.0 - ma) + mv * ma;",
+            "  float3 m = ad < 0.999 ? metal(flowLight(p), look2) * (1.0 - ma) + mv * ma : mv;",
             "  float a = ad + am * (1.0 - ad);",
             "  float3 c = a > 0.001 ? (d * ad + m * am * (1.0 - ad)) / a : m;",
-            "  return half4(half3((c + dither(p)) * a), half(a));",
+            // 水汽：浅色的一片，边很散，从深色化开的地方往上飘、横着漂，盖在雾上面，自己一层
+            "  float vv = 0.0;",
+            "  if (yv > -60.0 && yv < 500.0) {",
+            "    float2 vq = float2(q.x / 150.0 + fogC.x * 1.3 - t * 0.05, yv / 90.0 + t * 0.05);",
+            "    float2 vw = float2(vnoise(vq * 0.7 + float2(4.0 + tf * 0.03, 1.0)), vnoise(vq * 0.7 + float2(9.0, 6.0 - tf * 0.03)));",
+            "    float s = fbm(vq + 0.5 * vw, tf);",
+            "    float env = smoothstep(-60.0, 40.0, yv) * (1.0 - smoothstep(120.0, 500.0, yv));",
+            "    vv = smoothstep(-0.15, 0.6, s) * env * (fogC.z > 0.5 ? 0.16 : 0.4);",
+            "  }",
+            "  float3 vcol = fogC.z > 0.5 ? mix(float3(0.42, 0.43, 0.52), accent, 0.2) : mix(float3(1.0), accent, 0.15);",
+            "  float aa = vv + a * (1.0 - vv);",
+            "  return half4(half3(vcol * vv + c * a * (1.0 - vv) + dither(p) * aa), half(aa));",
             "}");
 
     /** 卡片边上一圈金属倒角：上沿一道细亮线，下沿一道细暗线。 */
@@ -785,6 +857,7 @@ final class Flow extends View {
             matrix.postTranslate(left + l[7] * side * e, top + l[8] * side * e);
             matrix.postScale(s, s, px, py);
             matrix.postRotate(l[6] * e, px, py);
+            matrix.postTranslate(0, -shift / (cell() * density));
             a.shader.setLocalMatrix(matrix);
             layer.setShader(a.shader);
             layer.setAlpha(Math.round(255 * l[1]));
@@ -818,36 +891,59 @@ final class Flow extends View {
     }
 
     /**
-     * 详情页的雾：某一格有多浓，看它在头部底边下面多深，再减去一条横向起伏的“淌到多深”（颜色重的一侧整体更深，叠两种
-     * 长短不同的波，各自慢慢走）和一张流动的噪声（三个倍频，横向拉长，各往不同方向漂）。深的一层收得早、边窄一些，
-     * 浅雾淌得远、边很宽；两层用同一张噪声，深色是在浅雾里化开的。噪声隔一格算一次，中间插值。
+     * 详情页的雾：某一格有多浓，看它在边下面多深，再减去一条横向起伏的“淌到多深”（颜色重的一侧整体更深，叠两种
+     * 长短不同的波，各自走）和一张流动的噪声（三个倍频，横向拉长，各往不同方向漂，坐标先被一层平滑的慢噪声轻轻扭过，
+     * 边是一团团往外翻涌的）。深的一层收得早、边窄一些，浅雾淌得远、边很宽；两层用同一张噪声，深色是在浅雾里化开的。
+     * 上面再盖一层水汽：浅色的一片，边很散，往上飘、横着漂；深色上有大块很软的明暗慢慢漂过，整片颜色在呼吸。
+     * 三层的边各自跟着正文走（见 parallax）。噪声隔一格算一次（明暗八格一次），中间插值；
+     * 用不到噪声的行（深色铺满的、雾和水汽都到不了的）不算。
      */
     private void fog(Look deepLook, Look lightLook, float ts, float blend) {
-        float footDp = (getHeight() - tail) / density;
+        float footDp = foot / density, lightDp = fogFoot / density, vaporDp = vaporFoot / density, tf = ts * 2.6f;
         int gw = sw / 2 + 2, gh = sh / 2 + 2;
         if (n1 == null || n1.length != gw * gh) {
             n1 = new float[gw * gh];
             n2 = new float[gw * gh];
+            n3 = new float[gw * gh];
         }
         for (int gy = 0; gy < gh; gy++) {
-            float y = ((gy * 2 + .5f) * CELL_DP - footDp) / 70;
+            float yDp = (gy * 2 + .5f) * CELL_DP, y = (yDp - lightDp) / 70, vy = (yDp - vaporDp) / 90 + ts * .05f;
+            if (yDp - footDp < -160 && yDp - vaporDp < -80
+                    || yDp - footDp > 240 && yDp - lightDp > 660 && yDp - vaporDp > 520) continue;
             for (int gx = 0; gx < gw; gx++) {
-                float x = (gx * 2 + .5f) * CELL_DP / 120 + fogOff;
-                n1[gy * gw + gx] = fbm(x, y, ts);
-                n2[gy * gw + gx] = fbm(x * 1.7f + 3.1f, y * 1.5f + 7, ts * 1.3f);
+                float xDp = (gx * 2 + .5f) * CELL_DP, x = xDp / 120 + fogOff, vx = xDp / 150 + fogOff * 1.3f - ts * .05f;
+                float wx = vnoise(x * .6f + 1.7f + tf * .03f, y * .6f + 9.2f), wy = vnoise(x * .6f + 8.3f, y * .6f + 2.8f - tf * .03f);
+                float vwx = vnoise(vx * .7f + 4 + tf * .03f, vy * .7f + 1), vwy = vnoise(vx * .7f + 9, vy * .7f + 6 - tf * .03f);
+                int g = gy * gw + gx;
+                n1[g] = fbm(x + .4f * wx, y + .4f * wy, tf);
+                n2[g] = fbm(x * 1.7f + 3.1f + .3f * wx, y * 1.5f + 7 + .3f * wy, tf * 1.3f);
+                n3[g] = fbm(vx + .5f * vwx, vy + .5f * vwy, tf);
+            }
+        }
+        int cw = sw / 8 + 2, cgh = sh / 8 + 2; // 深色上飘过的雾很软，八格算一次
+        if (n4 == null || n4.length != cw * cgh) n4 = new float[cw * cgh];
+        for (int cy = 0; cy < cgh; cy++) {
+            float yDp = (cy * 8 + .5f) * CELL_DP;
+            if (yDp - footDp > 100) continue;
+            for (int cx = 0; cx < cw; cx++) {
+                float xDp = (cx * 8 + .5f) * CELL_DP;
+                n4[cy * cw + cx] = fbm(xDp / 220 + fogOff * .7f, (yDp + shift / density) / 160, tf * .6f);
             }
         }
         float[] reach = new float[sw];
         for (int x = 0; x < sw; x++) {
             float u = (x + .5f) / sw, lean = side > 0 ? u : 1 - u;
-            reach[x] = (60 + 50 * k) * (float) Math.pow(lean, 1.6) + 16 * (float) Math.sin(6.2832 * (.8 * u + r0) + ts / 9)
-                    + 9 * (float) Math.sin(6.2832 * (2.2 * u + r1) - ts / 6.5);
+            reach[x] = (60 + 50 * k) * (float) Math.pow(lean, 1.6) + 20 * (float) Math.sin(6.2832 * (.8 * u + r0) + ts / 3.2)
+                    + 12 * (float) Math.sin(6.2832 * (2.2 * u + r1) - ts / 2.4);
         }
-        float ma = night ? .7f : .36f;
+        float ma = night ? .7f : .36f, vs = night ? .16f : .4f;
         int mv = night ? 0xFF1D1E26 : Color.WHITE, ink = 0xFF08080C;
+        int vcol = night ? Theme.mix(0xFF6B6E85, accent, .2f) : Theme.mix(Color.WHITE, accent, .15f);
         float[] d = new float[3], m = new float[3];
         for (int y = 0; y < sh; y++) {
-            float yDp = (y + .5f) * CELL_DP, yy = yDp - footDp, top = clamp(yDp / Math.max(1, footDp - 40));
+            float yDp = (y + .5f) * CELL_DP, yy = yDp - footDp, yl = yDp - lightDp, yv = yDp - vaporDp;
+            float top = clamp(yDp / Math.max(1, footDp - 40));
+            float env = smooth(-60, 40, yv) * (1 - smooth(120, 500, yv));
             int vc;
             float va;
             if (dark && !night) { // 标题底下压暗；往下淌的那段换成同色的浅色，深色块化开时是透亮的同色而不是灰
@@ -868,7 +964,7 @@ final class Flow extends View {
                 vc = Color.WHITE;
                 va = yy < 0 ? .62f - .07f * clamp(yDp / footDp) : .55f - .43f * clamp(yy / 360);
             }
-            float fade = yy < 0 ? 1 : 1 - .45f * clamp(yy / 360);
+            float fade = yl < 0 ? 1 : 1 - .45f * clamp(yl / 360);
             float gyf = y / 2f;
             int gy0 = Math.min(gh - 2, (int) gyf);
             float fy = gyf - gy0;
@@ -878,20 +974,30 @@ final class Flow extends View {
                 float fx = gxf - gx0;
                 float n = lerp(lerp(n1[g00], n1[g00 + 1], fx), lerp(n1[g00 + gw], n1[g00 + gw + 1], fx), fy);
                 float nn = lerp(lerp(n2[g00], n2[g00 + 1], fx), lerp(n2[g00 + gw], n2[g00 + gw + 1], fx), fy);
-                float am = (1 - smooth(-60, 70, yy - 150 - reach[x] - 70 * n)) * fade;
+                float nv = lerp(lerp(n3[g00], n3[g00 + 1], fx), lerp(n3[g00 + gw], n3[g00 + gw + 1], fx), fy);
+                float vd = va;
+                if (yy < 60) {
+                    float cxf = x / 8f, cyf = y / 8f;
+                    int cx0 = Math.min(cw - 2, (int) cxf), cy0 = Math.min(cgh - 2, (int) cyf), c00 = cy0 * cw + cx0;
+                    float ux = cxf - cx0, uy = cyf - cy0;
+                    float cloud = lerp(lerp(n4[c00], n4[c00 + 1], ux), lerp(n4[c00 + cw], n4[c00 + cw + 1], ux), uy);
+                    vd = clamp(va - .1f * cloud * (1 - smooth(0, 60, yy)));
+                }
+                float am = (1 - smooth(-60, 70, yl - 150 - reach[x] - 70 * n)) * fade;
                 float ad = 1 - smooth(-40, 45, yy - 20 - .55f * reach[x] - 40 * (.7f * n + .3f * nn));
                 int i = y * sw + x, o = i * 4;
                 metal(px[i], deepLook.lut, d, 0);
                 metal(px2[i], lightLook.lut, m, 0);
-                float a = ad + am * (1 - ad);
+                float a = ad + am * (1 - ad), vv = smooth(-.15f, .6f, nv) * env * vs, aa = vv + a * (1 - vv);
                 for (int ch = 0; ch < 3; ch++) {
-                    int shift = 16 - ch * 8;
-                    float mc = m[ch] * (1 - ma) + ((mv >> shift) & 0xFF) * ma;
-                    float dc = d[ch] * (1 - va) + ((vc >> shift) & 0xFF) * va;
+                    int bits = 16 - ch * 8;
+                    float mc = m[ch] * (1 - ma) + ((mv >> bits) & 0xFF) * ma;
+                    float dc = d[ch] * (1 - vd) + ((vc >> bits) & 0xFF) * vd;
                     float v = a > .001f ? (dc * ad + mc * am * (1 - ad)) / a : mc; // 雾外面的格子也给浅雾的颜色，模糊时边上不发黑
+                    if (aa > .001f) v = (((vcol >> bits) & 0xFF) * vv + v * a * (1 - vv)) / aa; // 水汽盖在雾上面
                     acc[o + ch] += (v - acc[o + ch]) * blend;
                 }
-                acc[o + 3] += (a * 255 - acc[o + 3]) * blend;
+                acc[o + 3] += (aa * 255 - acc[o + 3]) * blend;
             }
         }
     }

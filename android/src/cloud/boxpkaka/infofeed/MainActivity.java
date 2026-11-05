@@ -34,19 +34,15 @@ import android.text.TextUtils;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.TypefaceSpan;
-import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
-import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
-import android.view.animation.OvershootInterpolator;
 import android.widget.AbsListView;
 import android.widget.BaseAdapter;
 import android.widget.EditText;
@@ -119,7 +115,7 @@ public class MainActivity extends Activity {
     private JSONObject ask; // 正在问的那个记忆问题（feed 的 ask），答了就清掉
     private TextView updateText, updateAction;
     private View skeleton;
-    private Shapes.Loader skeletonLoader;
+    private ValueAnimator skeletonGlow;
     private LinearLayout stateView;
     private LinearLayout undoBar;
     private TextView undoLabel, undoButton;
@@ -594,7 +590,7 @@ public class MainActivity extends Activity {
         return header;
     }
 
-    /** 首次加载的骨架屏：形状和真实布局一致（追踪中一组、日期、最值得看），中间是加载指示器。 */
+    /** 首次加载的骨架屏：形状和真实布局一致（追踪中一组、日期、最值得看），一块接一块慢慢明暗起伏。 */
     private View buildSkeleton() {
         FrameLayout s = new FrameLayout(this);
         s.setPadding(0, t.dp(60), 0, 0);
@@ -605,12 +601,7 @@ public class MainActivity extends Activity {
         blocks.addView(block(-1, 320, Theme.R_XL, 44));
         blocks.addView(block(-1, 180, Theme.R_XL, 10));
         s.addView(blocks, match());
-        skeletonLoader = new Shapes.Loader(this, t.pri);
-        skeletonLoader.setPadding(t.dp(11), t.dp(11), t.dp(11), t.dp(11));
-        skeletonLoader.setBackground(t.round(t.pc, 99));
-        FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(t.dp(56), t.dp(56), Gravity.CENTER);
-        s.addView(skeletonLoader, ll);
-        skeletonLoader.start();
+        skeletonGlow = Shapes.breathe(blocks);
         return s;
     }
 
@@ -908,8 +899,10 @@ public class MainActivity extends Activity {
 
     private void stopSkeleton() {
         if (skeleton.getVisibility() == View.GONE) return;
-        skeletonLoader.stop();
-        skeleton.animate().alpha(0f).setDuration(200).withEndAction(() -> skeleton.setVisibility(View.GONE)).start();
+        skeleton.animate().alpha(0f).setDuration(200).withEndAction(() -> {
+            skeletonGlow.cancel();
+            skeleton.setVisibility(View.GONE);
+        }).start();
     }
 
     /** 推送连接断开时说断开，否则显示服务端判断的疑似故障（feed 的 health，正常时为空）。 */
@@ -1015,27 +1008,9 @@ public class MainActivity extends Activity {
             if (r.type == 1) bindTop(h, r);
             else bindRow(h, r.e);
             if (visible && tab == FEED) Track.seen(MainActivity.this, id, r.type == 1 ? "top" : "feed"); // 列表只为看得见的行取视图
-            // 单击打开、双击想多看：单击要等一下确认不是双击；右滑照常交给 SwipeDismiss
-            SwipeDismiss swipe = new SwipeDismiss(h.front, h.behind, v -> dismissRow(id));
-            GestureDetector taps = new GestureDetector(MainActivity.this, new GestureDetector.SimpleOnGestureListener() {
-                @Override
-                public boolean onSingleTapConfirmed(MotionEvent e) {
-                    open(h.front, r.e, r.type == 1);
-                    return true;
-                }
-
-                @Override
-                public boolean onDoubleTap(MotionEvent e) {
-                    want(h.front, r.e, e.getX(), e.getY());
-                    return true;
-                }
-            });
-            h.front.setOnClickListener(null);
-            h.front.setClickable(true); // 保留按下效果
-            h.front.setOnTouchListener((v, e) -> {
-                taps.onTouchEvent(e);
-                return swipe.onTouch(v, e);
-            });
+            // 单击抬手就打开（不等着确认是不是双击）；右滑照常交给 SwipeDismiss
+            h.front.setOnClickListener(v -> open(h.front, r.e, r.type == 1));
+            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismissRow(id)));
             if (id == expanding) { // 撤销移除：内容绑好以后量出高度，从无到有展开
                 expanding = -1;
                 if (convert.getLayoutParams() == null) {
@@ -1378,12 +1353,9 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。按下效果画在最上面，不被流动的底盖住。 */
+    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。点按不泛白光，直接展开。 */
     private void paint(Holder h, int[] z) {
-        h.front.setBackground(t.ripple(z[0], z[1], Theme.R_XL));
-        h.front.setForeground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(Color.luminance(z[2]) > 0.5f ? 0x22FFFFFF : 0x14000000),
-                null, t.round(Color.WHITE, Theme.R_XL)));
+        h.front.setBackground(t.gradient(z[0], z[1], Theme.R_XL));
         h.num.setTextColor(z[3]);
         h.headline.setTextColor(z[2]);
         h.summary.setTextColor(z[2] & 0xFFFFFF | 0xD0000000);
@@ -1517,60 +1489,6 @@ public class MainActivity extends Activity {
                     .putExtra(EventActivity.EXTRA_ART, topic.isEmpty() ? Theme.PEARL : topic);
         }
         Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
-    }
-
-    /** 双击一行：想多看这类。心形从点按处冒出来，服务器记下后提示记住或加强了哪条记忆；已经点过的只冒心形。 */
-    private void want(View row, JSONObject e, float x, float y) {
-        row.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
-        heart(row, x, y);
-        long id = e.optLong("id");
-        Trace.log(this, "ui.want.tap", "id=" + id);
-        if ("useful".equals(e.optString("feedback"))) return;
-        try {
-            e.put("feedback", "useful");
-        } catch (Exception ignored) {
-            // 键不为空，不会发生
-        }
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            JSONObject r = null;
-            try {
-                r = Api.post(app, "/v1/events/" + id + "/feedback",
-                        new JSONObject().put("value", "useful").put("reason", "topic"));
-            } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
-            }
-            JSONObject got = r;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (got == null) e.remove("feedback");
-                toast(got == null ? "没有记下，请重试" : EventActivity.wantNote(got));
-            });
-        }, "want").start();
-    }
-
-    /** 心形：弹出来、停一下、往上飘着淡出。画在窗口的浮层上，不会被这一行的边界裁掉。 */
-    private void heart(View row, float x, float y) {
-        ViewGroup root = (ViewGroup) getWindow().getDecorView();
-        int[] at = new int[2], base = new int[2];
-        row.getLocationInWindow(at);
-        root.getLocationInWindow(base);
-        int size = t.dp(96);
-        TextView h = t.text(this, "♥", 60, t.pri, 900);
-        h.setGravity(Gravity.CENTER);
-        h.measure(View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY));
-        int left = (int) (at[0] - base[0] + x) - size / 2, top = (int) (at[1] - base[1] + y) - size / 2;
-        h.layout(left, top, left + size, top + size);
-        root.getOverlay().add(h);
-        h.setScaleX(0.3f);
-        h.setScaleY(0.3f);
-        h.setAlpha(0f);
-        h.animate().scaleX(1.1f).scaleY(1.1f).alpha(1f).setDuration(220).setInterpolator(new OvershootInterpolator(2.5f))
-                .withEndAction(() -> h.animate().translationY(-t.dp(44)).scaleX(0.85f).scaleY(0.85f).alpha(0f)
-                        .setStartDelay(220).setDuration(460).setInterpolator(new AccelerateInterpolator())
-                        .withEndAction(() -> root.getOverlay().remove(h)).start())
-                .start();
     }
 
     // ---------- 记忆的提问 ----------

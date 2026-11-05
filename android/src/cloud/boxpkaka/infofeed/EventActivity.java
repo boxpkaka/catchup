@@ -42,8 +42,9 @@ import java.util.Locale;
 /**
  * 事件详情：头部（有封面时放在最上面，标题、来源数、看原文），下面是概要和要点、AI 解读、进展、问一问、全部来源。
  * 从首页最值得看的彩色卡片点开时，头部接着用那张卡片的颜色：封面铺满顶上，底下是和卡片一样流动的雾面金属（Flow），
- * 往下淌成一团雾，深色在标题下面化开、浅雾淌进正文，一侧淌得深、一侧早收住。整页的底是这件事颜色的雾（封面或话题，
- * 没有话题的是珍珠银），正文不用方框，靠留白和小标题分段。返回、追踪是磨砂按钮。
+ * 往下淌成一团雾，深色在标题下面化开、浅雾淌进正文，一侧淌得深、一侧早收住，上面飘着一层水汽。整页的底是这件事颜色的雾
+ * （封面或话题，没有话题的是珍珠银），正文不用方框，靠留白和小标题分段。返回、追踪是磨砂按钮。
+ * 分层：流动的颜色、雾和水汽不跟着正文滚动，滚动和拉动时按不同的比例跟着走，越远走得越少，字是浮在上面的（见 parallax）。
  * 底部悬浮工具栏：金属的有用 / 不需要，旁边是这一页颜色的问一问。
  * 从列表进入时先用列表里的数据立即显示，再从服务器取完整来源列表。
  */
@@ -54,18 +55,17 @@ public class EventActivity extends Activity {
     static final String EXTRA_FROM = "from"; // 从哪打开的（feed / push / topic …），埋点用，见 Track
     static final String EXTRA_TONE = "tone"; // 彩色卡片的颜色 {上, 下, 文字色, 点缀色}，见 MainActivity.tone
     static final String EXTRA_COVER = "cover"; // 那张彩色卡片有没有封面
-    static final String EXTRA_ART = "art"; // 没有封面的彩色卡片用哪个话题的颜色（见 Theme.field），没有话题是 Theme.PEARL
+    static final String EXTRA_ART = "art"; // 没有封面的彩色卡片用哪个话题的颜色（见 Theme.field），没有话题是 Theme.PEARL；从专题页点开的是那个专题，整页跟着它的颜色
 
     private static final int FOLDED_SOURCES = 4;
-    private static final int BLEED_DP = 360; // 头部的颜色往下淌进正文的长度
 
     private Theme t;
     private Nav nav;
     private long id;
     private JSONObject event;
     private LinearLayout page, head, body, sources, actions;
-    private FrameLayout content; // 滚动的内容：底下垫着头部往下淌的颜色（backdrop），上面是 page
-    private Flow backdrop, mist; // 头部往下淌的雾；整页的雾
+    private FrameLayout root; // 整页：从下往上是整页的雾、头部往下淌的颜色、正文、按钮
+    private Flow backdrop, mist; // 头部往下淌的雾（铺满整页，垫在正文下面，不跟着滚动）；整页的雾
     private int accent; // 正文的点缀色，第一次显示时定下来，见 Theme.accent
     private boolean accented;
     private FrameLayout headBox; // 头部和铺满顶上的封面，head 叠在上面
@@ -76,7 +76,8 @@ public class EventActivity extends Activity {
     private TextView useful, follow, summary, topicChip, badge, headline, meta, original, askButton;
     private String shownRelation, shownPoints, shownInsight, shownUpdates, shownAsk, shownSignals;
     private int topInset;
-    private int pulled; // 到顶往下拉了多少：头部（和封面）就高出多少，见 pull
+    private float drag; // 拉动时正文此刻的位移（到顶往下拉是正的，到底往上拉是负的），见 pull
+    private int headBase; // 头部有多高
     private String feedback;
     private boolean following;
     private Elastic scroll;
@@ -142,7 +143,7 @@ public class EventActivity extends Activity {
     }
 
     private View build() {
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(t.sheet);
         mist = new Flow(this); // 颜色在第一次显示内容时定，见 buildHead
         root.addView(mist, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -166,20 +167,11 @@ public class EventActivity extends Activity {
         body.setClipToPadding(false); // AI 解读的色带越过左右留白铺满整个宽度，不能被裁成方块
         body.setClipChildren(false);
         page.addView(body);
-        content = new FrameLayout(this) {
-            /** 头部往下淌的颜色比头部长出一截：先量出头部多高，再定它的高度，第一帧就对，不会等布局完再跳。 */
-            @Override
-            protected void onMeasure(int widthSpec, int heightSpec) {
-                if (backdrop != null) {
-                    page.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-                    backdrop.getLayoutParams().height = headBox.getMeasuredHeight() + t.dp(BLEED_DP);
-                }
-                super.onMeasure(widthSpec, heightSpec);
-            }
-        };
-        content.addView(page, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        scroll.addView(content);
+        scroll.addView(page);
+        headBox.addOnLayoutChangeListener((v, l, top, r, b, ol, ot, or, ob) -> { // 布局完、画第一帧之前，各层就摆好了
+            headBase = v.getHeight();
+            parallax();
+        });
         root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         // 按钮下面垫一层半透明的渐隐（像起了一层薄雾），不用阴影：顶部的等页头滚出去才出现，免得盖住页头
@@ -196,6 +188,7 @@ public class EventActivity extends Activity {
             topFade.setAlpha(Math.max(0f, Math.min(1f, (y - head.getHeight() + topFade.getHeight()) / (float) t.dp(32))));
             statusIcons(y);
             noteDepth();
+            parallax();
         });
 
         TextView back = t.backButton(this);
@@ -285,7 +278,8 @@ public class EventActivity extends Activity {
     private void render(JSONObject e) {
         event = e;
         if (!accented) { // 只定一次：服务器的数据回来时颜色不跟着变
-            accent = t.accent(e);
+            String page = tone == null ? getIntent().getStringExtra(EXTRA_ART) : null; // 从专题页点开的：点缀色跟着专题
+            accent = page != null ? t.accent(page) : t.accent(e);
             accented = true;
         }
         feedback = e.isNull("feedback") ? null : e.optString("feedback");
@@ -547,7 +541,8 @@ public class EventActivity extends Activity {
             backdrop = new Flow(this);
             backdrop.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, false, id);
             if (!cover) backdrop.topic(t, art, id);
-            content.addView(backdrop, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)); // 高度见 content
+            root.addView(backdrop, 1, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT)); // 整页的雾上面、正文下面
         }
         if (cover) {
             headCover = new RoundImage(this, 0);
@@ -562,7 +557,7 @@ public class EventActivity extends Activity {
                 backdrop.cover(blurred, false);
                 mist.mistCover(blurred, false);
             }
-            backdrop.bleed(blurred != null ? Flow.lean(blurred) : 0, id, t.dp(BLEED_DP), z[3]);
+            backdrop.bleed(blurred != null ? Flow.lean(blurred) : 0, id, z[3]);
             if (ready == null) Images.load(this, coverPath, b -> {
                 headCover.setImageAlpha(0);
                 headCover.setImageBitmap(b);
@@ -571,7 +566,7 @@ public class EventActivity extends Activity {
                 mist.mistCover(Flow.blurred(coverPath, b), true);
             });
         } else if (backdrop != null) {
-            backdrop.bleed(0, id, t.dp(BLEED_DP), z[3]);
+            backdrop.bleed(0, id, z[3]);
         }
         padHead();
         statusIcons(0);
@@ -617,26 +612,42 @@ public class EventActivity extends Activity {
         int top = topInset + t.dp(68);
         if (headCover != null) {
             int h = topInset + getResources().getDisplayMetrics().widthPixels * 9 / 16;
-            headCover.getLayoutParams().height = h + pulled;
+            headCover.getLayoutParams().height = h;
             headCover.requestLayout();
             top = Math.max(top, h - t.dp(36));
         }
-        head.setPadding(t.dp(22), top + pulled, t.dp(22), t.dp(26));
+        head.setPadding(t.dp(22), top, t.dp(22), t.dp(26));
     }
 
     /**
-     * 到顶往下拉（见 Elastic）：有彩色头部的，头部原地变高，顶边一直贴着屏幕顶，往下淌的颜色跟着撑开、照常流动，
-     * 封面跟着变高（按比例放大铺满，不拉长变形），标题和正文一起往下移。没有彩色头部的返回 false，内容整块平移，
-     * 露出这一页的雾；到底往上拉也是整块平移。
+     * 拉动（见 Elastic）：正文整块跟着手指平移，不重新排版（每帧排版会卡）；后面的颜色、雾和水汽本来就铺满整页，
+     * 按比例跟着撑开（见 parallax），顶边一直贴着屏幕顶。到顶往下拉时，铺满顶上的封面也一直贴着屏幕顶、按比例放大铺满
+     * （不拉长变形），下边跟着正文往下走。
      */
     private boolean pull(float offset) {
-        if (backdrop == null && headCover == null) return false;
-        int p = Math.round(Math.max(0, offset));
-        if (p != pulled) {
-            pulled = p;
-            padHead();
+        drag = offset;
+        parallax();
+        if (headCover != null && headCover.getHeight() > 0) {
+            float p = Math.max(0, offset), s = (headCover.getHeight() + p) / headCover.getHeight();
+            headCover.setPivotX(headCover.getWidth() / 2f);
+            headCover.setPivotY(0);
+            headCover.setScaleX(s);
+            headCover.setScaleY(s);
+            headCover.setTranslationY(-p); // 正文整块往下移了 p，封面顶边退回屏幕顶
         }
-        return offset > 0;
+        return false;
+    }
+
+    /**
+     * 分层：字按手指走，后面的各层走得少一些，越远走得越少，滚动和拉动时字是浮在流动的颜色上面的，不像一张贴图。
+     * 深色化开的边跟得最紧（标题一直压在深色上），浅雾、水汽依次更慢，流动的颜色本身只走三成，最底下整页的雾走一成；
+     * 拉动时各层跟得紧一些，拉得再远也不会一层层分开、露出边来。
+     */
+    private void parallax() {
+        float s = scroll.getScrollY(), p = drag; // 正文往上滚了多少；拉动时正文的位移（往下为正）
+        if (backdrop != null) backdrop.parallax(headBase - .9f * s + .95f * p, headBase - .65f * s + .85f * p,
+                headBase - .5f * s + .8f * p, .3f * s - .5f * p);
+        mist.parallax(0, 0, 0, .1f * s - .2f * p);
     }
 
     /** 浅色模式下从深色卡片点开：深色头部还在状态栏下面时状态栏图标用浅色，滚过去以后换回深色。 */
@@ -775,6 +786,8 @@ public class EventActivity extends Activity {
             i.putExtra(ChatActivity.EXTRA_QUESTIONS, arr);
         }
         if (question != null) i.putExtra(ChatActivity.EXTRA_ASK, question);
+        String page = tone == null ? getIntent().getStringExtra(EXTRA_ART) : null; // 从专题点开的：对话也跟着专题的颜色
+        if (page != null) i.putExtra(EXTRA_ART, page);
         Push.open(this, i);
     }
 
