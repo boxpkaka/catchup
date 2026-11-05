@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta
 
 from .. import chat, reader
@@ -20,14 +21,16 @@ log = logging.getLogger(__name__)
 
 IMPORTANCE = "importance 的含义：5 = 行业重大发布，或读者关注领域的关键进展；4 = 值得当天知道；3 = 一般动态；2 = 边缘信息；1 = 噪声、营销或与 AI 无关。"
 
-BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下面是同一事件的若干条报道，可能附有主来源的原文，请输出 JSON：
+BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下面是同一事件的若干条报道，可能附有主来源的原文。
+先看报道本身讲的是什么：以报道的标题为准，原文用来补充细节。是新闻（有人新做了某事）就写这件事；是评论、分析、盘点、教程，就写它的主题和观点（如“分析：AI 游戏门槛骤降，大厂押注精品化”），不要把文中为引出话题提到的背景（“前不久某某发布了……”）当成这件事；是日报、周报这类汇总，写标题里的头条那件。
+请输出 JSON：
 {"headline": "中文标题，不超过 24 个字，说清谁做了什么",
  "summary": "1～2 句中文概要，不超过 80 个字：说清谁做了什么，以及最关键的具体内容（能力、数字、价格、时间、怎么获取），让读者不点原文也知道主要内容；不夸大、不评价",
  "points": ["概要之外的具体要点 3～5 条，每条一句话、不超过 40 个字，取自原文；没有原文、材料只有标题时输出空数组"],
  "importance": 1～5 的整数,
  "insight": "AI 解读，2～3 句、不超过 150 个字。概要和要点写发生了什么，这里写怎么看：新在哪（和之前的版本、同类产品或常见做法比），可能带来什么影响，有没有值得留意的局限或疑点（比如只有厂商自己的测试数据）。要有判断、判断要有依据；不复述概要，不写和读者个人有什么关系。importance 为 1～2 时输出空字符串",
  "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"],
- "subject": "这件事主角的标准名字，只写一个：产品、模型（带版本号）、论文、开源项目，交易写被投资或被收购的公司，如 Claude Opus 4.8、FlashProve、Hy4；没有明确主角（行业观点、市场分析）时输出空字符串",
+ "subject": "这件事主角的标准名字，只写一个：新发布的产品、模型（带版本号）、论文、开源项目，交易写被投资或被收购的公司，如 Claude Opus 4.8、FlashProve、Hy4。主角是做这件事、或这件事要讲的那个对象：用到的工具、被拿来评测或替换的模型不是主角（“Revolut 改用 GLM”的主角是 Revolut；用 Opus 审计网络的论文，主角是这篇论文，没有简称就写论文标题）。评论、分析、盘点没有主角，输出空字符串",
  "aliases": ["主角的其他写法 0～3 个：中文名、英文名、常用简称，如 Opus 4.8、混元 Hy4；不要写别的产品、公司或工具"],
  "happened": "材料里写明的、这次报道的这件事发生的日期，格式 YYYY-MM-DD，只写了月日的按今天推算年份。这件事可以是发布、上线、宣布、融资，也可以是新曝出的问题、新的评测、回应；讲的是旧产品的新情况时写新情况的日期，不要写产品当初发布的日期。材料没写就输出空字符串，不要用公司成立、项目创建这类背景日期，也不要用报道或采集的时间"}
 """ + IMPORTANCE + """
@@ -58,6 +61,7 @@ TOPIC_BATCH = 40
 
 IMPORTANCE_WEIGHT = {1: 0.3, 2: 0.6, 3: 1.0, 4: 1.4, 5: 1.8}
 UNBRIEFED_WEIGHT = 0.8
+FROM_TITLE = 3000  # 原文开头这么多字里有报道的标题，就从标题开始给模型
 READ_WAIT = 120  # 采集后写简报时最多等原文这么多秒；没等到的先用摘要写，下一轮读到原文再重写
 
 
@@ -179,13 +183,13 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
     written = 0
     for e in fresh + redo + [e for e in unread if originals.get(e.lead.url) is not None]:
         reports = "\n".join(f"- [{_label(s, sources)}] {s.title}\n  {s.summary[:200]}" for s in e.signals[:8])
-        original = originals.get(e.lead.url)
+        original = _from_title(originals.get(e.lead.url), e.lead.title)
         if original:
             reports += f"\n\n主来源原文（{_label(e.lead, sources)}）：\n{original[:chat.SOURCE_CHARS]}"
         try:
             system = BRIEF_SYSTEM + (PAPER_NOTE if reader.arxiv_id(e.lead.url) else "")
             brief = _clean(llm.json(system, f"今天是 {now:%Y-%m-%d}。\n\n读者是谁：\n{focus}\n\n报道：\n{reports}",
-                                    max_tokens=1400), now)
+                                    max_tokens=1400), now, reports)
         except Exception as err:
             log.warning("brief for event %d failed: %r", e.id, err)
             continue
@@ -197,7 +201,7 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
     return written
 
 
-def _clean(raw: dict, now: datetime) -> dict | None:
+def _clean(raw: dict, now: datetime, material: str = "") -> dict | None:
     headline = str(raw.get("headline") or "").strip()
     if not headline:
         return None
@@ -214,16 +218,31 @@ def _clean(raw: dict, now: datetime) -> dict | None:
             "why": str(raw.get("why") or "").strip()[:120], "importance": importance, "questions": questions,
             "points": points, "insight": str(raw.get("insight") or "").strip()[:300],
             "entities": list(dict.fromkeys(str(x).strip()[:80] for x in entities if str(x).strip()))[:6],
-            "happened": _day(raw.get("happened"), now)}
+            "happened": _day(raw.get("happened"), now, material)}
 
 
-def _day(value, now: datetime) -> str | None:
-    """模型给的发生日期：YYYY-MM-DD，晚于今天的不可信，当没写。now 是 UTC，北京时间可能已经是第二天，多放一天。"""
+def _day(value, now: datetime, material: str = "") -> str | None:
+    """模型给的发生日期：YYYY-MM-DD，晚于今天的不可信，当没写。now 是 UTC，北京时间可能已经是第二天，多放一天。
+    年份在材料里没出现的（只写了月日），年份由这里推：取不晚于今天的最近一个这一天。模型推的年份会错，问它年份是不是
+    写明的也会答错（“10 月 31 日”写成了去年、还说年份是写明的），差一年就成了旧闻。material 为空时不核对。"""
     try:
         day = date.fromisoformat(str(value or "").strip()[:10])
-    except ValueError:
+        if material and str(day.year) not in material:
+            latest = now.date() + timedelta(days=1)
+            day = day.replace(year=latest.year)
+            if day > latest:
+                day = day.replace(year=latest.year - 1)
+    except ValueError:  # 格式不对，或 2 月 29 日换到了平年
         return None
     return day.isoformat() if day <= now.date() + timedelta(days=1) else None
+
+
+def _from_title(original: str | None, title: str) -> str | None:
+    """原文从报道的标题开始：网页开头常是导航和站内横幅（“Introducing Eleven v4”），模型会把它当成这件事。
+    在开头一段里找不到标题就原样返回。"""
+    head = re.sub(r"\s+-\s+[^-]+$", "", title).strip()[:30]  # 去掉 Google News 标题末尾的“ - 媒体名”
+    i = original.find(head) if original and len(head) >= 8 else -1
+    return original[i:] if 0 < i < FROM_TITLE else original
 
 
 def _label(signal, sources: dict[str, Source]) -> str:

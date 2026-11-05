@@ -60,6 +60,27 @@ class EventTest(unittest.TestCase):
         self.assertEqual(e.time, NOW - timedelta(hours=5))
 
 
+class BriefTest(unittest.TestCase):
+    def test_unstated_year_is_the_latest_past_one(self):
+        from catchup.pipeline.brief import _day
+        now = datetime(2026, 11, 5, 7, tzinfo=timezone.utc)
+        said = "科技博主在10月31日发布的视频里演示了样机。"
+        self.assertEqual(_day("2025-10-31", now, said), "2026-10-31")  # 材料里没有 2025，模型把年份推成了去年
+        self.assertEqual(_day("2026-12-03", now, "12月3日"), "2025-12-03")  # 还没到的月日是去年的
+        self.assertEqual(_day("2026-05-28", now, "Released 2026-05-28"), "2026-05-28")
+        self.assertEqual(_day("2025-10-31", now), "2025-10-31")  # 没给材料不核对
+        self.assertIsNone(_day("2026-12-03", now))  # 写明的年份在未来，不可信
+        self.assertIsNone(_day("5月28日", now))
+
+    def test_original_starts_at_the_title(self):
+        from catchup.pipeline.brief import _from_title
+        page = "Introducing Eleven v4 Meet Eleven v4, our most emotive model yet.\n# Fix speech to text accuracy problems\nBody"
+        self.assertEqual(_from_title(page, "Fix speech to text accuracy problems - ElevenLabs"),
+                         "Fix speech to text accuracy problems\nBody")  # 站内横幅不给模型
+        self.assertEqual(_from_title(page, "Something else entirely"), page)
+        self.assertIsNone(_from_title(None, "Fix speech to text accuracy problems"))
+
+
 class RankingTest(unittest.TestCase):
     ranker = Ranker.from_config(
         [{"name": "AI 语音", "weight": 3, "keywords": ["tts", "voice", "语音"]}], {"half_life_hours": 36})

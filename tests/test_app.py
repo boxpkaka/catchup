@@ -813,6 +813,36 @@ class ChatTest(unittest.TestCase):
             self.assertEqual(tool.call_count, 1)  # 刚失败过，先用摘要，不重抓
             self.assertTrue(chat.needs_reading(self.store, signals, NOW + chat.FAIL_RETRY))
 
+    def test_global_ask_searches_the_index_with_model_terms(self):
+        from catchup import chat
+        old = self.store.new_event("k", NOW - timedelta(days=20))  # 两周以前的事，按名字也找得到
+        self.store.add([sig("https://k/moshi", "Kyutai releases Moshi, a full-duplex speech model", hours_ago=480)],
+                       now=NOW - timedelta(days=20))
+        self.store.assign(old, ["https://k/moshi"])
+        self.store.save_brief(old, NOW - timedelta(days=20), "m", 1, {"headline": "Kyutai 发布全双工语音模型", "summary": "",
+                                                                       "why": "", "importance": 4, "entities": ["Kyutai"]})
+        stale = self.store.new_event("s", NOW)
+        self.store.add([sig("https://s/1", "Moshi recap from May")], now=NOW)
+        self.store.assign(stale, ["https://s/1"])
+        self.store.save_brief(stale, NOW, "m", 1, {"headline": "Moshi 回顾", "summary": "", "why": "", "importance": 5})
+        self.store.save_novelty(stale, "stale", NOW, "旧闻")
+
+        class Asker(FakeLLM):
+            def json(self, system, user, max_tokens=800, **options):
+                if system == chat.QUERY_SYSTEM:
+                    self.asked = user
+                    return {"terms": ["Moshi", "全双工", "full-duplex"]}
+                return super().json(system, user, max_tokens, **options)
+
+        llm = Asker(reply=f"Kyutai 发布了 Moshi [E{old}]。")
+        out, _ = self.run_chat(llm, {"message": "全双工语音模型以前有哪些？"})
+        self.assertEqual(llm.asked, "全双工语音模型以前有哪些？")  # 检索词由模型从问题里提
+        [refs] = [e["events"] for e in out if e["type"] == "refs"]
+        self.assertEqual(refs[0]["id"], old)
+        found = chat._retrieve(config(), self.store, "全双工语音模型以前有哪些？", NOW, ["Moshi", "全双工", "full-duplex"])
+        self.assertEqual(found[0]["id"], old)  # 英文报道里的 Moshi、full-duplex 和简报里的“全双工”都对上了
+        self.assertNotIn(stale, [x["id"] for x in found])  # 旧闻不算
+
     def test_global_ask_cites_events(self):
         out, _ = self.run_chat(FakeLLM(reply=f"Block 发布了 Dessa [E{self.eid}]。"), {"message": "最近有什么语音模型？"})
         refs = [e for e in out if e["type"] == "refs"]

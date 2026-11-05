@@ -37,7 +37,8 @@ log = logging.getLogger(__name__)
 HISTORY = 12
 SOURCE_CHARS = 3500
 MAX_SOURCES = 3
-ASK_DAYS = 14
+ASK_DAYS = 14  # 问事件库时一个都对不上，就给最近这么多天最重要的几件
+ASK_OLDER = 30  # 更早的事件最多带上几件（检索库不限时间），只要有简报、最对得上的
 CHAT_WAIT = 10  # 对话里最多等原文这么多秒，没读到的来源先用摘要回答
 FAIL_RETRY = timedelta(hours=6)  # 抓取失败的链接隔这么久再重试
 CACHE_HOURS = 24
@@ -68,7 +69,7 @@ EVENT_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。用户正�
 来源：
 {sources}"""
 
-ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你最近两周替用户整理过的事件（每条以 [E编号] 开头），以及针对这个问题的网页搜索结果（编号 [1]、[2]…）。
+ASK_SYSTEM = """你是 Catchup，用户的个人 AI 情报助手。下面是你替用户整理过的事件里和这个问题有关的几件（每条以 [E编号] 开头，括号里是日期；都对不上时是最近两周最重要的几件），以及针对这个问题的网页搜索结果（编号 [1]、[2]…）。
 回答用户的问题：中文，直接，先给结论；优先用事件库，提到某个事件时在句末标注 [E编号]；事件库里没有或不够的用网页搜索结果补充，句末标注 [编号]；
 都没有相关内容就直说没有，可以提一句能替他追踪哪件事。不要寒暄，不要复述问题。
 
@@ -141,8 +142,13 @@ def chat(config: Config, store, llm, body: dict, now: datetime):
             tone=TONE, focus=focus, headline=headline, summary=brief.get("summary", ""), sources=sources)
     else:
         search = _pool.submit(_search, message)
+        query = _pool.submit(_query_terms, llm, message)  # 和联网搜索同时进行
         yield {"type": "status", "text": "正在搜索网页"}
-        candidates = _retrieve(config, store, message, now)
+        try:
+            terms = query.result(timeout=SEARCH_WAIT)
+        except Exception:  # 超时
+            terms = None
+        candidates = _retrieve(config, store, message, now, terms)
         found = _wait(search)
         refs = []
         system = ASK_SYSTEM.format(tone=TONE, focus=focus, events="\n".join(
@@ -400,17 +406,44 @@ def _paper_text(store, signals, paper: str, labels, now: datetime) -> str:
     return "\n\n".join(parts)
 
 
-def _retrieve(config: Config, store, question: str, now: datetime, limit: int = 12) -> list[dict]:
-    """在最近两周有简报的事件里按词重合找相关事件；一个都不相关时退回最重要的几件。
-    论文的标题前写上“论文：”、概要前写上和你的关系，还没写简报、但和你有关的论文也算（标题、摘要开头用译文，
+QUERY_SYSTEM = """用户在问他的 AI 资讯库。把问题里要查的东西变成检索词，输出 JSON：{"terms": ["检索词"]}
+- 问到的产品、模型、公司、人、技术、话题，每个给常用的几种写法：原名、英文名、中文名、简称，比如“混元”写“混元”“Hunyuan”“Hy4”，“语音识别”写“语音识别”“speech recognition”“ASR”
+- 只写问到的东西本身的写法，不要加相关的别的东西（问 Anthropic 不要加 Claude），也不要在名字后面加“新模型”“最新版本”这类词
+- 不要“最近”“有哪些”“怎么样”这类词，也不要“AI”“大模型”“模型”“发布”这种什么都对得上的词
+- 问的是泛泛的近况（“最近有什么值得看的”）时输出空数组
+最多 8 个。"""
+
+
+def _query_terms(llm, question: str) -> list[str] | None:
+    """模型从问题里提的检索词，带上中英文的几种写法：库里的报道多是英文，简报是中文。调用失败、没给时为 None。"""
+    try:
+        raw = llm.json(QUERY_SYSTEM, question, max_tokens=200).get("terms")
+    except Exception as e:
+        log.info("query terms failed: %r", e)
+        return None
+    return [str(t).strip()[:40] for t in raw if str(t).strip()][:8] if isinstance(raw, list) else None
+
+
+def _retrieve(config: Config, store, question: str, now: datetime, terms: list[str] | None = None,
+              limit: int = 12) -> list[dict]:
+    """问事件库：在检索库里找提到这些词的事件（Store.find_events，不限时间、旧闻不算），按提到了几个词、重要性、时间排；
+    一个都对不上时退回最近两周最重要的几件。terms 是模型从问题里提的检索词（_query_terms），None 时用问题里的词。
+    最近两周的事件都在候选里；更早的只要有简报、最对得上的 ASK_OLDER 件。
+    论文的标题前写上“论文：”、概要前写上和你的关系，最近两周还没写简报、但和你有关的论文也算（标题、摘要开头用译文，
     重要性按和你的关系算），问“这周有哪些和我有关的论文”时用得上。"""
     signals = store.recent(now - timedelta(days=ASK_DAYS), now + timedelta(hours=1), include_stale=False)
     events = personal.build_ranker(config, store, now).rank(group_events(signals), now)
+    hits = store.find_events(_terms(question) if terms is None else terms)
+    stale = {i for i, v in store.novelty(hits).items() if v["verdict"] == "stale"}
+    recent = {e.id for e in events}
+    older = store.briefs(i for i in hits if i not in recent and i not in stale)
+    for i in sorted(older, key=lambda i: (-hits[i], -older[i]["importance"]))[:ASK_OLDER]:
+        if signals := store.event_signals(i):
+            events.append(Event(key=f"event:{i}", id=i, signals=signals))
     briefs = store.briefs(e.id for e in events)
     marks = store.paper_marks(e.id for e in events if papers.is_paper(e))
     mine = {i for i, m in marks.items() if i not in briefs and m["relevance"] >= papers.PICK}
     zh = store.translations([t for e in events if e.id in mine for t in (e.lead.title, e.lead.summary[:SUMMARY_CHARS])])
-    terms = _terms(question)
     scored = []
     for e in events:
         b = briefs.get(e.id)
@@ -425,16 +458,15 @@ def _retrieve(config: Config, store, question: str, now: datetime, limit: int = 
             b = {"headline": b["headline"] if b["headline"].startswith("论文") else "论文：" + b["headline"],
                  "summary": f"{mark['why']}。{b['summary']}" if mark["why"] else b["summary"],
                  "importance": max(b["importance"], mark["relevance"])}
-        text = " ".join([b["headline"], b["summary"]] + [s.title for s in e.signals[:6]]).lower()
-        hits = sum(1 for t in terms if t in text)
-        scored.append((hits, b["importance"], e, b))
+        scored.append((hits.get(e.id, 0), b["importance"], max(s.published for s in e.signals), e, b))
     relevant = [x for x in scored if x[0] > 0]
-    pool = sorted(relevant or scored, key=lambda x: (-x[0], -x[1]))[:limit]
-    return [{"id": e.id, "headline": b["headline"], "summary": b["summary"],
-             "time": max(s.published for s in e.signals).isoformat()} for _, _, e, b in pool]
+    pool = sorted(relevant or scored, key=lambda x: (-x[0], -x[1], -x[2].timestamp()))[:limit]
+    return [{"id": e.id, "headline": b["headline"], "summary": b["summary"], "time": t.isoformat()}
+            for _, _, t, e, b in pool]
 
 
 def _terms(question: str) -> set[str]:
+    """问题里的词：英文词和中文的相邻两个字，给没提成检索词时用。"""
     q = question.lower()
     words = {w for w in re.findall(r"[a-z0-9][a-z0-9.\-]+", q) if len(w) >= 2}
     cjk = re.sub(r"[^一-鿿]", " ", q)

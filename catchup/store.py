@@ -282,6 +282,37 @@ class Store:
             f"select {COLUMNS}, event_id from signals where url in ({','.join('?' * len(urls))})", urls)}
         return events, [rows[u] for u in urls if u in rows]
 
+    def mentions(self, name: str) -> tuple[int, int]:
+        """检索库里提到这个名字的信号有多少条，和一共有多少条，看它是不是太常见（公司名、短名字的子串）。"""
+        total = self.con.execute("select count(*) from signals").fetchone()[0]
+        term = squash(str(name))
+        if len(term) < SEARCH_MIN:
+            return 0, total
+        return self.con.execute("select count(*) from signals_fts where signals_fts match ?",
+                                ('"' + term.replace('"', '""') + '"',)).fetchone()[0], total
+
+    def find_events(self, terms: Iterable[str], limit: int = 100) -> dict[int, int]:
+        """在检索库里找提到这些词的事件：{事件 id: 提到了其中几个词}。每个词各取最相关的 limit 件，简报和已归入事件的
+        信号都算。归一后两个字的词（“腾讯”“开源”）trigram 查不了，在简报里逐条找，取最新的 limit 件。"""
+        hits: dict[int, int] = {}
+        for term in dict.fromkeys(squash(str(t)) for t in terms):
+            if len(term) >= SEARCH_MIN:
+                query = '"' + term.replace('"', '""') + '"'
+                rows = self.con.execute("select rowid from briefs_fts where briefs_fts match ? order by rank limit ?",
+                                        (query, limit)).fetchall()
+                rows += self.con.execute(
+                    "select s.event_id from signals_fts f join signals s on s.url = f.url "
+                    "where signals_fts match ? and s.event_id is not null order by f.rank limit ?", (query, limit)).fetchall()
+            elif len(term) == 2:
+                like = "%" + term.replace("\\", "\\\\").replace("%", "\\%") + "%"
+                rows = self.con.execute("select rowid from briefs_fts where text like ? escape '\\' "
+                                        "order by rowid desc limit ?", (like, limit)).fetchall()
+            else:
+                continue
+            for event_id in {r[0] for r in rows}:
+                hits[event_id] = hits.get(event_id, 0) + 1
+        return hits
+
     # ---------- 事件 ----------
 
     def new_event(self, key: str, now: datetime) -> int:

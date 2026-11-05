@@ -91,6 +91,17 @@ class StoreTest(unittest.TestCase):
         self.store.merge_events(2, [1])  # 合并会删掉两边的简报，索引也跟着删
         self.assertEqual(self.store.search(["dessa voice", "moshi voice"])[0], [])
 
+    def test_find_events_counts_terms_per_event(self):
+        hy4, dessa = self.store.new_event("a", NOW), self.store.new_event("b", NOW)
+        for eid, headline, names in ((hy4, "腾讯发布混元 Hy4", ["Hy4"]), (dessa, "Block 发布语音模型", ["Dessa"])):
+            self.store.save_brief(eid, NOW, "m", 1, {"headline": headline, "summary": "", "why": "", "importance": 3,
+                                                     "entities": names})
+        self.store.add([Signal(url="https://a", title="Block unveils Dessa voice model", source="x", published=NOW),
+                        Signal(url="https://b", title="Unassigned Dessa voice notes", source="x", published=NOW)], now=NOW)
+        self.store.assign(dessa, ["https://a"])
+        # “腾讯”两个字在简报里逐条找；Hy4 对上简报里的名字；dessa-voice 对上英文报道，没归入事件的信号不算
+        self.assertEqual(self.store.find_events(["腾讯", "Hy4", "dessa-voice", "x", "100%"]), {hy4: 2, dessa: 1})
+
     def test_migration_indexes_existing_rows(self):
         import sqlite3
         import tempfile
