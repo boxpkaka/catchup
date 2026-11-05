@@ -3,55 +3,39 @@ package cloud.boxpkaka.infofeed;
 import android.Manifest;
 import android.animation.ValueAnimator;
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.Dialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.SpannableString;
-import android.text.SpannableStringBuilder;
 import android.text.Spanned;
-import android.text.TextUtils;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.TypefaceSpan;
 import android.view.Gravity;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.AbsListView;
-import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -62,44 +46,26 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
 /**
- * 首页，分“信息流”“专题”和“报告”三页。信息流按见报时间从新到旧、按天分组，每天先是“最值得看”的几件（见 top），
- * 一件一张彩色大卡片、带编号：有封面的大图在上面，下半截融进流动的模糊封面（Flow），没有的用话题的专题色和徽记。其余按时间排成一条线，
- * 不上色：重要性 4 以上加粗，3 以上带一行概要，其他只有标题；服务器已经取到封面的右边带小图，话题写在来源前面。
- * 行里的颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。最上面是追踪中，“未追踪信息”入口在第一天的最后，
- * 滑到底继续加载更早的。下拉刷新，右滑标记不需要（可撤销；追踪中的行右滑是取消追踪、答案不再显示），点开看详情。
- * 三页之间左右滑切换（左滑下一页），也可以点标签。
+ * 首页，分“信息流”“专题”和“报告”三页，左右滑切换（左滑下一页），也可以点标签。
+ * 信息流：列表怎么排、点开和右滑见 FeedList，每一种行长什么样见 FeedRows；列表上面是提醒条和记忆的提问，下拉刷新，
+ * 滑到底继续加载更早的。移走以后的撤销条见 Undo，菜单和弹出的面板见 Sheets，更新提示见 Updater.Prompt。
  * 专题页见 TopicsView，报告页见 ReportView；推送的周报月报点开直接进报告页（EXTRA_REPORT）。
  */
 public class MainActivity extends Activity {
     static final String EXTRA_REPORT = "report"; // 如 weekly/2026-10-19，见 FeedService
     private static final long REFETCH_MS = 30_000;
     private static final long OLDER_RETRY_MS = 10_000;
-    private static final long UNDO_MS = 10_000;
-    private static final double TOP_RATIO = 0.7; // 最值得看：前 TOP_MIN 件之后，分数不低于第 TOP_MIN 名的七成才接着放
-    private static final int TOP_MIN = 3, TOP_MAX = 5;
     private static final String[] TABS = {"信息流", "专题", "报告"};
     private static final int FEED = 0, TOPICS = 1, REPORT = 2;
-    /**
-     * “不需要”的固定原因：提交给服务器的值、按钮文字、选中后先显示的回应。误点直接撤销。
-     * 上面一行“不想看这类”的几个候选从服务器取（/reasons），选中哪类就记哪类；“其他”先存档，攒几条再一起判断。
-     */
-    private static final String[][] REASONS = {
-            {"source", "不想看这个来源", "正在记下…"},
-            {"known", "已经知道了", "已记下"},
-            {"other", "其他", "已存档，攒几条再一起判断"}};
-    private static final int REQ_EVENT = 2;
-    private static final String ANSWER = "answer"; // 追踪中的行里，“你问过的问题有答案了”用这个 label 区分
+    static final int REQ_EVENT = 2;
 
     private Theme t;
-    private final Handler main = new Handler(Looper.getMainLooper());
 
     private FrameLayout root;
     private Flow mist, reportMist; // 整页的雾：珍珠银；翻到报告时渐渐换成钴蓝
@@ -110,36 +76,21 @@ public class MainActivity extends Activity {
     private LinearLayout header;
     private TextView statusChip;
     static volatile boolean visible; // 首页在前台：补到的旧推送不再弹通知，见 FeedService.notifyIfRecent
-    private LinearLayout updateNotice, batteryNotice, notifyNotice, askNotice;
+    private LinearLayout batteryNotice, notifyNotice, askNotice;
     private TextView askText, askKeep, askDrop;
     private JSONObject ask; // 正在问的那个记忆问题（feed 的 ask），答了就清掉
-    private TextView updateText, updateAction;
     private View skeleton;
     private ValueAnimator skeletonGlow;
     private LinearLayout stateView;
-    private LinearLayout undoBar;
-    private TextView undoLabel, undoButton;
-    private Shapes.Wave undoCountdown;
-    private final List<TextView> reasonChips = new ArrayList<>(); // 固定原因
-    private final List<TextView> topicChips = new ArrayList<>(); // “不想看这类”的候选，每次移走时重新取
-    private HorizontalScrollView topicScroll;
-    private LinearLayout topicRow;
 
-    private final List<Row> rows = new ArrayList<>();
-    private final FeedAdapter adapter = new FeedAdapter();
+    private FeedList feedList;
     private JSONObject feed;
-    private long seenAtOpen, lastFetch;
+    private long lastFetch;
     private boolean loading, receiving;
     private final Set<Long> hidden = new HashSet<>();
-    private final Map<Long, JSONObject> firstSeen = new HashMap<>(); // 见 first
-    private long pendingDismiss = -1;
-    private final Set<Long> collapsing = new HashSet<>(); // 正在收起的行，列表重绑时别打断它的动画
-    private final Set<String> leaving = new HashSet<>(); // 追踪中正在收起的行（按 rowKey）
-    private long expanding = -1; // 撤销后要展开的那一行
-    private long answeredFor = -1; // 撤销条正在等哪件事的“记住了”回应
-    private final Runnable commitDismiss = () -> commitDismiss(null);
-    private final Runnable hideUndoLater = this::hideUndo;
-    private Updater.Release release;
+    private Undo undo; // 底部的撤销条：移走一件事以后可以撤销、选原因
+    private Sheets sheets; // 菜单和从首页弹出的几个面板
+    private Updater.Prompt update; // 顶上的更新提示条
     private Swipe.Tabs tabBar;
     private TopicsView topics;
     private ReportView reports;
@@ -149,20 +100,6 @@ public class MainActivity extends Activity {
     private String olderCursor; // 下一页的 before，到开始采集为止
     private boolean loadingOlder;
     private long olderRetryAt;
-
-    private static final class Row {
-        // 0 日期，1 最值得看（label 是编号），2 按时间的行，3 追踪中（追踪的事件和有了答案的问题），4 小标题，
-        // 5 “未追踪信息”入口
-        final int type;
-        final CharSequence label;
-        final JSONObject e;
-
-        Row(int type, CharSequence label, JSONObject e) {
-            this.type = type;
-            this.label = label;
-            this.e = e;
-        }
-    }
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
@@ -182,21 +119,21 @@ public class MainActivity extends Activity {
         new Thread(() -> Images.clearOld(this)).start(); // 换成高清以前缓存的低清图
         feed = Store.loadFeed(this);
         olderCursor = cursor(feed);
-        seenAtOpen = Store.seenAt(this);
+        feedList.seenAt(Store.seenAt(this));
         render();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
         FeedService.start(this);
-        onInstallResult(getIntent());
+        update.onInstallResult(getIntent());
         openReport(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        onInstallResult(intent);
+        update.onInstallResult(intent);
         openReport(intent);
     }
 
@@ -211,7 +148,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         // 在详情页点了“不需要”：回到首页后和右滑一样移除并给出撤销
         if (request == REQ_EVENT && result == RESULT_OK && data != null) {
-            dismissRow(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
+            feedList.dismissRow(data.getLongExtra(EventActivity.EXTRA_DISMISSED, -1));
         }
     }
 
@@ -220,7 +157,7 @@ public class MainActivity extends Activity {
         super.onResume();
         Trace.log(this, "ui.resume", "service=" + FeedService.status);
         visible = true;
-        seenAtOpen = Store.seenAt(this);
+        feedList.seenAt(Store.seenAt(this));
         if (!receiving) {
             IntentFilter f = new IntentFilter(FeedService.ACTION_UPDATE);
             f.addAction(FeedService.ACTION_PUSHED);
@@ -234,7 +171,7 @@ public class MainActivity extends Activity {
         notifyNotice.setVisibility(notificationsBlocked() ? View.VISIBLE : View.GONE);
         render();
         if (System.currentTimeMillis() - lastFetch > REFETCH_MS) load();
-        checkUpdate(false);
+        update.check(false);
     }
 
     @Override
@@ -247,7 +184,7 @@ public class MainActivity extends Activity {
             unregisterReceiver(receiver);
             receiving = false;
         }
-        commitDismiss(null);
+        undo.commit();
     }
 
     /** 真的离开了（不是上面盖了一张详情页）：看过的事件下次不再算“新的”。放在这里，看完详情回来“新”不会一下子都没了。 */
@@ -260,6 +197,7 @@ public class MainActivity extends Activity {
     // ---------- 布局 ----------
 
     private View build() {
+        sheets = new Sheets(this, t, panels);
         root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
         mist = new Flow(this);
@@ -291,7 +229,7 @@ public class MainActivity extends Activity {
         menu.setGravity(Gravity.CENTER);
         menu.setContentDescription("菜单");
         menu.setBackground(t.ripple(Color.TRANSPARENT, 99));
-        menu.setOnClickListener(v -> showMenu());
+        menu.setOnClickListener(v -> sheets.showMenu());
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(t.dp(44), t.dp(44));
         ml.leftMargin = t.dp(4);
         topBar.addView(menu, ml);
@@ -310,7 +248,7 @@ public class MainActivity extends Activity {
         list.setOverScrollMode(View.OVER_SCROLL_NEVER);
         list.setPadding(0, 0, 0, t.dp(96));
         list.addHeaderView(buildHeader(), null, false);
-        list.setAdapter(adapter);
+        feedList = new FeedList(this, t, list, rowsHost);
         list.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(AbsListView v, int s) {
@@ -325,7 +263,7 @@ public class MainActivity extends Activity {
         pull = new PullLayout(this, t, list);
         pull.setOnRefresh(() -> {
             load();
-            checkUpdate(false);
+            update.check(false);
         });
         homePager = new Swipe.Pager(this, home, true);
         Swipe content = homePager.frame;
@@ -349,56 +287,11 @@ public class MainActivity extends Activity {
         stateView.setVisibility(View.GONE);
         root.addView(stateView, match());
 
-        undoBar = new LinearLayout(this);
-        undoBar.setOrientation(LinearLayout.VERTICAL);
-        undoBar.setPadding(t.dp(20), t.dp(10), t.dp(10), t.dp(12));
-        undoBar.setBackground(t.metal(t.inv, Theme.R_XL));
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        undoLabel = t.text(this, "", 14, t.onInv, 600);
-        head.addView(undoLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        undoButton = t.text(this, "撤销", 14, t.invPri, 800);
-        undoButton.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-        undoButton.setBackground(t.ripple(Color.TRANSPARENT, 99));
-        undoButton.setOnClickListener(v -> undoDismiss());
-        head.addView(undoButton);
-        undoBar.addView(head);
-        LinearLayout chips = new LinearLayout(this);
-        for (String[] reason : REASONS) {
-            TextView chip = t.text(this, reason[1], 13, t.onInv, 700);
-            chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-            chip.setOnClickListener(v -> pickReason(chip, reason));
-            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            cl.rightMargin = t.dp(3);
-            chips.addView(chip, cl);
-            reasonChips.add(chip);
-        }
-        topicRow = new LinearLayout(this);
-        topicRow.setGravity(Gravity.CENTER_VERTICAL);
-        topicScroll = new HorizontalScrollView(this);
-        topicScroll.setHorizontalScrollBarEnabled(false);
-        topicScroll.addView(topicRow);
-        LinearLayout.LayoutParams tsl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        tsl.topMargin = t.dp(6);
-        undoBar.addView(topicScroll, tsl);
-        HorizontalScrollView chipScroll = new HorizontalScrollView(this);
-        chipScroll.setHorizontalScrollBarEnabled(false);
-        chipScroll.addView(chips);
-        LinearLayout.LayoutParams csl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        csl.topMargin = t.dp(6);
-        undoBar.addView(chipScroll, csl);
-        undoCountdown = new Shapes.Wave(this, t.invPri);
-        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, t.dp(10));
-        wl.setMargins(0, t.dp(12), t.dp(10), 0);
-        undoBar.addView(undoCountdown, wl);
-        undoBar.setVisibility(View.GONE);
+        undo = new Undo(this, t, this::undone);
         FrameLayout.LayoutParams ub = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
         ub.setMargins(t.dp(16), 0, t.dp(16), t.dp(16));
-        root.addView(undoBar, ub);
+        root.addView(undo.view(), ub);
 
         if (Build.VERSION.SDK_INT >= 30) {
             root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -409,7 +302,7 @@ public class MainActivity extends Activity {
                 topics.setBottomInset(bars.bottom + t.dp(96));
                 reports.setBottomInset(bars.bottom + t.dp(96));
                 ub.bottomMargin = bars.bottom + t.dp(16);
-                undoBar.setLayoutParams(ub);
+                undo.view().setLayoutParams(ub);
                 return WindowInsets.CONSUMED;
             });
         }
@@ -464,6 +357,56 @@ public class MainActivity extends Activity {
         }
     };
 
+    /** 菜单和面板里的操作改了首页该显示什么：马上重新取。 */
+    private final Sheets.Host panels = new Sheets.Host() {
+        @Override
+        public void reload() {
+            lastFetch = 0;
+            load();
+        }
+
+        @Override
+        public void restored(long id) {
+            hidden.remove(id);
+            reload();
+        }
+
+        @Override
+        public void checkUpdate() {
+            update.check(true);
+        }
+    };
+
+    /** 列表里的操作要改首页的数据：移走、取消追踪、看未追踪信息。 */
+    private final FeedList.Host rowsHost = new FeedList.Host() {
+        @Override
+        public boolean showing() {
+            return visible && tab == FEED;
+        }
+
+        @Override
+        public void dismissed(long id) {
+            dismiss(id);
+        }
+
+        @Override
+        public void left(boolean answer, long id) {
+            JSONArray rows = feed == null ? null : feed.optJSONArray(answer ? "answers" : "following");
+            for (int i = 0; rows != null && i < rows.length(); i++) {
+                if (rows.optJSONObject(i).optLong("id") == id) {
+                    rows.remove(i);
+                    break;
+                }
+            }
+            render();
+        }
+
+        @Override
+        public void skipped() {
+            sheets.showSkipped(feed == null ? null : feed.optJSONArray("skipped"));
+        }
+    };
+
     /** 信息流往上滚过了：顶栏下面显示分隔线。 */
     private boolean listScrolled() {
         return list.getFirstVisiblePosition() > 0 || (list.getChildCount() > 0 && list.getChildAt(0).getTop() < 0);
@@ -492,39 +435,22 @@ public class MainActivity extends Activity {
                 .putExtra(EventActivity.EXTRA_FROM, "report"), REQ_EVENT);
     }
 
-    /**
-     * 列表里显示这件事的那张卡片：行会被复用，关详情页时按 id 重新找。同一件事可能既在“追踪中”又在下面的时间线里，
-     * follow 说明要找的是哪一种。
-     */
-    private Card.Anchor rowAnchor(long id, boolean follow) {
-        return () -> {
-            for (int i = 0; i < list.getChildCount(); i++) {
-                Object tag = list.getChildAt(i).getTag();
-                if (tag instanceof Holder) {
-                    Holder h = (Holder) tag;
-                    if (h.id == id && h.follow == follow) return h.front;
-                }
-            }
-            return null;
-        };
-    }
-
     private View buildHeader() {
         header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(t.dp(12), t.dp(4), t.dp(12), 0);
 
         // 提醒条：更新用反色，最显眼；其余用卡片色，右边是主色容器的按钮
-        updateNotice = notice(t.inv);
-        updateText = t.text(this, "", 14.5f, t.onInv, 700);
+        LinearLayout updateNotice = notice(t.inv);
+        TextView updateText = t.text(this, "", 14.5f, t.onInv, 700);
         updateNotice.addView(updateText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         int[] ask = t.ask(Theme.PEARL);
-        updateAction = noticeAction("更新", ask[0], ask[1]);
+        TextView updateAction = noticeAction("更新", ask[0], ask[1]);
         updateAction.setBackground(t.metal(ask[0], 99));
         updateNotice.addView(updateAction);
-        updateNotice.setOnClickListener(v -> installUpdate());
         updateNotice.setVisibility(View.GONE);
         header.addView(updateNotice, noticeLp());
+        update = new Updater.Prompt(this, updateNotice, updateText, updateAction);
 
         batteryNotice = notice(t.sheet);
         batteryNotice.addView(noticeText("允许后台运行", "关闭电池优化后，推送才不会延迟"),
@@ -651,7 +577,7 @@ public class MainActivity extends Activity {
                     olderEvents.clear(); // 刷新后从第一页重新开始
                     olderCursor = cursor(got);
                     hidden.clear();
-                    if (pendingDismiss >= 0) hidden.add(pendingDismiss);
+                    if (undo.pending() >= 0) hidden.add(undo.pending());
                     updateStatusChip(); // 清掉“刷新失败”，换回推送断开或服务端疑似故障的提示
                     showAsk(got.optJSONObject("ask"));
                     render();
@@ -799,95 +725,9 @@ public class MainActivity extends Activity {
 
     private void render() {
         if (feed == null) return;
-        // 往下翻过的时候，新内容插在上面也让正在看的那一行留在原地
-        String keep = null;
-        int keepTop = 0;
-        if (list.getFirstVisiblePosition() > 0) {
-            for (int i = 0; i < list.getChildCount() && keep == null; i++) {
-                int at = list.getFirstVisiblePosition() + i - list.getHeaderViewsCount();
-                if (at >= 0 && at < rows.size() && rows.get(at).e != null) {
-                    keep = rowKey(rows.get(at));
-                    keepTop = list.getChildAt(i).getTop();
-                }
-            }
-        }
         stopSkeleton();
         stateView.setVisibility(View.GONE);
-        List<JSONObject> events = new ArrayList<>();
-        JSONArray first = feed.optJSONArray("events");
-        for (int i = 0; first != null && i < first.length(); i++) events.add(first.optJSONObject(i));
-        events.addAll(olderEvents);
-
-        rows.clear();
-        JSONArray follows = feed.optJSONArray("following"), answers = feed.optJSONArray("answers");
-        int followCount = follows == null ? 0 : follows.length(), answerCount = answers == null ? 0 : answers.length();
-        if (followCount + answerCount > 0) rows.add(new Row(4, "追踪中", null));
-        for (int i = 0; i < answerCount; i++) rows.add(new Row(3, ANSWER, answers.optJSONObject(i)));
-        for (int i = 0; i < followCount; i++) rows.add(new Row(3, null, follows.optJSONObject(i)));
-        String day = null;
-        List<JSONObject> list = new ArrayList<>();
-        int skipAt = -1; // “未追踪信息”入口放在第一天的最后
-        for (JSONObject e : events) { // 服务器已按见报时间从新到旧排好
-            if (e == null || hidden.contains(e.optLong("id"))) continue;
-            String d = dayLabel(Theme.millis(e.optString("time")));
-            if (!d.equals(day) && day != null) {
-                addDay(list);
-                if (skipAt < 0) skipAt = rows.size();
-            }
-            day = d;
-            list.add(e);
-        }
-        if (!list.isEmpty()) addDay(list);
-        JSONArray skipped = feed.optJSONArray("skipped");
-        if (skipped != null && skipped.length() > 0) rows.add(skipAt < 0 ? rows.size() : skipAt, new Row(5, null, null));
-        adapter.notifyDataSetChanged();
-        for (int i = 0; keep != null && i < rows.size(); i++) {
-            if (rows.get(i).e != null && keep.equals(rowKey(rows.get(i)))) {
-                this.list.setSelectionFromTop(i + this.list.getHeaderViewsCount(), keepTop);
-                break;
-            }
-        }
-    }
-
-    /** 一行是哪一种、哪一件：追踪行、答案行和时间线里的同一件事不能混。 */
-    private static String rowKey(Row r) {
-        return r.type + (ANSWER.equals(r.label) ? "a" : "") + ":" + r.e.optLong("id");
-    }
-
-    /** 一天：标题，最值得看的几件，其余按时间从新到旧。 */
-    private void addDay(List<JSONObject> list) {
-        rows.add(new Row(0, dayTitle(this, t, Theme.millis(list.get(0).optString("time"))), null));
-        List<JSONObject> top = top(list);
-        if (!top.isEmpty()) rows.add(new Row(4, "最值得看", null));
-        for (int i = 0; i < top.size(); i++) rows.add(new Row(1, String.format(Locale.ROOT, "%02d", i + 1), top.get(i)));
-        if (!top.isEmpty() && list.size() > top.size()) rows.add(new Row(4, "其余按时间", null));
-        for (JSONObject e : list) {
-            if (!top.contains(e)) rows.add(new Row(2, null, e));
-        }
-        list.clear();
-    }
-
-    /**
-     * 一天里最值得看的：重要性 4 以上按服务器综合分排，前 TOP_MIN 件都算（不够就有几件算几件），之后不低于第 TOP_MIN 名的
-     * TOP_RATIO 的接着放，最多 TOP_MAX 件。第一名常常远远领先，只和它比的话多半只剩一件。
-     * 分数随时间按同样的比例衰减，同一天里谁比谁高多少不会变，前排不会过几个小时自己换人。
-     */
-    private static List<JSONObject> top(List<JSONObject> day) {
-        List<JSONObject> key = new ArrayList<>();
-        for (JSONObject e : day) {
-            if (e.optInt("importance") >= 4) key.add(e);
-        }
-        key.sort((a, b) -> Double.compare(b.optDouble("score"), a.optDouble("score")));
-        int n = Math.min(key.size(), TOP_MIN);
-        while (n < Math.min(key.size(), TOP_MAX)
-                && key.get(n).optDouble("score") >= TOP_RATIO * key.get(TOP_MIN - 1).optDouble("score")) n++;
-        return key.subList(0, n);
-    }
-
-    /** 离开期间出现的，或离开期间推送过的（推送时可能没弹出来，回到首页要能找到）。 */
-    private boolean isNew(JSONObject e) {
-        return seenAtOpen > 0 && Math.max(Theme.millis(e.optString("first_seen")),
-                Theme.millis(e.optString("pushed_at"))) > seenAtOpen;
+        feedList.render(feed, olderEvents, hidden);
     }
 
     /** 整个 App 的通知或“新消息”分类被关掉了；分类还没建（服务没启动过）时不算。 */
@@ -921,574 +761,6 @@ public class MainActivity extends Activity {
             statusChip.setVisibility(View.VISIBLE);
             statusChip.animate().alpha(1f).setDuration(200).start();
         }
-    }
-
-    // ---------- 列表 ----------
-
-    private final class FeedAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return rows.size();
-        }
-
-        @Override
-        public Object getItem(int i) {
-            return rows.get(i);
-        }
-
-        @Override
-        public long getItemId(int i) {
-            Row r = rows.get(i);
-            if (r.e == null) return -i - 1;
-            if (ANSWER.equals(r.label)) return -2_000_000L - r.e.optLong("id");
-            return r.type == 3 ? -1_000_000L - r.e.optLong("id") : r.e.optLong("id"); // 追踪的事件也可能出现在下面
-        }
-
-        @Override
-        public boolean hasStableIds() {
-            return true;
-        }
-
-        @Override
-        public int getViewTypeCount() {
-            return 6;
-        }
-
-        @Override
-        public int getItemViewType(int i) {
-            return rows.get(i).type;
-        }
-
-        @Override
-        public boolean isEnabled(int i) {
-            return false; // 点击由每一行自己处理，便于和右滑共存
-        }
-
-        @Override
-        public View getView(int i, View convert, ViewGroup parent) {
-            Row r = rows.get(i);
-            if (r.type == 0 || r.type == 4) {
-                TextView label = convert != null ? (TextView) convert : r.type == 0 ? sectionLabel() : subLabel();
-                label.setText(r.label);
-                return label;
-            }
-            if (r.type == 5) return convert != null ? convert : skippedEntry();
-            // 追踪中、最值得看和按时间的行是分段列表：一组的头尾用大圆角
-            boolean first = rows.get(i - 1).type != r.type, last = i == rows.size() - 1 || rows.get(i + 1).type != r.type;
-            float top = first ? Theme.R_XL : Theme.R_XS, bottom = last ? Theme.R_XL : Theme.R_XS;
-            if (r.type == 3) {
-                if (convert == null) convert = newFollowRow();
-                Holder h = (Holder) convert.getTag();
-                boolean answer = ANSWER.equals(r.label);
-                if (!leaving.contains(rowKey(r))) {
-                    SwipeDismiss.reset(h.front, h.behind);
-                    SwipeDismiss.unfold(convert);
-                }
-                h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
-                ((TextView) h.behind).setText(answer ? "✕  不用了" : "✕  取消追踪");
-                if (answer) bindAnswer(h, r.e, first, last);
-                else bindFollow(h, r.e, first, last);
-                h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> leaveFollow((View) v.getParent(), r)));
-                return convert;
-            }
-            if (convert == null) convert = r.type == 1 ? newTop() : newRow();
-            Holder h = (Holder) convert.getTag();
-            long id = r.e.optLong("id");
-            if (!collapsing.contains(id)) { // 收起动画还在走的那一行不动它
-                SwipeDismiss.reset(h.front, h.behind);
-                SwipeDismiss.unfold(convert);
-            }
-            if (r.type == 1) { // 最值得看是一张张分开的卡片，底色在 bindTop 里按封面或话题上
-                h.behind.setBackground(t.round(t.err, Theme.R_XL));
-            } else {
-                h.front.setBackground(t.segment(t.sheet, first, last));
-                h.behind.setBackground(t.round(t.err, top, top, bottom, bottom));
-            }
-            h.id = id;
-            if (r.type == 1) bindTop(h, r);
-            else bindRow(h, r.e);
-            if (visible && tab == FEED) Track.seen(MainActivity.this, id, r.type == 1 ? "top" : "feed"); // 列表只为看得见的行取视图
-            // 单击抬手就打开（不等着确认是不是双击）；右滑照常交给 SwipeDismiss
-            h.front.setOnClickListener(v -> open(h.front, r.e, r.type == 1));
-            h.front.setOnTouchListener(new SwipeDismiss(h.front, h.behind, v -> dismissRow(id)));
-            if (id == expanding) { // 撤销移除：内容绑好以后量出高度，从无到有展开
-                expanding = -1;
-                if (convert.getLayoutParams() == null) {
-                    convert.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT));
-                }
-                SwipeDismiss.expand(convert, parent.getWidth());
-            }
-            return convert;
-        }
-    }
-
-    private static final class Holder {
-        long id = -1; // 显示的是哪件事，追踪行和答案行以外的分组标题等都是 -1
-        boolean follow; // 追踪中的行（追踪的事件和有了答案的问题）
-        View front, behind;
-        TextView label, badge, num, headline, summary, meta, time;
-        ImageView cover;
-        Flow flow; // 最值得看的卡片底下流动的模糊封面
-    }
-
-    /** 每天的标题：大字，是这一天的起点。 */
-    private TextView sectionLabel() {
-        TextView v = t.text(this, "", 26, t.ink, 900);
-        v.setPadding(t.dp(22), t.dp(26), t.dp(22), t.dp(2));
-        return v;
-    }
-
-    /** 小标题：追踪中、最值得看、其余按时间。 */
-    private TextView subLabel() {
-        TextView v = t.text(this, "", 13, t.sub, 700);
-        v.setPadding(t.dp(24), t.dp(12), t.dp(24), t.dp(8));
-        return v;
-    }
-
-    /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”（追踪中的行绑定时换成“取消追踪”“不用了”），从左边露出来。 */
-    private FrameLayout swipeFrame(Holder h, View front) {
-        FrameLayout frame = new FrameLayout(this) {
-            /** 右滑归这一行（移除），首页不拿它拉橡皮筋。 */
-            @Override
-            public boolean canScrollHorizontally(int direction) {
-                return direction < 0 || super.canScrollHorizontally(direction);
-            }
-        };
-        TextView behind = t.text(this, "✕  不需要", 15, t.onErr, 800);
-        behind.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        behind.setPadding(t.dp(26), 0, 0, 0);
-        behind.setVisibility(View.INVISIBLE);
-        frame.addView(behind, match());
-        frame.addView(front, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        h.front = front;
-        h.behind = behind;
-        frame.setTag(h);
-        return frame;
-    }
-
-    /**
-     * 最值得看的一件：一张雾面金属的大卡片（Flow）。有封面的最上面是铺满卡片宽度的大图，下面一段渐渐透明、融进流动的模糊封面，
-     * 编号那一行压在融开的地方；没有封面的底下是话题色生成的抽象封面，不放徽记。往下是大字标题、概要和“时间 · 话题 · 来源”。
-     * 颜色见 tone。
-     */
-    private View newTop() {
-        Holder h = new Holder();
-        FrameLayout front = new FrameLayout(this); // 点按、右滑、展开都认它；里面的内容不接点按
-        h.flow = new Flow(this);
-        h.flow.corners(front);
-        front.addView(h.flow, match());
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        front.addView(card, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        RoundImage cover = new RoundImage(this, t.dp(Theme.R_XL)); // 和卡片一样的圆角，上面两个角贴着卡片的角
-        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        cover.fadeBottom(0.45f);
-        h.cover = cover;
-        int width = getResources().getDisplayMetrics().widthPixels - t.dp(12 * 2);
-        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, width * 9 / 16); // 高度先定好，图下来时卡片不跳
-        cl.bottomMargin = -t.dp(22);
-        card.addView(cover, cl);
-
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(t.dp(20), t.dp(16), t.dp(20), t.dp(18));
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        h.num = t.text(this, "", 28, t.ink, 800);
-        h.num.setTypeface(Theme.flex(this, 135, 800));
-        head.addView(h.num, gapLp(10));
-        h.label = newLabel("新");
-        head.addView(h.label, gapLp(6));
-        h.badge = newsBadge();
-        head.addView(h.badge);
-        head.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        head.setMinimumHeight(t.dp(36));
-        body.addView(head);
-        h.headline = t.text(this, "", 19, t.ink, 800);
-        h.headline.setLineSpacing(t.dp(4), 1f);
-        h.headline.setPadding(0, t.dp(10), 0, 0);
-        body.addView(h.headline);
-        h.summary = t.text(this, "", 14.5f, t.sub, 400);
-        h.summary.setLineSpacing(t.dp(5), 1f);
-        h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(8), 0, 0);
-        body.addView(h.summary);
-        h.meta = t.text(this, "", 12.5f, t.sub, 600);
-        h.meta.setTypeface(Theme.flex(this, 92, 600));
-        h.meta.setSingleLine();
-        h.meta.setEllipsize(TextUtils.TruncateAt.END);
-        h.meta.setPadding(0, t.dp(12), 0, 0);
-        body.addView(h.meta);
-        card.addView(body);
-
-        FrameLayout frame = swipeFrame(h, front);
-        frame.setPadding(t.dp(12), t.dp(5), t.dp(12), t.dp(5));
-        return frame;
-    }
-
-    /** 按时间的一行：左边是时间，离开期间出现的时间用主色；重要性 4 以上的标题加粗，3 以上带一行概要；有封面的右边是小图。 */
-    private View newRow() {
-        Holder h = new Holder();
-        LinearLayout row = new LinearLayout(this);
-        row.setPadding(t.dp(18), t.dp(14), t.dp(18), t.dp(14));
-        row.setClickable(true);
-
-        h.time = t.text(this, "", 13, t.sub, 800);
-        h.time.setTypeface(Theme.flex(this, 120, 800));
-        h.time.setPadding(0, t.dp(2), 0, 0);
-        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(t.dp(42), ViewGroup.LayoutParams.WRAP_CONTENT);
-        tl.rightMargin = t.dp(14);
-        row.addView(h.time, tl);
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        h.badge = newsBadge();
-        LinearLayout.LayoutParams bl = gapLp(0);
-        bl.bottomMargin = t.dp(6);
-        col.addView(h.badge, bl);
-        h.headline = t.text(this, "", 15, t.ink, 700);
-        h.headline.setLineSpacing(t.dp(4), 1f);
-        h.headline.setMaxLines(2);
-        h.headline.setEllipsize(TextUtils.TruncateAt.END);
-        col.addView(h.headline);
-        h.summary = t.text(this, "", 13.5f, t.sub, 400); // 简报概要，不用点开也知道主要内容
-        h.summary.setLineSpacing(t.dp(4), 1f);
-        h.summary.setSingleLine();
-        h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(3), 0, 0);
-        col.addView(h.summary);
-        h.meta = t.text(this, "", 12, t.sub, 600);
-        h.meta.setTypeface(Theme.flex(this, 92, 600));
-        h.meta.setPadding(0, t.dp(5), 0, 0);
-        h.meta.setSingleLine();
-        h.meta.setEllipsize(TextUtils.TruncateAt.END);
-        col.addView(h.meta);
-        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        h.cover = newCover(row, 56);
-        FrameLayout frame = swipeFrame(h, row);
-        frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
-        return frame;
-    }
-
-    /** 行右边的封面小图：圆角方图，图还没下来时是浅底。 */
-    private ImageView newCover(LinearLayout row, int sizeDp) {
-        ImageView cover = new RoundImage(this, t.dp(Theme.R_S)); // 圆角画在图上，卡片收回时的截图里也是圆角
-        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        cover.setBackground(t.round(t.chip, Theme.R_S));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(t.dp(sizeDp), t.dp(sizeDp));
-        lp.leftMargin = t.dp(12);
-        lp.topMargin = t.dp(2);
-        row.addView(cover, lp);
-        return cover;
-    }
-
-    /**
-     * 服务器已经取到封面的（推送前会取）放上图，没有的不占位置。有没有图由服务器先说好，图下来时行高不跳；
-     * 有没有图按这件事这次第一次显示时的数据（见 first）。内存里已经有的直接放，要等的下来后淡入；
-     * 行会复用，图回来时还是这件事才放上去；已经是这张图（可能正在淡入）的不打断。
-     */
-    private void bindCover(Holder h, JSONObject e) {
-        String path = first(e).optBoolean("cover") ? "/v1/events/" + e.optLong("id") + "/cover" : null;
-        ImageView cover = h.cover;
-        if (path != null && path.equals(cover.getTag())) return;
-        cover.setTag(path);
-        cover.setImageDrawable(null);
-        cover.setImageAlpha(255);
-        cover.setVisibility(path == null ? View.GONE : View.VISIBLE);
-        if (path == null) return;
-        int size = t.dp(56); // 小图按显示的大小解码，见 newCover
-        Bitmap ready = Images.cached(path, size);
-        if (ready != null) {
-            cover.setImageBitmap(ready);
-            return;
-        }
-        Images.load(this, path, size, b -> {
-            if (!path.equals(cover.getTag())) return;
-            cover.setImageAlpha(0);
-            cover.setImageBitmap(b);
-            ValueAnimator in = ValueAnimator.ofInt(0, 255);
-            in.setDuration(320);
-            in.setInterpolator(new DecelerateInterpolator(1.5f));
-            in.addUpdateListener(a -> {
-                if (path.equals(cover.getTag())) cover.setImageAlpha((int) a.getAnimatedValue());
-            });
-            in.start();
-        });
-    }
-
-    /**
-     * 这件事这次打开里第一次显示时的数据。有没有封面、卡片的颜色和徽记都按它来：之后服务器取到了封面、换了话题也不跟着变，
-     * 免得正看着的卡片突然长出一张图、换了颜色（下次打开才用新的）。
-     */
-    private JSONObject first(JSONObject e) {
-        return firstSeen.computeIfAbsent(e.optLong("id"), k -> e);
-    }
-
-    /** 追踪中：有了答案的问题（主色容器）和追踪的事件（卡片色）放在一组。 */
-    private View newFollowRow() {
-        Holder h = new Holder();
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(t.dp(20), t.dp(16), t.dp(20), t.dp(16));
-        h.label = newLabel("");
-        LinearLayout.LayoutParams ll = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        ll.bottomMargin = t.dp(8);
-        card.addView(h.label, ll);
-        h.headline = t.text(this, "", 15.5f, t.ink, 800);
-        h.headline.setLineSpacing(t.dp(4), 1f);
-        h.headline.setMaxLines(2);
-        h.headline.setEllipsize(TextUtils.TruncateAt.END);
-        card.addView(h.headline);
-        h.summary = t.text(this, "", 13.5f, t.sub, 400);
-        h.summary.setLineSpacing(t.dp(3), 1f);
-        h.summary.setMaxLines(2);
-        h.summary.setEllipsize(TextUtils.TruncateAt.END);
-        h.summary.setPadding(0, t.dp(4), 0, 0);
-        card.addView(h.summary);
-        h.meta = t.text(this, "", 12.5f, t.sub, 600);
-        h.meta.setTypeface(Theme.flex(this, 90, 600));
-        h.meta.setPadding(0, t.dp(8), 0, 0);
-        card.addView(h.meta);
-        h.follow = true;
-        FrameLayout frame = swipeFrame(h, card);
-        frame.setPadding(t.dp(12), t.dp(1.5f), t.dp(12), t.dp(1.5f));
-        return frame;
-    }
-
-    private void bindFollow(Holder h, JSONObject f, boolean first, boolean last) {
-        h.front.setBackground(t.segment(t.sheet, first, last));
-        h.headline.setTextColor(t.ink);
-        h.summary.setTextColor(t.sub);
-        h.meta.setTextColor(t.sub);
-        h.headline.setText(f.optString("headline"));
-        String update = f.optString("update");
-        show(h.summary, update);
-        int n = f.optInt("update_count");
-        h.meta.setText((n > 0 ? n + " 条进展，" : "") + "最近 " + Theme.ago(Theme.millis(f.optString("updated"))));
-        boolean fresh = n > 0 && seenAtOpen > 0 && Theme.millis(f.optString("updated")) > seenAtOpen;
-        show(h.label, fresh ? "新进展" : "");
-        long id = f.optLong("id");
-        h.id = id;
-        h.front.setOnClickListener(v -> Card.open(this, v, rowAnchor(id, true),
-                new Intent(this, EventActivity.class).putExtra(EventActivity.EXTRA_ID, id)
-                        .putExtra(EventActivity.EXTRA_FROM, "following"), REQ_EVENT));
-    }
-
-    /** 替你留意的问题有了答案：点开回到当时的对话，答案已经写在里面。 */
-    private void bindAnswer(Holder h, JSONObject a, boolean first, boolean last) {
-        h.id = -1;
-        h.front.setBackground(t.segment(t.pc, first, last));
-        h.headline.setTextColor(t.onPc);
-        h.summary.setTextColor(t.onPc);
-        h.meta.setTextColor(t.onPc);
-        show(h.label, "有了答案");
-        h.headline.setText("你问过：" + a.optString("question"));
-        show(h.summary, a.optString("answer"));
-        h.meta.setText(Theme.ago(Theme.millis(a.optString("answered"))));
-        Intent chat = new Intent(this, ChatActivity.class)
-                .putExtra(ChatActivity.EXTRA_THREAD, a.optLong("thread_id"))
-                .putExtra(ChatActivity.EXTRA_EVENT, a.optLong("event_id", -1))
-                .putExtra(ChatActivity.EXTRA_TITLE, a.optString("question"));
-        h.front.setOnClickListener(v -> {
-            Push.open(this, chat);
-        });
-    }
-
-    private void bindTop(Holder h, Row r) {
-        JSONObject e = r.e, look = first(e);
-        boolean cover = look.optBoolean("cover");
-        String topic = Theme.topicOf(look);
-        int[] z = tone(look, cover, topic);
-        paint(h, z);
-        bindFlow(h, e, cover, z, topic.isEmpty() ? Theme.PEARL : topic);
-        h.num.setText(r.label);
-        h.label.setVisibility(isNew(e) ? View.VISIBLE : View.GONE);
-        h.badge.setVisibility(e.optInt("importance") >= 5 ? View.VISIBLE : View.GONE);
-        h.headline.setText(e.optString("headline"));
-        h.summary.setMaxLines(cover ? 2 : 3);
-        show(h.summary, e.optString("summary"));
-        h.meta.setText(meta(clock(Theme.millis(e.optString("time"))) + " · ", e, z[2]));
-        bindCover(h, e);
-    }
-
-    /**
-     * 最值得看的卡片的颜色 {上, 下, 文字色, 点缀色}：有封面的照着封面铺渐变（Theme.cover，颜色随信息流一起来，卡片一出来
-     * 就是这个颜色）；没有封面的用话题的金属配色（Theme.field，浅色模式也是深底白字），没有话题的是珍珠银。
-     */
-    private int[] tone(JSONObject look, boolean cover, String topic) {
-        JSONArray palette = look.optJSONArray("palette");
-        if (cover && palette != null && palette.length() == 2) {
-            return t.cover(Color.parseColor(palette.optString(0)), Color.parseColor(palette.optString(1)));
-        }
-        return t.field(topic.isEmpty() ? Theme.PEARL : topic);
-    }
-
-    /**
-     * 卡片底下流动的雾面金属（Flow）：有封面的是模糊封面，封面已经模糊过或在内存里的直接上，要等的先是卡片色的渐变，
-     * 图下来后过渡过去；没有封面的是 art 这个话题生成的抽象封面。行复用来显示同一件事时不重来，接着流。
-     */
-    private void bindFlow(Holder h, JSONObject e, boolean cover, int[] z, String art) {
-        Flow flow = h.flow;
-        long id = e.optLong("id");
-        String path = "/v1/events/" + id + "/cover", tag = cover ? path : art + "|" + id;
-        if (tag.equals(flow.getTag())) return;
-        flow.setTag(tag);
-        flow.gradient(z[0], z[1], Color.luminance(z[2]) > 0.5f, true, id);
-        if (!cover) {
-            flow.topic(t, art, id);
-            return;
-        }
-        Bitmap blurred = Flow.cachedBlur(path), ready = blurred == null ? Images.cached(path) : null;
-        if (blurred != null || ready != null) {
-            flow.cover(blurred != null ? blurred : Flow.blurred(path, ready), false);
-            return;
-        }
-        Images.load(this, path, b -> {
-            if (path.equals(flow.getTag())) flow.cover(Flow.blurred(path, b), true);
-        });
-    }
-
-    /** 最值得看的卡片上色：编号用点缀色，概要和来源是淡一些的文字色，“要闻”是文字色反白。点按不泛白光，直接展开。 */
-    private void paint(Holder h, int[] z) {
-        h.front.setBackground(t.gradient(z[0], z[1], Theme.R_XL));
-        h.num.setTextColor(z[3]);
-        h.headline.setTextColor(z[2]);
-        h.summary.setTextColor(z[2] & 0xFFFFFF | 0xD0000000);
-        h.meta.setTextColor(z[2] & 0xFFFFFF | 0xB8000000);
-        h.badge.setTextColor(z[0]);
-        h.badge.setBackground(t.round(z[2], Theme.R_XS));
-    }
-
-    private void bindRow(Holder h, JSONObject e) {
-        boolean key = e.optInt("importance") >= 4;
-        h.time.setText(clock(Theme.millis(e.optString("time"))));
-        h.time.setTextColor(isNew(e) ? t.pri : t.sub);
-        h.badge.setVisibility(e.optInt("importance") >= 5 ? View.VISIBLE : View.GONE);
-        h.headline.setText(e.optString("headline"));
-        h.headline.setTextSize(key ? 15.5f : 15);
-        h.headline.setTypeface(Theme.weight(key ? 800 : 500));
-        show(h.summary, e.optInt("importance") >= 3 ? e.optString("summary") : "");
-        h.meta.setText(meta("", e, t.ink));
-        bindCover(h, e);
-    }
-
-    /** “大模型 · IT之家 等 3 家”：话题用 ink（行里是墨色，彩色卡片上是卡片的文字色）写在来源前面；prefix 是前面的时间。 */
-    private CharSequence meta(String prefix, JSONObject e, int ink) {
-        SpannableStringBuilder s = new SpannableStringBuilder(prefix);
-        String topic = Theme.topicOf(e);
-        if (!topic.isEmpty()) s.append(topic, new ForegroundColorSpan(ink), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE).append(" · ");
-        return s.append(sources(e));
-    }
-
-    /** “IT之家 等 3 家”：主要来源和报道的家数。 */
-    private static String sources(JSONObject e) {
-        JSONArray src = e.optJSONArray("sources");
-        String lead = src != null && src.length() > 0 ? src.optString(0) : "";
-        int n = e.optInt("source_count");
-        return n > 1 ? lead + " 等 " + n + " 家" : lead;
-    }
-
-    static String clock(long ms) {
-        return new SimpleDateFormat("HH:mm", Locale.CHINA).format(new Date(ms));
-    }
-
-    /** 信息流按天分组：今天、昨天，更早的写日期和星期。 */
-    static String dayLabel(long ms) {
-        Calendar today = Calendar.getInstance();
-        today.set(Calendar.HOUR_OF_DAY, 0);
-        today.set(Calendar.MINUTE, 0);
-        today.set(Calendar.SECOND, 0);
-        today.set(Calendar.MILLISECOND, 0);
-        long start = today.getTimeInMillis();
-        if (ms >= start) return "今天";
-        if (ms >= start - 86400_000L) return "昨天";
-        return new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
-    }
-
-    /** 每天的标题：今天、昨天后面用小字跟上日期。专题页也用。 */
-    static CharSequence dayTitle(Context c, Theme t, long ms) {
-        String day = dayLabel(ms);
-        if (!day.equals("今天") && !day.equals("昨天")) return day;
-        String date = new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
-        SpannableString s = new SpannableString(day + "  " + date);
-        int from = day.length();
-        s.setSpan(new AbsoluteSizeSpan(13, true), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        s.setSpan(new ForegroundColorSpan(t.sub), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        s.setSpan(new TypefaceSpan(Theme.flex(c, 100, 650)), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        return s;
-    }
-
-    /** 墨色反白的“要闻”：只给重要性 5 的事件。 */
-    private TextView newsBadge() {
-        TextView v = t.text(this, "要闻", 11.5f, t.onInv, 800);
-        v.setPadding(t.dp(8), t.dp(3), t.dp(8), t.dp(3));
-        v.setBackground(t.metal(t.inv, Theme.R_XS));
-        return v;
-    }
-
-    /** “未追踪信息”入口：四叶形 + 文字的胶囊，放在第一天的最后，不挡在第一条内容前面。 */
-    private View skippedEntry() {
-        TextView v = t.text(this, "未追踪信息 ›", 13, t.ink, 600);
-        v.setGravity(Gravity.CENTER_VERTICAL);
-        v.setPadding(t.dp(10), t.dp(9), t.dp(16), t.dp(9));
-        Drawable clover = new Shapes.Blob(Shapes.CLOVER, t.sub);
-        clover.setBounds(0, 0, t.dp(22), t.dp(22));
-        v.setCompoundDrawablesRelative(clover, null, null, null);
-        v.setCompoundDrawablePadding(t.dp(8));
-        v.setBackground(t.frostRipple(t.frost, 99));
-        v.setOnClickListener(x -> showSkipped());
-        FrameLayout frame = new FrameLayout(this);
-        frame.setPadding(t.dp(12), t.dp(10), t.dp(12), t.dp(2));
-        frame.addView(v, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        return frame;
-    }
-
-    /** 主色小标签：“新”“新进展”“有了答案”，一小块钴蓝金属。 */
-    private TextView newLabel(String text) {
-        TextView v = t.text(this, text, 11.5f, t.onPri, 800);
-        v.setPadding(t.dp(9), t.dp(3), t.dp(9), t.dp(3));
-        v.setBackground(t.metal(t.pri, 99));
-        return v;
-    }
-
-    private LinearLayout.LayoutParams gapLp(int rightDp) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = t.dp(rightDp);
-        return lp;
-    }
-
-    private static void show(TextView v, String s) {
-        v.setText(s);
-        v.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
-    }
-
-    // ---------- 打开与移除 ----------
-
-    /**
-     * 这张卡片原地展开成详情页：带上列表里的数据，详情页一开始就有内容。最值得看的彩色卡片还带上它的颜色和有没有封面，
-     * 详情页的头部接着用，展开、收回时颜色和封面一直在，不会中途变成一片白。
-     */
-    private void open(View card, JSONObject e, boolean top) {
-        Intent i = new Intent(this, EventActivity.class)
-                .putExtra(EventActivity.EXTRA_ID, e.optLong("id"))
-                .putExtra(EventActivity.EXTRA_JSON, e.toString())
-                .putExtra(EventActivity.EXTRA_FROM, "feed");
-        if (top) {
-            JSONObject look = first(e);
-            boolean cover = look.optBoolean("cover");
-            String topic = Theme.topicOf(look);
-            i.putExtra(EventActivity.EXTRA_TONE, tone(look, cover, topic))
-                    .putExtra(EventActivity.EXTRA_COVER, cover)
-                    .putExtra(EventActivity.EXTRA_ART, topic.isEmpty() ? Theme.PEARL : topic);
-        }
-        Card.open(this, card, rowAnchor(e.optLong("id"), false), i, REQ_EVENT);
     }
 
     // ---------- 记忆的提问 ----------
@@ -1545,602 +817,63 @@ public class MainActivity extends Activity {
         Trace.log(this, "ui.ask.answer", "id=" + id + " " + answer);
     }
 
-    /** 右滑或在详情页点了“不需要”：这一行平滑收起、下面的跟上来，收完再真正移走。 */
-    private void dismissRow(long id) {
-        View card = id < 0 ? null : rowAnchor(id, false).find();
-        View row = card == null ? null : (View) card.getParent();
-        if (row == null || !row.isShown()) {
-            dismiss(id);
-            return;
-        }
-        collapsing.add(id);
-        SwipeDismiss.collapse(row, () -> {
-            collapsing.remove(id);
-            dismiss(id);
-        });
-    }
+    // ---------- 移走与撤销 ----------
 
-    /**
-     * 右滑追踪中的一行：追踪的事件取消追踪，有了答案的问题不再显示（服务器上记成不用再留意）。
-     * 这一行平滑收起，收完从列表里拿掉；没有撤销，取消追踪的可以在详情页重新追踪。
-     */
-    private void leaveFollow(View row, Row r) {
-        boolean answer = ANSWER.equals(r.label);
-        long id = r.e.optLong("id");
-        String key = rowKey(r);
-        leaving.add(key);
-        SwipeDismiss.collapse(row, () -> {
-            leaving.remove(key);
-            JSONArray rows = feed == null ? null : feed.optJSONArray(answer ? "answers" : "following");
-            for (int i = 0; rows != null && i < rows.length(); i++) {
-                if (rows.optJSONObject(i).optLong("id") == id) {
-                    rows.remove(i);
-                    break;
-                }
-            }
-            render();
-        });
-        Trace.log(this, answer ? "ui.answer.drop" : "ui.unfollow", "id=" + id);
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            try {
-                if (answer) Api.post(app, "/v1/questions/" + id, new JSONObject().put("drop", true));
-                else Api.post(app, "/v1/events/" + id + "/follow", new JSONObject().put("on", false));
-            } catch (Exception err) {
-                Trace.log(app, "follow.leave.fail", "id=" + id + " " + err);
-            }
-        }, "follow").start();
-    }
-
+    /** 从列表里移走，底部升起撤销条（见 Undo），倒数走完才提交给服务器。 */
     private void dismiss(long id) {
         if (id < 0) return;
-        JSONObject e = findEvent(id); // 先取，render() 之后列表里就没有它了
-        commitDismiss(null); // 上一条还在撤销期内的，先提交
-        pendingDismiss = id;
-        hidden.add(pendingDismiss);
+        JSONObject e = feedList.findEvent(id); // 先取，render() 之后列表里就没有它了
+        undo.commit(); // 上一条还在撤销期内的，先提交
+        hidden.add(id);
         render();
-        Trace.log(this, "ui.dismiss", "id=" + pendingDismiss);
-        main.removeCallbacks(hideUndoLater);
-        resetUndo(e == null ? "" : e.optString("source"));
-        loadTopics(pendingDismiss);
-        // 撤销条从底下用弹簧升起，波浪线开始倒数，走完就提交
-        undoBar.animate().cancel();
-        undoBar.setTranslationY(t.dp(160));
-        undoBar.setAlpha(1f);
-        undoBar.setVisibility(View.VISIBLE);
-        undoBar.animate().translationY(0).setInterpolator(Spring.STD).setDuration(Spring.STD.duration).start();
-        undoCountdown.countdown(UNDO_MS);
-        main.removeCallbacks(commitDismiss);
-        main.postDelayed(commitDismiss, UNDO_MS);
+        undo.show(id, e == null ? "" : e.optString("source"));
     }
 
-    private void undoDismiss() {
-        main.removeCallbacks(commitDismiss);
-        if (pendingDismiss >= 0) hidden.remove(pendingDismiss);
-        expanding = pendingDismiss;
-        pendingDismiss = -1;
-        hideUndo();
+    /** 撤销条上点了撤销：这一行放回来，从无到有展开。 */
+    private void undone(long id) {
+        if (id >= 0) hidden.remove(id);
+        feedList.expand(id);
         render();
-        list.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-            @Override
-            public void onGlobalLayout() { // 这一轮排版没轮到它（不在屏幕上）就不展开了，免得以后滚到时才突然动
-                list.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                expanding = -1;
-            }
-        });
-    }
-
-    private JSONObject findEvent(long id) {
-        for (Row r : rows) {
-            if (r.e != null && r.e.optLong("id") == id) return r.e;
-        }
-        return null;
-    }
-
-    /** source 是这件事的主要来源名，“不想看这个来源”按钮直接写出来，免得不知道屏蔽的是谁。 */
-    private void resetUndo(String source) {
-        undoLabel.setText("已移走，为什么不需要？");
-        undoButton.setVisibility(View.VISIBLE);
-        undoCountdown.setVisibility(View.VISIBLE);
-        answeredFor = -1;
-        for (int i = 0; i < REASONS.length; i++) {
-            reasonChips.get(i).setText("source".equals(REASONS[i][0]) && !source.isEmpty()
-                    ? "不想看「" + source + "」" : REASONS[i][1]);
-        }
-        styleChips(reasonChips);
-        topicChips.clear();
-        topicRow.removeAllViews();
-        topicRow.addView(t.text(this, "不想看这类  正在想…", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600));
-        topicScroll.setVisibility(View.VISIBLE);
-    }
-
-    /** 一行原因按钮排成分段胶囊：头尾大圆角，中间小圆角。 */
-    private void styleChips(List<TextView> row) {
-        for (int i = 0; i < row.size(); i++) {
-            TextView chip = row.get(i);
-            float l = i == 0 ? 99 : Theme.R_XS, r = i == row.size() - 1 ? 99 : Theme.R_XS;
-            chip.setEnabled(true);
-            chip.setAlpha(1f);
-            chip.setTextColor(t.onInv);
-            chip.setBackground(t.ripple((t.onInv & 0x00FFFFFF) | 0x1F000000, l, r, r, l));
-        }
-    }
-
-    /** 取这件事可能不想看的几类内容，放在撤销条上面一行；取不到就只留固定原因。 */
-    private void loadTopics(long id) {
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            JSONArray options = null;
-            try {
-                options = Api.get(app, "/v1/events/" + id + "/reasons").optJSONArray("options");
-            } catch (Exception err) {
-                Trace.log(app, "reasons.fail", "id=" + id + " " + err);
-            }
-            JSONArray got = options;
-            runOnUiThread(() -> {
-                if (isDestroyed() || pendingDismiss != id || answeredFor >= 0) return; // 已经选了或者换了一条
-                topicRow.removeAllViews();
-                topicChips.clear();
-                if (got == null || got.length() == 0) {
-                    topicScroll.setVisibility(View.GONE);
-                    return;
-                }
-                TextView label = t.text(this, "不想看这类", 13, (t.onInv & 0x00FFFFFF) | 0x99000000, 600);
-                label.setPadding(0, 0, t.dp(8), 0);
-                topicRow.addView(label);
-                for (int i = 0; i < got.length(); i++) {
-                    JSONObject option = got.optJSONObject(i);
-                    TextView chip = t.text(this, option.optString("text"), 13, t.onInv, 700);
-                    chip.setPadding(t.dp(12), t.dp(8), t.dp(12), t.dp(8));
-                    chip.setOnClickListener(v -> pickTopic(chip, option));
-                    topicRow.addView(chip, gapLp(3));
-                    topicChips.add(chip);
-                }
-                styleChips(topicChips);
-            });
-        }, "reasons").start();
-    }
-
-    /** 选了固定原因就立即提交，撤销条留一下显示回应再收起。 */
-    private void pickReason(TextView picked, String[] reason) {
-        if (pendingDismiss < 0) return;
-        boolean remembers = "source".equals(reason[0]); // 已经知道了、其他：不当场记
-        picked(picked, reason[2], reason[0], remembers);
-        commitDismiss(reason[0], null);
-    }
-
-    /** 选了“不想看这类”的某一类：原样记下这一类。 */
-    private void pickTopic(TextView picked, JSONObject option) {
-        if (pendingDismiss < 0) return;
-        picked(picked, "正在记下…", "topic " + option.optString("text"), true);
-        commitDismiss("topic", option);
-    }
-
-    private void picked(TextView picked, String response, String trace, boolean remembers) {
-        List<TextView> all = new ArrayList<>(reasonChips);
-        all.addAll(topicChips);
-        for (TextView chip : all) {
-            chip.setEnabled(false);
-            if (chip != picked) chip.setAlpha(0.35f);
-        }
-        picked.setTextColor(t.inv);
-        picked.setBackground(t.round(t.onInv, 99));
-        picked.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK);
-        undoLabel.setText(response);
-        undoButton.setVisibility(View.INVISIBLE);
-        undoCountdown.stop();
-        undoCountdown.setVisibility(View.GONE);
-        Trace.log(this, "ui.dismiss.reason", "id=" + pendingDismiss + " " + trace);
-        answeredFor = remembers ? pendingDismiss : -1;
-        main.postDelayed(hideUndoLater, remembers ? 6000 : 1800); // 等不到服务器回应也会收起
-    }
-
-    /** 服务器按原因记下了记忆：在撤销条上说出记住了什么，和对话里的“记住了”一致。 */
-    private void showRemembered(long id, JSONObject response) {
-        if (isDestroyed() || id != answeredFor || undoBar.getVisibility() != View.VISIBLE) return;
-        JSONObject memory = response == null ? null : response.optJSONObject("memory");
-        JSONArray added = memory == null ? null : memory.optJSONArray("added");
-        undoLabel.setText(added != null && added.length() > 0
-                ? "记住了：" + added.optJSONObject(0).optString("text") : "已记下");
-        main.removeCallbacks(hideUndoLater);
-        main.postDelayed(hideUndoLater, 2400);
-    }
-
-    private void commitDismiss(String reason) {
-        commitDismiss(reason, null);
-    }
-
-    /**
-     * 把撤销期内的“不需要”提交给服务器；reason 为空表示没选原因（超时或离开页面），此时直接收起撤销条。
-     * topic 是选中的那一类 {text, keywords}，原样传回服务器记下。
-     */
-    private void commitDismiss(String reason, JSONObject topic) {
-        main.removeCallbacks(commitDismiss);
-        long id = pendingDismiss;
-        if (id < 0) return;
-        pendingDismiss = -1;
-        if (reason == null) hideUndo();
-        Context app = getApplicationContext();
-        new Thread(() -> {
-            try {
-                JSONObject r = Api.post(app, "/v1/events/" + id + "/feedback",
-                        new JSONObject().put("value", "not_needed").putOpt("reason", reason).putOpt("topic", topic));
-                if (reason != null) runOnUiThread(() -> showRemembered(id, r));
-            } catch (Exception err) {
-                Trace.log(app, "feedback.fail", "id=" + id + " " + err);
-            }
-        }, "feedback").start();
-    }
-
-    private void hideUndo() {
-        if (undoBar.getVisibility() != View.VISIBLE) return;
-        undoCountdown.stop();
-        undoBar.animate().translationY(t.dp(24)).alpha(0f).setInterpolator(Spring.FX).setDuration(Spring.FX.duration)
-                .withEndAction(() -> undoBar.setVisibility(View.GONE)).start();
-    }
-
-    // ---------- 菜单 ----------
-
-    private void showMenu() {
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(t.dp(12), 0, t.dp(12), 0);
-        Dialog d = t.sheet(this, sheet);
-        Drawable memory = new Shapes.Blob(Shapes.SOFT, t.onPc);
-        Drawable battery = getDrawable(R.drawable.ic_battery);
-        battery.setTint(t.onPc);
-        sheet.addView(menuRow(memory, "记忆", "Catchup 记得的关于你的事", () -> {
-            d.dismiss();
-            Push.open(this, new Intent(this, MemoryActivity.class));
-        }));
-        sheet.addView(menuRow("+", "添加链接", "从剪贴板", () -> {
-            d.dismiss();
-            addLinkFromClipboard();
-        }));
-        sheet.addView(menuRow("↺", "不需要的内容", "可以恢复", () -> {
-            d.dismiss();
-            showDismissed();
-        }));
-        sheet.addView(menuRow("↓", "检查更新", "当前 " + Updater.currentVersion(this), () -> {
-            d.dismiss();
-            checkUpdate(true);
-        }));
-        sheet.addView(menuRow("i", "诊断信息", "", () -> {
-            d.dismiss();
-            showDiagnostics();
-        }));
-        sheet.addView(menuRow(battery, "后台运行设置", "", () -> {
-            d.dismiss();
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        }));
-        t.segments(sheet);
-        d.show();
-    }
-
-    /** 标记过不需要的事件，点“恢复”后重新出现在首页。 */
-    private void showDismissed() {
-        new Thread(() -> {
-            JSONArray list = null;
-            try {
-                list = Api.get(this, "/v1/dismissed").optJSONArray("events");
-            } catch (Exception e) {
-                Trace.log(this, "dismissed.fail", e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-            JSONArray got = list;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (got == null) {
-                    toast("没有连上服务器，稍后再试");
-                    return;
-                }
-                LinearLayout items = new LinearLayout(this);
-                items.setOrientation(LinearLayout.VERTICAL);
-                for (int i = 0; i < got.length(); i++) items.addView(dismissedRow(got.optJSONObject(i)));
-                t.segments(items);
-                listSheet("不需要的内容", got.length() == 0 ? "最近 30 天没有标记为不需要的内容"
-                        : "恢复后会重新出现在首页", items).show();
-            });
-        }, "dismissed").start();
-    }
-
-    /** 底部面板：标题、说明和一个长列表，列表最高占屏幕 3/5，其余滚动。 */
-    private Dialog listSheet(String heading, String note, View items) {
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        TextView title = t.text(this, heading, 22, t.ink, 800);
-        title.setPadding(t.dp(24), t.dp(6), t.dp(24), t.dp(4));
-        content.addView(title);
-        TextView sub = t.text(this, note, 13, t.sub, 400);
-        sub.setLineSpacing(t.dp(4), 1f);
-        sub.setPadding(t.dp(24), t.dp(4), t.dp(24), t.dp(14));
-        content.addView(sub);
-        int maxHeight = getResources().getDisplayMetrics().heightPixels * 3 / 5;
-        ScrollView scroll = new ScrollView(this) {
-            @Override
-            protected void onMeasure(int w, int h) {
-                super.onMeasure(w, MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST));
-            }
-        };
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.setPadding(t.dp(12), 0, t.dp(12), 0);
-        scroll.addView(items);
-        content.addView(scroll);
-        return t.sheet(this, content);
-    }
-
-    /** 未追踪信息：热度高但和你无关的事。点开看详情；点“想看这类”当场记成一条长期关注，以后同类的会排到前面。 */
-    private void showSkipped() {
-        JSONArray list = feed == null ? null : feed.optJSONArray("skipped");
-        if (list == null || list.length() == 0) return;
-        LinearLayout items = new LinearLayout(this);
-        items.setOrientation(LinearLayout.VERTICAL);
-        for (int i = 0; i < list.length(); i++) items.addView(skippedRow(list.optJSONObject(i)));
-        t.segments(items);
-        listSheet("未追踪信息", "这些不会推送。觉得该看的，点“想看这类”。", items).show();
-        Trace.log(this, "ui.skipped", "n=" + list.length());
-    }
-
-    private View skippedRow(JSONObject s) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, s.optString("headline"), 14.5f, t.ink, 600);
-        headline.setLineSpacing(t.dp(3), 1f);
-        headline.setMaxLines(2);
-        headline.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(headline);
-        TextView meta = t.text(this, s.optInt("outlets") + " 家媒体报道 · " + s.optString("why"), 12, t.sub, 400);
-        meta.setPadding(0, t.dp(4), 0, 0);
-        text.addView(meta);
-        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView want = t.pill(this, "想看这类", false);
-        want.setTextSize(13);
-        want.setTypeface(Theme.weight(800));
-        want.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
-        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        wl.leftMargin = t.dp(12);
-        row.addView(want, wl);
-        long id = s.optLong("id");
-        row.setOnClickListener(v -> Card.open(this, v, new Intent(this, EventActivity.class)
-                .putExtra(EventActivity.EXTRA_ID, id).putExtra(EventActivity.EXTRA_FROM, "skipped"), REQ_EVENT));
-        want.setOnClickListener(v -> {
-            want.setEnabled(false);
-            want.setText("记下中…");
-            Context app = getApplicationContext();
-            new Thread(() -> {
-                JSONObject r = null;
-                try {
-                    r = Api.post(app, "/v1/events/" + id + "/feedback",
-                            new JSONObject().put("value", "useful").put("reason", "topic"));
-                } catch (Exception err) {
-                    Trace.log(app, "feedback.fail", "id=" + id + " want " + err);
-                }
-                JSONObject got = r;
-                runOnUiThread(() -> {
-                    if (isDestroyed()) return;
-                    if (got == null) {
-                        want.setEnabled(true);
-                        want.setText("想看这类");
-                        toast("没有记下，请重试");
-                        return;
-                    }
-                    done(want, "✓ 已记下");
-                    JSONObject memory = got.optJSONObject("memory");
-                    JSONArray added = memory == null ? null : memory.optJSONArray("added");
-                    if (added != null && added.length() > 0) {
-                        meta.setText("记住了：" + added.optJSONObject(0).optString("text"));
-                        meta.setTextColor(t.ink);
-                    }
-                    lastFetch = 0;
-                    load(); // 记忆变了，首页按新记忆重新排
-                });
-            }, "want").start();
-            Trace.log(this, "ui.want", "id=" + id);
-        });
-        return row;
-    }
-
-    /** 微信等不支持系统分享的 App：复制链接后从菜单添加。 */
-    private void addLinkFromClipboard() {
-        android.content.ClipData clip = getSystemService(android.content.ClipboardManager.class).getPrimaryClip();
-        CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
-        if (text == null || !text.toString().contains("http")) {
-            toast("先在别的 App 里复制一条链接");
-            return;
-        }
-        Push.open(this, new Intent(this, ShareActivity.class).putExtra(Intent.EXTRA_TEXT, text.toString()));
-    }
-
-    private View dismissedRow(JSONObject e) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(14), t.dp(16), t.dp(14));
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        TextView headline = t.text(this, e.optString("headline"), 14.5f, t.ink, 600);
-        headline.setLineSpacing(t.dp(3), 1f);
-        headline.setMaxLines(2);
-        headline.setEllipsize(TextUtils.TruncateAt.END);
-        text.addView(headline);
-        String reason = e.optString("reason");
-        TextView when = t.text(this, "标记于 " + Theme.ago(Theme.millis(e.optString("at")))
-                + (reason.isEmpty() ? "" : " · " + reason), 12, t.sub, 400);
-        when.setPadding(0, t.dp(4), 0, 0);
-        text.addView(when);
-        row.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView restore = t.pill(this, "恢复", false);
-        restore.setTextSize(13);
-        restore.setTypeface(Theme.weight(800));
-        restore.setPadding(t.dp(13), t.dp(8), t.dp(13), t.dp(8));
-        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        rl.leftMargin = t.dp(12);
-        row.addView(restore, rl);
-        long id = e.optLong("id");
-        restore.setOnClickListener(v -> {
-            restore.setEnabled(false);
-            restore.setText("恢复中");
-            Context app = getApplicationContext();
-            new Thread(() -> {
-                boolean ok = true;
-                try {
-                    Api.post(app, "/v1/events/" + id + "/feedback", new JSONObject().put("value", JSONObject.NULL));
-                } catch (Exception err) {
-                    ok = false;
-                    Trace.log(app, "feedback.fail", "id=" + id + " restore " + err);
-                }
-                boolean done = ok;
-                runOnUiThread(() -> {
-                    if (isDestroyed()) return;
-                    if (!done) {
-                        restore.setEnabled(true);
-                        restore.setText("恢复");
-                        toast("恢复失败，请重试");
-                        return;
-                    }
-                    done(restore, "✓ 已恢复");
-                    hidden.remove(id);
-                    lastFetch = 0;
-                    load();
-                });
-            }, "restore").start();
-            Trace.log(this, "ui.restore", "id=" + id);
-        });
-        return row;
-    }
-
-    /** 菜单的一行：主色容器的小方块里放图标（一个字符或一个图形），右边是名称和说明。 */
-    private View menuRow(Object icon, String label, String detail, Runnable action) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(t.dp(16), t.dp(12), t.dp(16), t.dp(12));
-        TextView ic = t.text(this, icon instanceof String ? (String) icon : "", 18, t.onPc, 800);
-        ic.setGravity(Gravity.CENTER);
-        ic.setBackground(t.round(t.pc, 14));
-        if (icon instanceof Drawable) {
-            Drawable d = (Drawable) icon;
-            d.setBounds(0, 0, t.dp(20), t.dp(20));
-            ic.setCompoundDrawablesRelative(d, null, null, null);
-            ic.setPadding(t.dp(10), 0, 0, 0);
-        }
-        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(t.dp(40), t.dp(40));
-        il.rightMargin = t.dp(14);
-        row.addView(ic, il);
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.addView(t.text(this, label, 15, t.ink, 700));
-        if (!detail.isEmpty()) {
-            TextView d = t.text(this, detail, 12.5f, t.sub, 400);
-            d.setPadding(0, t.dp(2), 0, 0);
-            col.addView(d);
-        }
-        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.setOnClickListener(v -> action.run());
-        return row;
-    }
-
-    /** 操作完成的按钮：从胶囊变成方一点的墨色块。 */
-    private void done(TextView button, String label) {
-        button.setText(label);
-        button.setTextColor(t.bg);
-        button.setBackground(t.round(t.ink, Theme.R_S));
-    }
-
-    /** 显示本机最近的埋点日志，可复制；不依赖网络。 */
-    private void showDiagnostics() {
-        String text = "v" + Updater.currentVersion(this) + " Android " + Build.VERSION.RELEASE + " " + Build.MODEL
-                + "\n设备 " + Trace.device(this) + "  网络 " + Trace.network(this)
-                + "\n状态 " + FeedService.status + "\n\n" + Trace.tail(this, 6000);
-        TextView body = t.text(this, text, 11, t.ink, 400);
-        body.setTypeface(Typeface.MONOSPACE);
-        body.setTextIsSelectable(true);
-        body.setPadding(t.dp(20), t.dp(12), t.dp(20), t.dp(12));
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(body);
-        new AlertDialog.Builder(this)
-                .setTitle("诊断信息")
-                .setView(scroll)
-                .setPositiveButton("复制", (dlg, w) -> {
-                    getSystemService(android.content.ClipboardManager.class)
-                            .setPrimaryClip(android.content.ClipData.newPlainText("Catchup 诊断信息", text));
-                    toast("已复制");
-                })
-                .setNegativeButton("关闭", null)
-                .show();
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
-    }
-
-    // ---------- 应用内更新 ----------
-
-    /**
-     * 后台检查新版本，打开 App 和下拉刷新时自动查；manual 为 true 时把“已是最新”或失败原因也提示出来。
-     * 已经找到新版本就不再自动查，免得下载、安装确认时回到首页又把提示条重置成“已就绪”。
-     */
-    private void checkUpdate(boolean manual) {
-        if (!manual && release != null) return;
-        new Thread(() -> {
-            String msg;
-            Updater.Release r = null;
-            try {
-                r = Updater.check(this);
-                msg = r == null ? "已是最新版本" : null;
-            } catch (Exception e) {
-                msg = "检查更新失败：" + e.getMessage();
-            }
-            Updater.Release found = r;
-            String toastText = msg;
-            runOnUiThread(() -> {
-                if (isDestroyed()) return;
-                if (found != null) {
-                    release = found;
-                    showUpdate("新版本 " + found.version + " 已就绪", true);
-                } else if (manual) {
-                    toast(toastText);
-                }
-            });
-        }, "update-check").start();
-    }
-
-    private void installUpdate() {
-        Updater.Release r = release;
-        if (r == null || updateAction.getVisibility() != View.VISIBLE) return;
-        showUpdate("正在下载 " + r.version + "…", false);
-        new Thread(() -> {
-            try {
-                Updater.install(this, r);
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    toast("下载更新失败：" + e.getMessage());
-                    showUpdate("新版本 " + r.version + " 下载失败", true);
-                });
-            }
-        }, "update-install").start();
-    }
-
-    private void showUpdate(String s, boolean actionable) {
-        updateText.setText(s);
-        updateAction.setText(actionable && s.contains("失败") ? "重试" : "更新");
-        updateAction.setVisibility(actionable ? View.VISIBLE : View.GONE);
-        updateNotice.setVisibility(View.VISIBLE);
-    }
-
-    /** PackageInstaller 的回调：需要用户确认时弹出系统安装界面，失败时提示原因。 */
-    private void onInstallResult(Intent intent) {
-        if (intent == null || !Updater.ACTION_INSTALLED.equals(intent.getAction())) return;
-        int code = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
-        if (code == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
-            if (confirm != null) startActivity(confirm);
-        } else if (code != PackageInstaller.STATUS_SUCCESS) {
-            toast("安装失败：" + intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
-            if (release != null) showUpdate("新版本 " + release.version + " 安装失败", true);
-        }
     }
 
     // ---------- 小工具 ----------
+
+    static String clock(long ms) {
+        return new SimpleDateFormat("HH:mm", Locale.CHINA).format(new Date(ms));
+    }
+
+    /** 信息流按天分组：今天、昨天，更早的写日期和星期。 */
+    static String dayLabel(long ms) {
+        Calendar today = Calendar.getInstance();
+        today.set(Calendar.HOUR_OF_DAY, 0);
+        today.set(Calendar.MINUTE, 0);
+        today.set(Calendar.SECOND, 0);
+        today.set(Calendar.MILLISECOND, 0);
+        long start = today.getTimeInMillis();
+        if (ms >= start) return "今天";
+        if (ms >= start - 86400_000L) return "昨天";
+        return new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
+    }
+
+    /** 每天的标题：今天、昨天后面用小字跟上日期。专题页也用。 */
+    static CharSequence dayTitle(Context c, Theme t, long ms) {
+        String day = dayLabel(ms);
+        if (!day.equals("今天") && !day.equals("昨天")) return day;
+        String date = new SimpleDateFormat("M月d日 EEE", Locale.CHINA).format(new Date(ms));
+        SpannableString s = new SpannableString(day + "  " + date);
+        int from = day.length();
+        s.setSpan(new AbsoluteSizeSpan(13, true), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new ForegroundColorSpan(t.sub), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new TypefaceSpan(Theme.flex(c, 100, 650)), from, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return s;
+    }
+
+    private LinearLayout.LayoutParams gapLp(int rightDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = t.dp(rightDp);
+        return lp;
+    }
 
     static String reason(Exception e) {
         if (e instanceof java.net.UnknownHostException) return "无法解析服务器地址";
