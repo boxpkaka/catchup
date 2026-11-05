@@ -144,7 +144,7 @@ final class Elastic extends ScrollView {
     private void settle(float v) {
         if (motion != null) motion.cancel();
         if (offset == 0) return;
-        motion = Spring.PAGE.fling(offset, 0, v, this::setOffset, null);
+        motion = Motion.now().page.fling(offset, 0, v, this::setOffset, null);
     }
 
     private void setOffset(float v) {

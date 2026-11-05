@@ -86,7 +86,7 @@ public class TopicActivity extends Activity implements Card.Hero {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        t = new Theme(this);
+        t = Theme.of(this);
         t.applyWindow(this);
         key = getIntent().getStringExtra(EXTRA_KEY);
         if (key == null) key = "";

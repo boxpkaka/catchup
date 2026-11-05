@@ -47,7 +47,7 @@ public class MemoryActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        t = new Theme(this);
+        t = Theme.of(this);
         t.applyWindow(this);
         kinds.put("task", "正在做");
         kinds.put("interest", "长期关注");

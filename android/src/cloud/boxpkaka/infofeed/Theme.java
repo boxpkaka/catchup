@@ -57,7 +57,7 @@ import java.util.Map;
  * 层次靠字重而不是颜色：900 大标题、800 卡片标题、700 列表、400 正文。数字、时间和字标用 Roboto Flex，
  * 加宽的放大数字，收窄的放来源和时间。
  */
-final class Theme {
+class Theme {
     /** 圆角档位（dp）：分段列表内侧、按下、选中、问一问、分段列表外侧、卡片和面板。 */
     static final float R_XS = 8, R_S = 12, R_M = 16, R_L = 22, R_XL = 28, R_2XL = 32;
 
@@ -73,6 +73,11 @@ final class Theme {
     final int frost, frostButton;
     private final float density;
     private final Finish frostFinish, metalFinish, markFinish;
+
+    /** 当前风格的材质和配色（见 Style）。页面都从这里取，不直接 new。 */
+    static Theme of(Context c) {
+        return Style.current().theme(c);
+    }
 
     Theme(Context c) {
         night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
@@ -541,9 +546,7 @@ final class Theme {
     /** metal 为 true 时是以 color 为中间色的静止金属（问一问，见 ask）。 */
     void press(View v, int color, float radiusDp, boolean metal) {
         Spring.Shape shape = new Spring.Shape(color, dp(radiusDp), dp(R_S));
-        if (color == frostButton || color == frost) shape.finish(frostFinish);
-        shape.sheenFinish(metalFinish); // 金属的倒角，平涂或磨砂的按钮变成金属时（发送）一起显出来
-        if (metal) shape.metal(color);
+        finish(shape, color, metal);
         v.setBackground(new RippleDrawable(ColorStateList.valueOf(night ? 0x22FFFFFF : 0x14000000), shape, null));
         StateListAnimator scale = new StateListAnimator();
         scale.addState(new int[]{android.R.attr.state_pressed}, scaleTo(v, 0.95f));
@@ -551,11 +554,18 @@ final class Theme {
         v.setStateListAnimator(scale);
     }
 
+    /** 按钮底的质感：磨砂色的带磨砂倒角，metal 为 true 时涂成金属；平涂或磨砂的按钮变成金属时（发送），金属的倒角一起显出来。 */
+    void finish(Spring.Shape shape, int color, boolean metal) {
+        if (color == frostButton || color == frost) shape.finish(frostFinish);
+        shape.sheenFinish(metalFinish);
+        if (metal) shape.metal(color);
+    }
+
     private static ObjectAnimator scaleTo(View v, float s) {
         ObjectAnimator a = ObjectAnimator.ofPropertyValuesHolder(v,
                 PropertyValuesHolder.ofFloat(View.SCALE_X, s), PropertyValuesHolder.ofFloat(View.SCALE_Y, s));
-        a.setDuration(Spring.FAST.duration);
-        a.setInterpolator(Spring.FAST);
+        a.setDuration(Motion.now().fast.duration);
+        a.setInterpolator(Motion.now().fast);
         return a;
     }
 

@@ -295,7 +295,7 @@ final class Sheets {
     private void showDiagnostics() {
         String text = "v" + Updater.currentVersion(a) + " Android " + Build.VERSION.RELEASE + " " + Build.MODEL
                 + "\n设备 " + Trace.device(a) + "  网络 " + Trace.network(a)
-                + "\n状态 " + FeedService.status + "\n\n" + Trace.tail(a, 6000);
+                + "\n状态 " + FeedService.status + "  风格 " + Style.current().name + "\n\n" + Trace.tail(a, 6000);
         TextView body = t.text(a, text, 11, t.ink, 400);
         body.setTypeface(Typeface.MONOSPACE);
         body.setTextIsSelectable(true);
@@ -311,6 +311,10 @@ final class Sheets {
                     toast("已复制");
                 })
                 .setNegativeButton("关闭", null)
+                .setNeutralButton("换成" + Style.next().name, (dlg, w) -> { // 验证风格接口用，见 Style
+                    Style.use(a, Style.next());
+                    a.recreate();
+                })
                 .show();
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }

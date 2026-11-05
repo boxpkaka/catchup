@@ -143,7 +143,7 @@ final class PullLayout extends FrameLayout {
 
     private void animateTo(float target, float velocity) {
         if (motion != null) motion.cancel();
-        motion = Spring.PAGE.fling(offset, target, velocity, v -> setOffset(Math.max(0, v)), null);
+        motion = Motion.now().page.fling(offset, target, velocity, v -> setOffset(Math.max(0, v)), null);
     }
 
     /** iOS 的橡皮筋：手指拉了 x，列表只下来这么多，越远越拉不动，最多接近整个高度。 */

@@ -68,7 +68,7 @@ public class MainActivity extends Activity {
     private Theme t;
 
     private FrameLayout root;
-    private Flow mist, reportMist; // 整页的雾：珍珠银；翻到报告时渐渐换成钴蓝
+    private View mist, reportMist; // 整页的背景：珍珠银；翻到报告时渐渐换成钴蓝
     private LinearLayout topBar;
     private View topDivider;
     private ListView list;
@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        t = new Theme(this);
+        t = Theme.of(this);
         t.applyWindow(this);
         setContentView(build());
         new Thread(() -> Images.clearOld(this)).start(); // 换成高清以前缓存的低清图
@@ -200,11 +200,9 @@ public class MainActivity extends Activity {
         sheets = new Sheets(this, t, panels);
         root = new FrameLayout(this);
         root.setBackgroundColor(t.bg);
-        mist = new Flow(this);
-        mist.mist(t, Theme.PEARL, 7);
+        mist = Style.current().mist(this, t, Theme.PEARL, 7);
         root.addView(mist, match());
-        reportMist = new Flow(this);
-        reportMist.mist(t, Theme.PRI, 1103);
+        reportMist = Style.current().mist(this, t, Theme.PRI, 1103);
         reportMist.setAlpha(0f);
         reportMist.setVisibility(View.INVISIBLE);
         root.addView(reportMist, match());

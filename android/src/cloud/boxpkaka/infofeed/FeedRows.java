@@ -28,11 +28,12 @@ import java.util.Map;
  * 信息流里每一种行长什么样：每天的标题和小标题；“最值得看”一件一张雾面金属的彩色大卡片、带编号（见 newTop）；其余按时间排成
  * 一条线，不上色：重要性 4 以上加粗，3 以上带一行概要，其他只有标题，服务器已经取到封面的右边带小图，话题写在来源前面；
  * 追踪中的一组（追踪的事件、有了答案的问题）；“未追踪信息”入口。行里的颜色只表示状态：钴蓝是新的，墨色反白的“要闻”是最重要的。
- * 这里只管建和绑：哪一行放什么、点按、右滑、收起和展开由 FeedList 接上。
+ * 这里只管建和绑：哪一行放什么、点按、右滑、收起和展开由 FeedList 接上。这是雾面金属的样子，别的风格覆盖其中几种行
+ * （见 Style.feedRows）。
  */
-final class FeedRows {
-    private final Activity a;
-    private final Theme t;
+class FeedRows {
+    final Activity a;
+    final Theme t;
     private final Map<Long, JSONObject> firstSeen = new HashMap<>(); // 见 first
 
     FeedRows(Activity a, Theme t) {
@@ -71,7 +72,7 @@ final class FeedRows {
     }
 
     /** 可以右滑的一项：后面垫着警示色的“✕ 不需要”（追踪中的行绑定时换成“取消追踪”“不用了”），从左边露出来。 */
-    private FrameLayout swipeFrame(Holder h, View front) {
+    FrameLayout swipeFrame(Holder h, View front) {
         FrameLayout frame = new FrameLayout(a) {
             /** 右滑归这一行（移除），首页不拿它拉橡皮筋。 */
             @Override
@@ -199,7 +200,7 @@ final class FeedRows {
     }
 
     /** 行右边的封面小图：圆角方图，图还没下来时是浅底。 */
-    private ImageView newCover(LinearLayout row, int sizeDp) {
+    ImageView newCover(LinearLayout row, int sizeDp) {
         ImageView cover = new RoundImage(a, t.dp(Theme.R_S)); // 圆角画在图上，卡片收回时的截图里也是圆角
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         cover.setBackground(t.round(t.chip, Theme.R_S));
@@ -215,7 +216,7 @@ final class FeedRows {
      * 有没有图按这件事这次第一次显示时的数据（见 first）。内存里已经有的直接放，要等的下来后淡入；
      * 行会复用，图回来时还是这件事才放上去；已经是这张图（可能正在淡入）的不打断。
      */
-    private void bindCover(Holder h, JSONObject e) {
+    void bindCover(Holder h, JSONObject e) {
         String path = first(e).optBoolean("cover") ? "/v1/events/" + e.optLong("id") + "/cover" : null;
         ImageView cover = h.cover;
         if (path != null && path.equals(cover.getTag())) return;
@@ -398,7 +399,7 @@ final class FeedRows {
     }
 
     /** “大模型 · IT之家 等 3 家”：话题用 ink（行里是墨色，彩色卡片上是卡片的文字色）写在来源前面；prefix 是前面的时间。 */
-    private CharSequence meta(String prefix, JSONObject e, int ink) {
+    CharSequence meta(String prefix, JSONObject e, int ink) {
         SpannableStringBuilder s = new SpannableStringBuilder(prefix);
         String topic = Theme.topicOf(e);
         if (!topic.isEmpty()) s.append(topic, new ForegroundColorSpan(ink), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE).append(" · ");
@@ -414,7 +415,7 @@ final class FeedRows {
     }
 
     /** 墨色反白的“要闻”：只给重要性 5 的事件。 */
-    private TextView newsBadge() {
+    TextView newsBadge() {
         TextView v = t.text(a, "要闻", 11.5f, t.onInv, 800);
         v.setPadding(t.dp(8), t.dp(3), t.dp(8), t.dp(3));
         v.setBackground(t.metal(t.inv, Theme.R_XS));
@@ -440,21 +441,21 @@ final class FeedRows {
     }
 
     /** 主色小标签：“新”“新进展”“有了答案”，一小块钴蓝金属。 */
-    private TextView newLabel(String text) {
+    TextView newLabel(String text) {
         TextView v = t.text(a, text, 11.5f, t.onPri, 800);
         v.setPadding(t.dp(9), t.dp(3), t.dp(9), t.dp(3));
         v.setBackground(t.metal(t.pri, 99));
         return v;
     }
 
-    private LinearLayout.LayoutParams gapLp(int rightDp) {
+    LinearLayout.LayoutParams gapLp(int rightDp) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.rightMargin = t.dp(rightDp);
         return lp;
     }
 
-    private static void show(TextView v, String s) {
+    static void show(TextView v, String s) {
         v.setText(s);
         v.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
     }

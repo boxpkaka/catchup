@@ -41,7 +41,7 @@ public class ModelActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        t = new Theme(this);
+        t = Theme.of(this);
         t.applyWindow(this);
         try {
             x = new JSONObject(getIntent().getStringExtra(EXTRA_JSON));

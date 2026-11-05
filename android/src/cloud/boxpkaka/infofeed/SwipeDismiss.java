@@ -97,8 +97,8 @@ final class SwipeDismiss implements View.OnTouchListener {
                 float out = v.getWidth() * 1.15f - sign * v.getTranslationX();
                 long ms = vx > 0 ? Math.round(3000 * out / vx) : 320;
                 v.animate().translationX(dismiss ? sign * v.getWidth() * 1.15f : 0)
-                        .setDuration(dismiss ? Math.max(140, Math.min(320, ms)) : Spring.STD.duration)
-                        .setInterpolator(dismiss ? new DecelerateInterpolator(1.5f) : Spring.STD)
+                        .setDuration(dismiss ? Math.max(140, Math.min(320, ms)) : Motion.now().std.duration)
+                        .setInterpolator(dismiss ? new DecelerateInterpolator(1.5f) : Motion.now().std)
                         .setUpdateListener(an -> morph(v, v.getTranslationX()))
                         .withEndAction(() -> {
                             v.animate().setUpdateListener(null);
