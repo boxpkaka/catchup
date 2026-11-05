@@ -152,7 +152,7 @@ def _write(config: Config, store, llm, kind: str, start: date, now: datetime, st
 
 def _events(config: Config, store, since: datetime, until: datetime) -> list[tuple[int, dict, int]]:
     """这段时间见报、够推送门槛、没被标记不需要的事件：(id, 简报, 报道数)，按重要性和报道数排。"""
-    counts = Counter(s.event_id for s in store.recent(since, until) if s.event_id)
+    counts = Counter(s.event_id for s in store.recent(since, until, include_stale=False) if s.event_id)
     published = store.event_published(counts)
     briefs, feedback = store.briefs(counts), store.feedback()
     bar = {**push.DEFAULTS, **config.push}["min_importance"]

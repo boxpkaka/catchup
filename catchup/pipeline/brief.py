@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from .. import chat, reader
 from ..models import Event
@@ -26,7 +26,10 @@ BRIEF_SYSTEM = """你是 Catchup 的编辑，读者是一名 AI 从业者。下�
  "points": ["概要之外的具体要点 3～5 条，每条一句话、不超过 40 个字，取自原文；没有原文、材料只有标题时输出空数组"],
  "importance": 1～5 的整数,
  "insight": "AI 解读，2～3 句、不超过 150 个字。概要和要点写发生了什么，这里写怎么看：新在哪（和之前的版本、同类产品或常见做法比），可能带来什么影响，有没有值得留意的局限或疑点（比如只有厂商自己的测试数据）。要有判断、判断要有依据；不复述概要，不写和读者个人有什么关系。importance 为 1～2 时输出空字符串",
- "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"]}
+ "questions": ["读者看完最可能追问的 3 个问题，每个不超过 18 个字，结合他的关注点"],
+ "subject": "这件事主角的标准名字，只写一个：产品、模型（带版本号）、论文、开源项目，交易写被投资或被收购的公司，如 Claude Opus 4.8、FlashProve、Hy4；没有明确主角（行业观点、市场分析）时输出空字符串",
+ "aliases": ["主角的其他写法 0～3 个：中文名、英文名、常用简称，如 Opus 4.8、混元 Hy4；不要写别的产品、公司或工具"],
+ "happened": "材料里写明的、这次报道的这件事发生的日期，格式 YYYY-MM-DD，只写了月日的按今天推算年份。这件事可以是发布、上线、宣布、融资，也可以是新曝出的问题、新的评测、回应；讲的是旧产品的新情况时写新情况的日期，不要写产品当初发布的日期。材料没写就输出空字符串，不要用公司成立、项目创建这类背景日期，也不要用报道或采集的时间"}
 """ + IMPORTANCE + """
 headline、summary、points 只写材料里有的信息，不要编造数字和结论；也不要写“未披露”“原文没有提到”这类说明缺了什么的话。
 insight 可以结合你了解的行业背景，但你的知识可能过时：拿不准的对比和“首个”“最强”这类说法不要写，数字只用材料里的。"""
@@ -181,7 +184,8 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
             reports += f"\n\n主来源原文（{_label(e.lead, sources)}）：\n{original[:chat.SOURCE_CHARS]}"
         try:
             system = BRIEF_SYSTEM + (PAPER_NOTE if reader.arxiv_id(e.lead.url) else "")
-            brief = _clean(llm.json(system, f"读者是谁：\n{focus}\n\n报道：\n{reports}", max_tokens=1300))
+            brief = _clean(llm.json(system, f"今天是 {now:%Y-%m-%d}。\n\n读者是谁：\n{focus}\n\n报道：\n{reports}",
+                                    max_tokens=1400), now)
         except Exception as err:
             log.warning("brief for event %d failed: %r", e.id, err)
             continue
@@ -193,7 +197,7 @@ def write_briefs(store, events: list[Event], focus: str, llm, sources: dict[str,
     return written
 
 
-def _clean(raw: dict) -> dict | None:
+def _clean(raw: dict, now: datetime) -> dict | None:
     headline = str(raw.get("headline") or "").strip()
     if not headline:
         return None
@@ -203,9 +207,23 @@ def _clean(raw: dict) -> dict | None:
         importance = 3
     questions = [str(q).strip()[:40] for q in raw.get("questions") or [] if str(q).strip()][:3]
     points = [str(p).strip()[:80] for p in raw.get("points") or [] if str(p).strip()][:5]
+    # 主角的几种写法存成 entities，第一个是标准名字；查旧（pipeline/novelty.py）用它们检索
+    aliases = raw.get("aliases") if isinstance(raw.get("aliases"), list) else []
+    entities = [raw.get("subject")] + aliases if str(raw.get("subject") or "").strip() else []
     return {"headline": headline[:60], "summary": str(raw.get("summary") or "").strip()[:200],
             "why": str(raw.get("why") or "").strip()[:120], "importance": importance, "questions": questions,
-            "points": points, "insight": str(raw.get("insight") or "").strip()[:300]}
+            "points": points, "insight": str(raw.get("insight") or "").strip()[:300],
+            "entities": list(dict.fromkeys(str(x).strip()[:80] for x in entities if str(x).strip()))[:6],
+            "happened": _day(raw.get("happened"), now)}
+
+
+def _day(value, now: datetime) -> str | None:
+    """模型给的发生日期：YYYY-MM-DD，晚于今天的不可信，当没写。now 是 UTC，北京时间可能已经是第二天，多放一天。"""
+    try:
+        day = date.fromisoformat(str(value or "").strip()[:10])
+    except ValueError:
+        return None
+    return day.isoformat() if day <= now.date() + timedelta(days=1) else None
 
 
 def _label(signal, sources: dict[str, Source]) -> str:

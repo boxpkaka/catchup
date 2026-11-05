@@ -65,6 +65,66 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(store.con.execute("pragma user_version").fetchone()[0], len(MIGRATIONS))
             self.assertIn("questions", [r[1] for r in store.con.execute("pragma table_info(briefs)")])
 
+    def test_search_matches_names_across_spellings(self):
+        rows = [("https://a", "Introducing Claude Opus 4.8"), ("https://b", "Claude\u2011Opus\u20114.8 benchmarks"),
+                ("https://c", "Opus4.8 第一手体验"), ("https://d", "Claude Opus 4.7 is out")]
+        self.store.add([Signal(url=u, title=t, source="x", published=NOW) for u, t in rows], now=NOW)
+        _, found = self.store.search(["opus-4.8"])
+        self.assertEqual(sorted(s.url for s in found), ["https://a", "https://b", "https://c"])
+        _, found = self.store.search(["Claude Opus 4.8", "4.7"])  # 几个名字之间是“或”
+        self.assertEqual(sorted(s.url for s in found), ["https://a", "https://b", "https://d"])
+        self.assertEqual(self.store.search(["o3", " ", "\""]), ([], []))  # 不到三个字符的查不了
+
+    def test_search_index_follows_writes(self):
+        self.store.add([Signal(url="https://a", title="HF model card", source="x", published=NOW)], now=NOW)
+        self.store.set_summaries({"https://a": "语音合成模型 Qwen3-TTS"})  # 后来补的摘要也进索引
+        self.assertEqual([s.url for s in self.store.search(["Qwen3 TTS"])[1]], ["https://a"])
+        for i, name in ((1, "Dessa"), (2, "Moshi")):
+            e = self.store.new_event("k", NOW)
+            self.assertEqual(e, i)
+            self.store.save_brief(e, NOW, "m", 1, {"headline": f"Block 发布 {name}", "summary": "", "why": "",
+                                                   "importance": 3, "entities": [f"{name} Voice"]})
+        self.store.save_brief(1, NOW, "m", 2, {"headline": "重写", "summary": "", "why": "", "importance": 3,
+                                               "entities": ["Dessa Voice"]})  # insert or replace 不留下旧的索引
+        self.assertEqual(self.store.search(["dessa voice", "moshi voice"])[0], [1, 2])
+        self.assertEqual(self.store.search(["Block 发布 Dessa"])[0], [])
+        self.store.merge_events(2, [1])  # 合并会删掉两边的简报，索引也跟着删
+        self.assertEqual(self.store.search(["dessa voice", "moshi voice"])[0], [])
+
+    def test_migration_indexes_existing_rows(self):
+        import sqlite3
+        import tempfile
+        from catchup.store import _statements
+        with tempfile.TemporaryDirectory() as d:
+            con = sqlite3.connect(f"{d}/c.db")
+            for sql in MIGRATIONS[:-1]:
+                for statement in _statements(sql):
+                    con.execute(statement)
+            con.execute(f"pragma user_version = {len(MIGRATIONS) - 1}")
+            con.execute("insert into signals (url, source, title, published, fetched) values (?, ?, ?, ?, ?)",
+                        ("https://old", "x", "Introducing Claude Opus 4.8", to_iso(NOW), to_iso(NOW)))
+            con.execute("insert into briefs (event_id, created, headline, summary) values (7, ?, ?, ?)",
+                        (to_iso(NOW), "Anthropic 发布 Claude Opus 4.8", ""))
+            con.commit()
+            con.close()
+            store = Store(f"{d}/c.db")
+            self.assertEqual(([7], ["https://old"]), (lambda r: (r[0], [s.url for s in r[1]]))(
+                store.search(["Claude Opus 4.8"])))
+            self.assertIsNone(store.briefs([7])[7]["entities"])  # 加查旧之前写的简报
+
+    def test_recent_can_skip_stale_events(self):
+        self.store.add([Signal(url=u, title=u, source="x", published=NOW) for u in ("https://a", "https://b")], now=NOW)
+        old, new = self.store.new_event("a", NOW), self.store.new_event("b", NOW)
+        self.store.assign(old, ["https://a"])
+        self.store.assign(new, ["https://b"])
+        self.store.save_novelty(old, "stale", NOW, "五月的旧闻", ref_url="https://x")
+        self.store.save_novelty(new, "new", NOW)
+        window = (NOW - timedelta(days=1), NOW)
+        self.assertEqual(len(self.store.recent(*window)), 2)
+        self.assertEqual([s.url for s in self.store.recent(*window, include_stale=False)], ["https://b"])
+        self.store.merge_events(new, [old])  # 并掉的那件，结论跟着删；留下的保留自己的结论
+        self.assertEqual({i: v["verdict"] for i, v in self.store.novelty([old, new]).items()}, {new: "new"})
+
     def test_last_runs(self):
         self.store.record_run("x", NOW, 3, 1)
         self.store.record_run("x", NOW, 0, 0, "boom")

@@ -6,7 +6,9 @@
 
 - **零运行时依赖**：只用标准库（系统 Python 3.10，没有 `tomllib`，所以配置用 JSON）。测试用 `unittest`，不要引入 pytest/requests。唯一的系统工具是封面缩图用的 `cwebp`（`apt install webp`），没装时只是没有封面。
 - **URL 是信号主键**：`Store.add` 用 `insert or ignore` 的 `rowcount` 同时完成写入和判新。改 URL 规范化规则会让旧内容被当成新内容。
-- **数据库迁移**：只在 `store.py` 的 `MIGRATIONS` 末尾追加，不要修改已有条目。
+- **数据库迁移**：只在 `store.py` 的 `MIGRATIONS` 末尾追加，不要修改已有条目。迁移按 `sqlite3.complete_statement` 拆句，触发器的 `begin ... end` 可以直接写。
+- **检索库**：`signals_fts`、`briefs_fts` 由触发器和 `signals`、`briefs` 同步，写这两张表不用另外维护索引。索引的文字和查询都先经 `store.squash` 归一，`SQUASH`、`SIGNAL_TEXT`、`BRIEF_TEXT` 用在了迁移里，要改就追加迁移重建触发器和索引。`signals` 的 rowid 会被 VACUUM 重排，`signals_fts` 按 url 对应，不要改成按 rowid。
+- **查旧**：推送只推 `novelty` 表里结论是 new / update 的事件（`pipeline/novelty.py`），没查过的不推；测试里直接调 `push.select` 前要先查过旧（`tests/test_app.py` 的 `checked`）。旧闻（stale）由 `Store.recent(include_stale=False)` 挡在信息流、报告、对话和事件归并之外，新的消费方要按需传这个参数。
 - **时间统一存 UTC ISO 字符串**（`util.to_iso`），`Store.recent` 依赖字符串比较。
 - **网络**：服务器的 mihomo 没开 TUN，直连时 Google、Hugging Face、YouTube、Reddit 都不通（DNS 被污染），所以 cron 的 `collect` 和 `catchup-web` 都显式设置 `http_proxy`/`https_proxy=http://127.0.0.1:7890`，`no_proxy=localhost,127.0.0.1` 放行本机的推送 hub。手动测试用同一组变量，不要依赖当前 shell：`clauded` 会话设了 `no_proxy=*`，等于全部直连。
 - **Reddit 公开 RSS 限流严**：版块间隔默认 60 秒，一次完整采集约 4 分钟。

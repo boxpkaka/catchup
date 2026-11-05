@@ -1,7 +1,8 @@
 """决定哪些事件值得现在打扰用户，并经 hub 推到手机。
 
 原则：能推的都推，不限条数，不感兴趣的由用户在首页右滑“不需要”，从反馈里学到的记忆再让简报的重要性判断收紧。
-只推模型判定为新闻（重要性至少是“一般动态”；只出现在榜单、创投媒体这类只推重要的来源上的要“重要”）、还没推过的事件；
+只推模型判定为新闻（重要性至少是“一般动态”；只出现在榜单、创投媒体这类只推重要的来源上的要“重要”）、查过不是旧闻
+（pipeline/novelty.py，没查过的先不推）、还没推过的事件；
 夜里只推重大消息，其余攒到早上合成一条早报。参数见 config.json 的 push。
 """
 from __future__ import annotations
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta
 from .. import http
 from ..models import Event
 from ..sources import SHARED
+from . import novelty
 from .brief import final_score
 
 log = logging.getLogger(__name__)
@@ -58,10 +60,10 @@ def select(options: dict, store, events: list[Event], now: datetime, strict=froz
     opt = {**DEFAULTS, **options}
     night = opt["night_min_importance"] if quiet(opt, now) else 0
     pushed, feedback = store.pushed(), store.feedback()
-    briefs = store.briefs(e.id for e in events)
+    briefs, fresh = store.briefs(e.id for e in events), novelty.pushable(store, (e.id for e in events))
     candidates = [
         e for e in events
-        if e.id not in pushed and feedback.get(e.id) != "not_needed" and e.id in briefs
+        if e.id not in pushed and feedback.get(e.id) != "not_needed" and e.id in briefs and e.id in fresh
         and not any(s.source == SHARED for s in e.signals)  # 用户自己分享的，不用再推给他
         and briefs[e.id]["importance"] >= max(min_importance(opt, e, strict), night)
         and now - max(s.published for s in e.signals) <= timedelta(hours=opt["max_age_hours"])
